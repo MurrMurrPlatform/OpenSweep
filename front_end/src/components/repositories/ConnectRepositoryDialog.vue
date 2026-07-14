@@ -130,7 +130,7 @@ async function connect(inst: AvailableReposInstallation, repo: AvailableRepo) {
 
 <template>
   <Dialog :open="open" @update:open="emit('update:open', $event)">
-    <DialogContent class="sm:max-w-lg">
+    <DialogContent class="sm:max-w-2xl">
       <DialogHeader>
         <DialogTitle>Connect repository</DialogTitle>
         <DialogDescription>
@@ -194,7 +194,9 @@ async function connect(inst: AvailableReposInstallation, repo: AvailableRepo) {
     </EmptyState>
 
     <!-- Repo picker -->
-    <div v-else-if="data" class="flex flex-col gap-3">
+    <!-- min-w-0: DialogContent is a grid — without it a long unbreakable
+         repo/branch name widens this column past the dialog edge. -->
+    <div v-else-if="data" class="flex min-w-0 flex-col gap-3">
       <div class="relative">
         <Search class="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <Input v-model="query" placeholder="Filter by owner/name…" class="pl-8" />
@@ -216,7 +218,7 @@ async function connect(inst: AvailableReposInstallation, repo: AvailableRepo) {
               {{ inst.repos.length }} {{ inst.repos.length === 1 ? 'repository' : 'repositories' }}
             </div>
           </div>
-          <div v-if="inst.error" class="rounded-sm border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
+          <div v-if="inst.error" class="break-words rounded-sm border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
             Could not list repositories for this connection: {{ inst.error }}
           </div>
 
@@ -227,13 +229,14 @@ async function connect(inst: AvailableReposInstallation, repo: AvailableRepo) {
             class="flex items-center justify-between gap-3 rounded-sm border px-3 py-2"
           >
             <div class="min-w-0">
-              <div class="flex items-center gap-2">
+              <div class="flex min-w-0 items-center gap-2">
                 <span class="truncate font-mono text-sm">{{ repo.full_name }}</span>
-                <Badge v-if="repo.private" variant="outline" class="px-1.5 text-[10px]">
+                <Badge v-if="repo.private" variant="outline" class="shrink-0 px-1.5 text-[10px]">
                   <Lock class="h-3 w-3" /> private
                 </Badge>
-                <Badge v-if="repo.default_branch" variant="outline" class="px-1.5 text-[10px]">
-                  <GitBranch class="h-3 w-3" /> {{ repo.default_branch }}
+                <Badge v-if="repo.default_branch" variant="outline" class="min-w-0 max-w-40 px-1.5 text-[10px]">
+                  <GitBranch class="h-3 w-3 shrink-0" />
+                  <span class="truncate">{{ repo.default_branch }}</span>
                 </Badge>
               </div>
               <div v-if="repo.description" class="mt-0.5 truncate text-xs text-muted-foreground">
