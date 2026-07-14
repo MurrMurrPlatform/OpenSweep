@@ -50,8 +50,10 @@ class LLMProviderDTO(BaseModel):
 
 
 class CreateLLMProviderRequest(BaseModel):
-    # Providers are always owned by the caller's org.
-    label: str
+    # Providers are always owned by the caller's org. Everything except the
+    # kind is optional — empty fields fill from KIND_CATALOG defaults, so the
+    # connect dialog can send as little as {kind, credential_secret}.
+    label: str = ""
     kind: LLMProviderKind
     base_url: str = ""
     model: str = ""
@@ -127,9 +129,18 @@ _AIDER_SETUP_STEPS = [
 ]
 
 
+# Picker metadata (spec: 2026-07-14-provider-connect-simplification):
+#   default_label / tagline   — what the connect-dialog tile shows
+#   default_base_url          — Docker-reachable default for local servers
+#   default_api_key_env       — fallback env var for API kinds
+#   featured                  — picker order; 0 = hidden from the UI picker
+#     (the API still accepts hidden kinds — aider/custom are ops-only)
 KIND_CATALOG: dict[LLMProviderKind, dict] = {
     LLMProviderKind.CLAUDE_SUBSCRIPTION: {
         "display_name": "Claude Code (subscription CLI)",
+        "default_label": "Claude Code",
+        "tagline": "Uses your Claude subscription — no API bill",
+        "featured": 1,
         "transport": "local CLI",
         # --mcp-config wires OpenSweep's MCP server into Claude so it can
         # opensweep_create_candidate / opensweep_find_similar etc. The path is a
@@ -152,6 +163,9 @@ KIND_CATALOG: dict[LLMProviderKind, dict] = {
     },
     LLMProviderKind.CODEX_SUBSCRIPTION: {
         "display_name": "OpenAI Codex (subscription CLI)",
+        "default_label": "OpenAI Codex",
+        "tagline": "Uses your ChatGPT subscription — no API bill",
+        "featured": 2,
         "transport": "local CLI",
         "default_cli": 'codex exec --skip-git-repo-check --json {{instruction_q}}',
         "needs_api_key": False,
@@ -164,6 +178,10 @@ KIND_CATALOG: dict[LLMProviderKind, dict] = {
     },
     LLMProviderKind.CLAUDE_API: {
         "display_name": "Anthropic API",
+        "default_label": "Anthropic API",
+        "tagline": "Pay-per-token with an Anthropic API key",
+        "featured": 7,
+        "default_api_key_env": "ANTHROPIC_API_KEY",
         "transport": "HTTPS",
         "default_cli": "",
         "needs_api_key": True,
@@ -176,6 +194,10 @@ KIND_CATALOG: dict[LLMProviderKind, dict] = {
     },
     LLMProviderKind.OPENAI_API: {
         "display_name": "OpenAI API",
+        "default_label": "OpenAI API",
+        "tagline": "Pay-per-token with an OpenAI API key",
+        "featured": 8,
+        "default_api_key_env": "OPENAI_API_KEY",
         "transport": "HTTPS",
         "default_cli": "",
         "needs_api_key": True,
@@ -188,6 +210,10 @@ KIND_CATALOG: dict[LLMProviderKind, dict] = {
     },
     LLMProviderKind.MLX: {
         "display_name": "MLX (Apple Silicon, local)",
+        "default_label": "OMLX / MLX",
+        "tagline": "Local Apple Silicon server — free and private",
+        "featured": 4,
+        "default_base_url": "http://host.docker.internal:2345/v1",
         "transport": "HTTPS",
         "default_cli": "",
         "needs_api_key": False,
@@ -200,6 +226,10 @@ KIND_CATALOG: dict[LLMProviderKind, dict] = {
     },
     LLMProviderKind.LMSTUDIO: {
         "display_name": "LMStudio (local OpenAI-compatible)",
+        "default_label": "LM Studio",
+        "tagline": "Local server — free and private",
+        "featured": 5,
+        "default_base_url": "http://host.docker.internal:1234/v1",
         "transport": "HTTPS",
         "default_cli": "",
         "needs_api_key": False,
@@ -212,6 +242,10 @@ KIND_CATALOG: dict[LLMProviderKind, dict] = {
     },
     LLMProviderKind.OLLAMA: {
         "display_name": "Ollama (local)",
+        "default_label": "Ollama",
+        "tagline": "Local server — free and private",
+        "featured": 6,
+        "default_base_url": "http://host.docker.internal:11434/v1",
         "transport": "HTTPS",
         "default_cli": "",
         "needs_api_key": False,
@@ -224,6 +258,10 @@ KIND_CATALOG: dict[LLMProviderKind, dict] = {
     },
     LLMProviderKind.OPENCODE: {
         "display_name": "opencode (sst, headless agent)",
+        "default_label": "opencode",
+        "tagline": "Headless coding agent on your local model",
+        "featured": 3,
+        "default_base_url": "http://host.docker.internal:2345/v1",
         "transport": "local CLI + cwd",
         # `{{instruction_q}}` is the rendered prompt; opencode reads files in cwd itself.
         # Override the template in the UI if you want a non-default model flag etc.
@@ -240,6 +278,10 @@ KIND_CATALOG: dict[LLMProviderKind, dict] = {
     },
     LLMProviderKind.AIDER: {
         "display_name": "aider (headless coding agent)",
+        "default_label": "aider",
+        "tagline": "",
+        "featured": 0,  # ops-only — hidden from the UI picker
+        "default_base_url": "http://host.docker.internal:2345/v1",
         "transport": "local CLI + cwd",
         # --yes-always to skip every interactive prompt; --no-auto-commits so we
         # control the commit boundary; --no-pretty to keep stdout machine-readable.
@@ -257,6 +299,9 @@ KIND_CATALOG: dict[LLMProviderKind, dict] = {
     },
     LLMProviderKind.CUSTOM: {
         "display_name": "Custom",
+        "default_label": "Custom",
+        "tagline": "",
+        "featured": 0,  # ops-only — hidden from the UI picker
         "transport": "varies",
         "default_cli": "",
         "needs_api_key": False,
@@ -270,14 +315,18 @@ KIND_CATALOG: dict[LLMProviderKind, dict] = {
 }
 
 
+def kind_meta(kind: str | LLMProviderKind) -> dict:
+    """The catalog entry for a kind ({} for unknown kinds)."""
+    try:
+        return KIND_CATALOG[LLMProviderKind(kind)]
+    except ValueError:
+        return {}
+
+
 def default_cli_template(kind: str | LLMProviderKind) -> str:
     """The platform-owned CLI template for a kind ("" for HTTP/custom kinds).
 
     The template encodes how OpenSweep drives each CLI (flag order, MCP
     wiring), so it must never be required user input: executors and the
     provider service fall back to this whenever a row's template is empty."""
-    try:
-        entry = KIND_CATALOG[LLMProviderKind(kind)]
-    except ValueError:
-        return ""
-    return str(entry.get("default_cli") or "")
+    return str(kind_meta(kind).get("default_cli") or "")

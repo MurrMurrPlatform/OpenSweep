@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Toaster } from '@/components/ui/sonner'
-import LLMProviderFormDialog from '@/components/llmProviders/LLMProviderFormDialog.vue'
+import ConnectProviderDialog from '@/components/llmProviders/ConnectProviderDialog.vue'
 import ConnectRepositoryDialog from '@/components/repositories/ConnectRepositoryDialog.vue'
 import { useCurrentUserStore } from '@/stores/currentUserStore'
 import { useOrganizationStore } from '@/stores/organizationStore'
@@ -15,7 +15,6 @@ import { useGithubAppStore } from '@/stores/githubAppStore'
 import { useRepositoryStore } from '@/stores/repositoryStore'
 import { useToast } from '@/composables/useToast'
 import OpenSweepLogo from '@/components/branding/OpenSweepLogo.vue'
-import type { LLMProvider } from '@/types/api'
 import {
   Building2, Check, Cpu, ExternalLink, FolderGit2, Github, RefreshCw,
 } from 'lucide-vue-next'
@@ -68,25 +67,10 @@ async function saveName() {
 
 // ── Step 2 · LLM provider ──────────────────────────────────────────────────
 const providerDialogOpen = ref(false)
-const providerSubmitting = ref(false)
 const providerDone = computed(() => llm.status?.configured || llm.list.length > 0)
 
-async function openProviderDialog() {
+function openProviderDialog() {
   providerDialogOpen.value = true
-  llm.fetchCatalog().catch(() => {})
-}
-
-async function onProviderSubmit(value: Partial<LLMProvider>) {
-  providerSubmitting.value = true
-  try {
-    await llm.create(value)
-    toast.success('Provider added')
-    providerDialogOpen.value = false
-  } catch (e: any) {
-    toast.error('Save failed', e.detail || e.message)
-  } finally {
-    providerSubmitting.value = false
-  }
 }
 
 // ── Step 3 · GitHub ────────────────────────────────────────────────────────
@@ -468,13 +452,7 @@ async function finish() {
       </div>
     </div>
 
-    <LLMProviderFormDialog
-      v-model:open="providerDialogOpen"
-      :provider="null"
-      :catalog="llm.catalog"
-      :submitting="providerSubmitting"
-      @submit="onProviderSubmit"
-    />
+    <ConnectProviderDialog v-model:open="providerDialogOpen" />
 
     <ConnectRepositoryDialog
       v-model:open="connectRepoOpen"

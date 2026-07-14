@@ -830,6 +830,13 @@ export interface LLMProviderKindMeta {
   credential_placeholder?: string
   setup_steps?: string[]
   default_model?: string
+  /** Connect-dialog tile metadata (platform-owned). */
+  default_label?: string
+  tagline?: string
+  default_base_url?: string
+  default_api_key_env?: string
+  /** Picker order; 0/absent = hidden from the picker (ops-only kinds). */
+  featured?: number
 }
 
 // ── Audit (Event) ───────────────────────────────────────────────────────────

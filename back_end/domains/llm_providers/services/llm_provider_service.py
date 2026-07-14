@@ -24,6 +24,7 @@ from domains.llm_providers.schemas import (
     LLMProviderKind,
     UpdateLLMProviderRequest,
     default_cli_template,
+    kind_meta,
 )
 from domains.users.schemas import UserDTO
 from infrastructure.audit import write_audit
@@ -106,16 +107,18 @@ class LLMProviderService:
         active = bool(req.active)
         if not active:
             active = await _scope_active(scope) is None
+        # Everything but the kind is platform-defaultable — the connect
+        # dialog sends as little as {kind, credential_secret} and the row
+        # still comes out fully dispatchable.
+        meta = kind_meta(req.kind)
         n = LLMProvider(
             uid=uuid4().hex,
             org_uid=scope,
-            label=req.label,
+            label=req.label.strip() or str(meta.get("default_label") or req.kind.value),
             kind=req.kind.value,
-            base_url=req.base_url,
-            model=req.model,
-            api_key_env=req.api_key_env,
-            # The CLI template is platform-owned knowledge — never require the
-            # user to supply it. Empty means "use the default for this kind".
+            base_url=req.base_url.strip() or str(meta.get("default_base_url") or ""),
+            model=req.model.strip() or str(meta.get("default_model") or ""),
+            api_key_env=req.api_key_env.strip() or str(meta.get("default_api_key_env") or ""),
             cli_command_template=req.cli_command_template.strip()
             or default_cli_template(req.kind),
             extra_args=req.extra_args,

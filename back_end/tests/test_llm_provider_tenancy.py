@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 import domains.llm_providers.services.llm_provider_service as svc_mod
 from domains.llm_providers.schemas import (
+    KIND_CATALOG,
     CreateLLMProviderRequest,
     LLMProviderKind,
     UpdateLLMProviderRequest,
@@ -232,6 +233,40 @@ async def test_update_refills_a_cleared_cli_template():
         "mine-1", UpdateLLMProviderRequest(cli_command_template=""), user=_user("org-a")
     )
     assert dto.cli_command_template == default_cli_template(LLMProviderKind.CLAUDE_SUBSCRIPTION)
+
+
+async def test_create_with_bare_kind_fills_catalog_defaults():
+    # The connect dialog sends as little as {kind}; the row must come out
+    # labelled, addressed, and dispatchable.
+    dto = await LLMProviderService().create(
+        CreateLLMProviderRequest(kind=LLMProviderKind.LMSTUDIO), user=_user("org-a")
+    )
+    assert dto.label == "LM Studio"
+    assert dto.base_url == "http://host.docker.internal:1234/v1"
+    assert dto.model == KIND_CATALOG[LLMProviderKind.LMSTUDIO]["default_model"]
+
+    api = await LLMProviderService().create(
+        CreateLLMProviderRequest(kind=LLMProviderKind.OPENAI_API), user=_user("org-a")
+    )
+    assert api.api_key_env == "OPENAI_API_KEY"
+
+
+async def test_create_explicit_values_beat_catalog_defaults():
+    dto = await LLMProviderService().create(
+        CreateLLMProviderRequest(
+            kind=LLMProviderKind.OLLAMA, label="My box",
+            base_url="http://box:1234/v1", model="m1",
+        ),
+        user=_user("org-a"),
+    )
+    assert (dto.label, dto.base_url, dto.model) == ("My box", "http://box:1234/v1", "m1")
+
+
+def test_picker_features_exactly_the_user_facing_kinds():
+    hidden = {k for k, m in KIND_CATALOG.items() if not m["featured"]}
+    assert hidden == {LLMProviderKind.AIDER, LLMProviderKind.CUSTOM}
+    order = [m["featured"] for m in KIND_CATALOG.values() if m["featured"]]
+    assert sorted(order) == list(range(1, 9))  # unique, contiguous picker order
 
 
 # ── Status probe (onboarding) ────────────────────────────────────────────────
