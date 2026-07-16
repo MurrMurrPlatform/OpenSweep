@@ -51,6 +51,7 @@ from domains.llm_providers.models import LLMProvider
 from domains.llm_providers.services.credentials import provider_secret
 from infrastructure.audit import write_audit
 from infrastructure.code_graph import CODE_GRAPH_PROMPT, code_graph_available
+from infrastructure.process_tree import kill_tree, process_group_kwargs, terminate_tree
 from logging_config import logger
 
 _FOLLOW_UP_STATUS_VALUES = {s.value for s in FOLLOW_UP_STATUSES}
@@ -82,13 +83,15 @@ _SEND_LOCKS: dict[str, asyncio.Lock] = {}
 
 async def _kill_turn_process(proc: asyncio.subprocess.Process) -> None:
     """Interrupt semantics shared by interrupt(), WS disconnect, and REST
-    cancellation: SIGTERM, SIGKILL after the grace period."""
+    cancellation: SIGTERM, SIGKILL after the grace period. Signals reach the
+    CLI's whole process group — a CLI-only kill orphans its MCP bridge /
+    Bash-tool children, which then pin backend fds forever (EMFILE)."""
     try:
-        proc.terminate()
+        terminate_tree(proc)
         try:
             await asyncio.wait_for(proc.wait(), timeout=INTERRUPT_GRACE_SECONDS)
         except TimeoutError:
-            proc.kill()
+            kill_tree(proc)
     except ProcessLookupError:
         pass  # already exited
 
@@ -236,6 +239,9 @@ class TurnService:
                         env=env,
                         cwd=cwd,
                         limit=16 * 1024 * 1024,
+                        # Group leader, so interrupt/timeout kills reach the
+                        # CLI's MCP/Bash children too (see process_tree).
+                        **process_group_kwargs(),
                     )
                 except FileNotFoundError as exc:
                     error_detail = f"{argv[0]} CLI not found: {exc}"
@@ -328,7 +334,7 @@ class TurnService:
             except TimeoutError:
                 error_detail = f"turn timed out after {TURN_TIMEOUT_SECONDS}s"
                 _INTERRUPTED.add(uid)
-                proc.kill()
+                kill_tree(proc)
                 await proc.wait()
             except (GeneratorExit, asyncio.CancelledError):
                 # Consumer vanished mid-turn — treat as interrupt: kill the
@@ -462,10 +468,7 @@ class TurnService:
         if proc is not None:
             _INTERRUPTED.add(uid)
             if not isinstance(proc, _Starting):
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass
+                kill_tree(proc)
         # Snapshot the diff BEFORE the workspace is torn down so the Files
         # tab survives the teardown (snapshot_changes swallows all errors).
         await run_changes.snapshot_changes(run)

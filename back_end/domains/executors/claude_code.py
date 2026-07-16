@@ -58,6 +58,7 @@ from domains.llm_providers.services.llm_executor import with_model_flag
 from domains.run_policies.services.ceilings import UsageSnapshot
 from infrastructure import artifact_store
 from infrastructure.code_graph import CODE_GRAPH_PROMPT as _CODE_GRAPH_BRIEFING
+from infrastructure.process_tree import kill_tree, process_group_kwargs
 from infrastructure.run_tokens import run_token_config_error
 from logging_config import logger
 
@@ -181,6 +182,9 @@ class ClaudeCodeAdapter(ExecutorAdapter):
                 env=env,
                 cwd=cwd or None,
                 limit=16 * 1024 * 1024,
+                # Group leader, so the wall-ceiling kill reaches the CLI's
+                # MCP/Bash children too (see process_tree).
+                **process_group_kwargs(),
             )
 
             async def _pump(stream, parts):
@@ -225,7 +229,7 @@ class ClaudeCodeAdapter(ExecutorAdapter):
                     await asyncio.wait_for(pumps, timeout=wall_ceiling)
             except TimeoutError:
                 timed_out = True
-                proc.kill()
+                kill_tree(proc)
                 try:
                     await proc.wait()
                 except Exception:
