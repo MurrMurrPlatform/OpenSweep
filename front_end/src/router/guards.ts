@@ -18,9 +18,13 @@ export function installGuards(router: Router) {
     if (to.name === 'auth-callback') return true
     const user = await loadStoredUser()
     if (!user) {
-      // The bare root is the marketing entry point. Deep links keep the
-      // straight-to-Zitadel behavior and return via /auth/callback.
-      if (to.fullPath === '/' || to.redirectedFrom?.fullPath === '/') {
+      // When a cloud overlay registered a marketing page (route 'landing'),
+      // the bare root lands there. Without one — the public build — every
+      // signed-out visit goes straight to Zitadel and returns via /auth/callback.
+      if (
+        (to.fullPath === '/' || to.redirectedFrom?.fullPath === '/') &&
+        router.hasRoute('landing')
+      ) {
         return { name: 'landing' }
       }
       await signIn(to.fullPath)

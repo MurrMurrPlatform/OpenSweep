@@ -1,4 +1,4 @@
-import { createRouter, createWebHistory, type RouteRecordRedirectOption } from 'vue-router'
+import { createRouter, createWebHistory, type RouteRecordRaw, type RouteRecordRedirectOption } from 'vue-router'
 import { useUiStore } from '@/stores/uiStore'
 import { installGuards } from './guards'
 
@@ -129,11 +129,6 @@ const router = createRouter({
           meta: { title: 'Sandboxes', eyebrow: 'Admin', section: 'admin' } },
       ],
     },
-    // Public marketing page — outside ShellLayout, exempt from the auth
-    // guard. Signed-out visits to '/' land here; signed-in visitors are
-    // bounced into the app (see guards.ts).
-    { path: '/landing', name: 'landing', component: () => import('@/views/LandingView.vue'),
-      meta: { title: 'OpenSweep', public: true } },
     // Onboarding — outside ShellLayout on purpose: fresh org owners see only
     // the setup wizard (no sidebar/topbar) until they finish or skip it.
     { path: '/welcome', name: 'welcome', component: () => import('@/views/WelcomeView.vue'),
@@ -144,6 +139,16 @@ const router = createRouter({
     { path: '/:catchAll(.*)', redirect: '/' },
   ],
 })
+
+// Cloud overlay routes — the cloud repo adds src/cloud/routes.ts as a purely
+// additive module (marketing/landing page, cloud-only surfaces). In this repo
+// the glob matches nothing, so this is a no-op for self-hosters. Overlay
+// routes marked meta.public are exempt from the auth guard (guards.ts); a
+// route named 'landing' becomes the signed-out entry for '/'.
+const cloudRouteModules = import.meta.glob<{ default: RouteRecordRaw[] }>('../cloud/routes.ts', { eager: true })
+for (const mod of Object.values(cloudRouteModules)) {
+  for (const route of mod.default) router.addRoute(route)
+}
 
 installGuards(router)
 

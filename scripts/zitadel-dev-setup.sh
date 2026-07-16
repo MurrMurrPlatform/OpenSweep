@@ -7,7 +7,7 @@
 #   - project "opensweep" with role assertion on
 #   - roles viewer / maintainer / admin
 #   - SPA app "opensweep-spa" (PKCE, JWT access tokens, refresh tokens, dev mode,
-#     localhost:5173+5174 redirect URIs)
+#     localhost + 127.0.0.1 :5173/:5174 redirect URIs)
 #   - grants the zitadel-admin human the `admin` role
 # then writes the ZITADEL_*/VITE_ZITADEL_* vars into .env, stamps existing
 # repositories into the admin's org (multi-tenancy: they'd be invisible
@@ -52,26 +52,43 @@ for role in viewer maintainer admin; do
 done
 
 # ── SPA app ──────────────────────────────────────────────────────────────────
-CLIENT_ID=$(api POST "/management/v1/projects/$PROJECT_ID/apps/_search" \
-  '{"queries":[{"nameQuery":{"name":"opensweep-spa"}}]}' | jsonget "result.0.oidcConfig.clientId")
+# Every origin the SPA is served on needs its callback here — the SPA sends
+# redirect_uri=<origin>/auth/callback and Zitadel validates it against this
+# list even in dev mode. start.sh advertises 127.0.0.1; localhost also works.
+OIDC_FIELDS='
+  "redirectUris": [
+    "http://localhost:5173/auth/callback","http://localhost:5174/auth/callback",
+    "http://127.0.0.1:5173/auth/callback","http://127.0.0.1:5174/auth/callback"
+  ],
+  "postLogoutRedirectUris": [
+    "http://localhost:5173","http://localhost:5174",
+    "http://127.0.0.1:5173","http://127.0.0.1:5174"
+  ],
+  "responseTypes": ["OIDC_RESPONSE_TYPE_CODE"],
+  "grantTypes": ["OIDC_GRANT_TYPE_AUTHORIZATION_CODE","OIDC_GRANT_TYPE_REFRESH_TOKEN"],
+  "appType": "OIDC_APP_TYPE_USER_AGENT",
+  "authMethodType": "OIDC_AUTH_METHOD_TYPE_NONE",
+  "accessTokenType": "OIDC_TOKEN_TYPE_JWT",
+  "accessTokenRoleAssertion": true,
+  "idTokenRoleAssertion": true,
+  "idTokenUserinfoAssertion": true,
+  "devMode": true
+'
+APP_JSON=$(api POST "/management/v1/projects/$PROJECT_ID/apps/_search" \
+  '{"queries":[{"nameQuery":{"name":"opensweep-spa"}}]}')
+CLIENT_ID=$(echo "$APP_JSON" | jsonget "result.0.oidcConfig.clientId")
 if [ -z "$CLIENT_ID" ]; then
-  CLIENT_ID=$(api POST "/management/v1/projects/$PROJECT_ID/apps/oidc" '{
-    "name": "opensweep-spa",
-    "redirectUris": ["http://localhost:5173/auth/callback","http://localhost:5174/auth/callback"],
-    "postLogoutRedirectUris": ["http://localhost:5173","http://localhost:5174"],
-    "responseTypes": ["OIDC_RESPONSE_TYPE_CODE"],
-    "grantTypes": ["OIDC_GRANT_TYPE_AUTHORIZATION_CODE","OIDC_GRANT_TYPE_REFRESH_TOKEN"],
-    "appType": "OIDC_APP_TYPE_USER_AGENT",
-    "authMethodType": "OIDC_AUTH_METHOD_TYPE_NONE",
-    "accessTokenType": "OIDC_TOKEN_TYPE_JWT",
-    "accessTokenRoleAssertion": true,
-    "idTokenRoleAssertion": true,
-    "idTokenUserinfoAssertion": true,
-    "devMode": true
-  }' | jsonget "clientId")
+  CLIENT_ID=$(api POST "/management/v1/projects/$PROJECT_ID/apps/oidc" \
+    "{\"name\":\"opensweep-spa\",$OIDC_FIELDS}" | jsonget "clientId")
   echo "created app opensweep-spa (client_id=$CLIENT_ID)"
 else
-  echo "app opensweep-spa exists (client_id=$CLIENT_ID)"
+  # Re-assert the config so existing installs pick up list changes (e.g. the
+  # 127.0.0.1 redirect URIs). Zitadel rejects a no-change update — that's fine.
+  APP_ID=$(echo "$APP_JSON" | jsonget "result.0.id")
+  api PUT "/management/v1/projects/$PROJECT_ID/apps/$APP_ID/oidc_config" \
+    "{$OIDC_FIELDS}" >/dev/null 2>&1 \
+    && echo "app opensweep-spa exists (client_id=$CLIENT_ID) — OIDC config updated" \
+    || echo "app opensweep-spa exists (client_id=$CLIENT_ID) — OIDC config unchanged"
 fi
 
 # ── self-registration (multi-tenancy) ───────────────────────────────────────
