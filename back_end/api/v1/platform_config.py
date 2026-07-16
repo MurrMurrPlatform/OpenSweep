@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from api.dependencies import require_platform_admin
+from config import settings  # F7: dev-reset's env guard referenced this un-imported
 from domains.repositories.models import PlatformConfig
 from domains.repositories.schemas import PlatformConfigDTO, SetKillSwitchRequest
 from domains.users.schemas import UserDTO
@@ -20,7 +21,9 @@ _SINGLETON_UID = "singleton"
 
 
 @router.get("", response_model=PlatformConfigDTO, operation_id="opensweep_get_platform_config")
-async def get_config() -> PlatformConfigDTO:
+async def get_config(
+    user: UserDTO = Depends(require_platform_admin),  # F7: was ungated
+) -> PlatformConfigDTO:
     cfg = await PlatformConfig.nodes.get_or_none(uid=_SINGLETON_UID)
     if cfg is None:
         return PlatformConfigDTO(global_kill_switch=False, updated_at=None)

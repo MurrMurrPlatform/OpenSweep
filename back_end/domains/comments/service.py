@@ -153,8 +153,17 @@ async def comment_briefing_for_target(target: dict[str, Any]) -> str:
     return "# Comments on the items this run targets\n\n" + "\n\n".join(sections)
 
 
-async def render_mentioned_items(refs: list[dict[str, str]]) -> str:
-    """Snapshots of the data items a comment @-mentions, prompt-ready."""
+async def render_mentioned_items(
+    refs: list[dict[str, str]], allowed_repo_uids: set[str]
+) -> str:
+    """Snapshots of the data items a comment @-mentions, prompt-ready.
+
+    Tenancy (F2): `@[Label](type:uid)` mentions are attacker-controlled uids.
+    Each resolved item is dropped unless its `repository_uid` is one the
+    caller's org may see (`allowed_repo_uids`). Without this an @opensweep run
+    could be steered to snapshot — and echo back — another org's finding /
+    ticket / PR / doc / run. An empty scope fails closed (nothing renders).
+    """
     parts: list[str] = []
     for ref in refs:
         kind, uid = ref.get("type", ""), ref.get("uid", "")
@@ -162,7 +171,7 @@ async def render_mentioned_items(refs: list[dict[str, str]]) -> str:
             from domains.tickets.models import TicketGroupProposal
 
             group = await TicketGroupProposal.nodes.get_or_none(uid=uid)
-            if group is not None:
+            if group is not None and group.repository_uid in allowed_repo_uids:
                 members = ", ".join(group.member_ticket_uids or []) or "(none)"
                 parts.append(
                     f"- group {uid}: “{group.title}” (status={group.status}, "
@@ -174,7 +183,7 @@ async def render_mentioned_items(refs: list[dict[str, str]]) -> str:
         except ValueError:
             continue
         subject = await get_subject(subject_type, uid)
-        if subject is not None:
+        if subject is not None and subject.repository_uid in allowed_repo_uids:
             snapshot = subject_snapshot(subject_type, subject).replace("\n", "\n  ")
             parts.append(f"- {snapshot}")
     if not parts:

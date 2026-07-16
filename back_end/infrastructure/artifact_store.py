@@ -72,6 +72,19 @@ def _path_from_uri(uri: str) -> Optional[Path]:
     return _root() / _safe(parts[0]) / _safe(parts[1]) / _safe(parts[2])
 
 
+def repository_uid_of(uri: str) -> str:
+    """The repository uid an artifact URI resolves to (F8).
+
+    Applies the SAME `_safe` normalization the on-disk path uses, so the org
+    check in the artifacts route can never diverge from the segment that
+    actually addresses the blob. Empty for a non-artifact URI."""
+    prefix = f"{_SCHEME}://"
+    if not uri.startswith(prefix):
+        return ""
+    parts = uri[len(prefix):].split("/")
+    return _safe(parts[0]) if parts and parts[0] else ""
+
+
 def get(uri: str) -> Optional[bytes]:
     p = _path_from_uri(uri)
     if not p or not p.exists():

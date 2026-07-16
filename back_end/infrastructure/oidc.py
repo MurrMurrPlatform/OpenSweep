@@ -70,17 +70,24 @@ async def _refresh_jwks() -> None:
         body = res.json()
     keys: dict[str, PyJWK] = {}
     for jwk in body.get("keys", []):
+        kid = jwk.get("kid", "")
+        if not kid:
+            # A key with no `kid` would collide on the "" slot and could be
+            # resolved by a kid-less token — skip it (F8).
+            logger.warning("OIDC: skipping JWKS key with no kid")
+            continue
         try:
-            parsed = PyJWK(jwk)
-            keys[jwk.get("kid", "")] = parsed
+            keys[kid] = PyJWK(jwk)
         except Exception as exc:  # unsupported key type — skip, don't fail auth
-            logger.warning(f"OIDC: skipping JWKS key {jwk.get('kid')}: {exc}")
+            logger.warning(f"OIDC: skipping JWKS key {kid}: {exc}")
     _keys = keys
     _last_fetch = time.monotonic()
     logger.info(f"OIDC: JWKS refreshed ({len(keys)} keys) from {url}")
 
 
 async def _signing_key(kid: str) -> PyJWK | None:
+    if not kid:
+        return None  # a token with no kid must never resolve a key (F8)
     if kid in _keys:
         return _keys[kid]
     async with _fetch_lock:
@@ -161,25 +168,56 @@ _ORG_CLAIM = "urn:zitadel:iam:user:resourceowner:id"
 _ORG_NAME_CLAIM = "urn:zitadel:iam:user:resourceowner:name"
 
 
-def zitadel_roles(claims: dict) -> set[str]:
-    """Role keys across the generic and project-id-scoped roles claims."""
+def zitadel_roles(claims: dict, project_id: str = "") -> set[str]:
+    """Role keys from the roles claims.
+
+    Tenancy (F5): when `project_id` is given, only OpenSweep's own project is
+    trusted — the generic roles claim (Zitadel mints it for the token's primary
+    audience) plus the claim scoped to that project id. This stops an `admin`
+    role granted in some OTHER project on the same Zitadel issuer from being
+    read as an OpenSweep grant. With no project configured (dev) the previous
+    permissive behavior is kept for back-compat.
+    """
+    project_id = (project_id or "").strip()
+    scoped_claim = (
+        f"urn:zitadel:iam:org:project:{project_id}:roles" if project_id else ""
+    )
     roles: set[str] = set()
     for key, value in claims.items():
-        if key == _ROLES_CLAIM or (
-            key.startswith("urn:zitadel:iam:org:project:") and key.endswith(":roles")
-        ):
-            if isinstance(value, dict):
+        if not isinstance(value, dict):
+            continue
+        if key == _ROLES_CLAIM:
+            roles.update(value.keys())
+        elif project_id:
+            if key == scoped_claim:
                 roles.update(value.keys())
+        elif key.startswith("urn:zitadel:iam:org:project:") and key.endswith(":roles"):
+            roles.update(value.keys())
     return roles
 
 
+def _opensweep_project_id() -> str:
+    return (getattr(settings, "ZITADEL_PROJECT_ID", "") or "").strip()
+
+
 def map_opensweep_role(claims: dict) -> str:
-    """Highest OpenSweep role asserted in the token; least-privilege default."""
-    granted = zitadel_roles(claims)
+    """Highest OpenSweep role asserted in the token; least-privilege default.
+
+    Pinned to OpenSweep's project (F5) so a foreign project's role names can't
+    grant in-org capabilities on the pre-provisioned-org join seam."""
+    granted = zitadel_roles(claims, _opensweep_project_id())
     for role in ("admin", "maintainer", "viewer"):
         if role in granted:
             return role
     return "viewer"
+
+
+def is_platform_admin_claim(claims: dict) -> bool:
+    """True iff the token asserts the OpenSweep instance-operator role.
+
+    Pinned to OpenSweep's project id (F5): a bare `admin` role from an
+    unrelated app on the same issuer must NOT confer platform-admin."""
+    return "admin" in zitadel_roles(claims, _opensweep_project_id())
 
 
 def primary_org_id(claims: dict) -> str:

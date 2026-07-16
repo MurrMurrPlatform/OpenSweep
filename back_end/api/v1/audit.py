@@ -17,7 +17,7 @@ from api.dependencies import get_current_user
 from domains.events.models import Event
 from domains.events.schemas import EventDTO
 from domains.tenancy import org_repo_uids
-from domains.users.schemas import UserDTO, role_at_least
+from domains.users.schemas import UserDTO
 
 router = APIRouter(prefix="/api/v1/audit", tags=["audit"])
 
@@ -56,7 +56,11 @@ async def list_events(
     for admins only.
     """
     allowed = await org_repo_uids(user.org_uid)
-    is_admin = role_at_least(user.role, "admin")
+    # Platform-level events (no repository) are instance-operator-only. This
+    # MUST be is_platform_admin, not the in-ORG capability role (F3): every
+    # personal-org owner is role="admin", so role_at_least would expose
+    # instance-wide events to any tenant.
+    is_admin = user.is_platform_admin
     nodes = await Event.nodes.all()
     out: list[EventDTO] = []
     for e in nodes:
@@ -84,6 +88,6 @@ async def get_event(uid: str, user: UserDTO = Depends(get_current_user)):
     if e is None:
         raise HTTPException(status_code=404, detail=f"Event {uid} not found")
     allowed = await org_repo_uids(user.org_uid)
-    if not _visible(e, allowed, role_at_least(user.role, "admin")):
+    if not _visible(e, allowed, user.is_platform_admin):  # is_platform_admin, not org role (F3)
         raise HTTPException(status_code=404, detail="not found")
     return _to_dto(e)

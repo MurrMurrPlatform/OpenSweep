@@ -143,6 +143,14 @@ class ResolutionService:
         pr = await PullRequest.nodes.get_or_none(uid=pull_request_uid)
         if pr is None:
             raise HTTPException(status_code=404, detail=f"PullRequest {pull_request_uid} not found")
+        # Tenancy choke point (F1): a Finding may only be bound to a PR in its
+        # OWN repository. The platform-tool caller is pinned to the PR's repo,
+        # but finding_uid is client-supplied — without this every caller of
+        # ensure() (incl. the MCP bind-finding tool) could launder another
+        # org's Finding into this PR's convergence ledger. 404, not 409, so a
+        # foreign uid never leaks its existence.
+        if finding.repository_uid != pr.repository_uid:
+            raise HTTPException(status_code=404, detail=f"Finding {finding_uid} not found")
         state, waive_reason = initial_resolution_state_for_finding(
             finding.status or "", dict(finding.evidence or {})
         )

@@ -32,6 +32,10 @@ def _prod(**overrides) -> SimpleNamespace:
         ENVIRONMENT="production",
         OPENSWEEP_AUTH_TOKEN="a-real-token",
         ZITADEL_ISSUER="",
+        # Audience pin (F5): a hardened config that enables Zitadel also pins
+        # the accepted audience, so enabling the issuer alone stays clean.
+        ZITADEL_CLIENT_ID="spa-app-id",
+        ZITADEL_PROJECT_ID="",
         NEO4J_PASSWORD="a-strong-password",
         OPENSWEEP_SECRETS_KEY="a-secrets-key-16-chars-plus",
         OPENSWEEP_STATE_SIGNING_SECRET="a-state-secret",
@@ -109,6 +113,18 @@ def test_production_koalapassword_is_also_rejected():
     errors = production_config_errors(_prod(NEO4J_PASSWORD="koalapassword"))
     assert len(errors) == 1
     assert "NEO4J_PASSWORD" in errors[0]
+
+
+def test_zitadel_issuer_without_audience_pin_blocks_boot():
+    # F5: an issuer set but no client/project id = accept-any-audience → refuse.
+    errors = production_config_errors(
+        _prod(ZITADEL_ISSUER="https://auth.example.com", ZITADEL_CLIENT_ID="", ZITADEL_PROJECT_ID="")
+    )
+    assert any("ZITADEL_CLIENT_ID" in e or "ZITADEL_PROJECT_ID" in e for e in errors)
+    # Either identifier alone satisfies the pin.
+    assert production_config_errors(
+        _prod(ZITADEL_ISSUER="https://auth.example.com", ZITADEL_CLIENT_ID="", ZITADEL_PROJECT_ID="proj-1")
+    ) == []
 
 
 def test_production_fully_configured_is_clean():

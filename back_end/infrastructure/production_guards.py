@@ -56,6 +56,24 @@ def production_config_errors(s) -> list[str]:
 
     auth_token = (getattr(s, "OPENSWEEP_AUTH_TOKEN", "") or "").strip()
     zitadel_issuer = (getattr(s, "ZITADEL_ISSUER", "") or "").strip()
+
+    # Audience pin (F5): with an issuer but no client/project id, OIDC accepts
+    # ANY audience from the issuer — a token minted for an unrelated app on the
+    # same Zitadel is honored, and its roles could confer platform-admin.
+    # Refuse to boot a production instance in that accept-any state.
+    if zitadel_issuer:
+        client_id = (getattr(s, "ZITADEL_CLIENT_ID", "") or "").strip()
+        project_id = (getattr(s, "ZITADEL_PROJECT_ID", "") or "").strip()
+        if not client_id and not project_id:
+            errors.append(
+                "ENVIRONMENT is production and ZITADEL_ISSUER is set, but neither "
+                "ZITADEL_CLIENT_ID nor ZITADEL_PROJECT_ID is configured — OIDC would "
+                "accept tokens for ANY audience on the issuer (and a foreign "
+                "project's 'admin' role could confer platform-admin). Set "
+                "ZITADEL_CLIENT_ID (the SPA app id) and/or ZITADEL_PROJECT_ID to pin "
+                "the accepted audience to this OpenSweep instance."
+            )
+
     if not auth_token and not zitadel_issuer:
         errors.append(
             "ENVIRONMENT is production but no authentication is configured: "

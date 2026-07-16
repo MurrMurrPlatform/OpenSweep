@@ -25,6 +25,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
+from domains.findings.models import Finding
 from domains.tickets.models import TICKET_ORIGINS, TICKET_PRIORITIES, Ticket
 from domains.tickets.schemas import (
     CreateTicketRequest,
@@ -91,6 +92,18 @@ class TicketService:
             raise HTTPException(status_code=404, detail=f"Ticket {uid} not found")
         return t
 
+    async def _require_ticket_in_repo(self, ticket_uid: str, repository_uid: str) -> None:
+        """404 unless `ticket_uid` exists AND lives in `repository_uid` (F4)."""
+        parent = await Ticket.nodes.get_or_none(uid=ticket_uid)
+        if parent is None or parent.repository_uid != repository_uid:
+            raise HTTPException(status_code=404, detail=f"Ticket {ticket_uid} not found")
+
+    async def _require_finding_in_repo(self, finding_uid: str, repository_uid: str) -> None:
+        """404 unless `finding_uid` exists AND lives in `repository_uid` (F4)."""
+        finding = await Finding.nodes.get_or_none(uid=finding_uid)
+        if finding is None or finding.repository_uid != repository_uid:
+            raise HTTPException(status_code=404, detail=f"Finding {finding_uid} not found")
+
     async def list(
         self,
         *,
@@ -137,12 +150,15 @@ class TicketService:
         origin = req.origin or "human"
         if origin not in TICKET_ORIGINS:
             raise HTTPException(status_code=422, detail=f"invalid origin '{origin}'")
+        # Tenancy (F4): parent_ticket_uid and origin_finding_uid are
+        # client-supplied. The new ticket's own repo is gated at the route, but
+        # these references must live in the SAME repository or they become
+        # cross-org graph edges + an existence oracle for foreign uids. 404
+        # (not 409) so a foreign uid never leaks its existence.
         if req.parent_ticket_uid:
-            parent = await Ticket.nodes.get_or_none(uid=req.parent_ticket_uid)
-            if parent is None:
-                raise HTTPException(
-                    status_code=404, detail=f"parent Ticket {req.parent_ticket_uid} not found"
-                )
+            await self._require_ticket_in_repo(req.parent_ticket_uid, req.repository_uid)
+        if req.origin_finding_uid:
+            await self._require_finding_in_repo(req.origin_finding_uid, req.repository_uid)
         t = Ticket(
             uid=uuid4().hex,
             repository_uid=req.repository_uid,
@@ -176,11 +192,9 @@ class TicketService:
         if "parent_ticket_uid" in changes and changes["parent_ticket_uid"]:
             if changes["parent_ticket_uid"] == uid:
                 raise HTTPException(status_code=422, detail="a ticket cannot be its own parent")
-            parent = await Ticket.nodes.get_or_none(uid=changes["parent_ticket_uid"])
-            if parent is None:
-                raise HTTPException(
-                    status_code=404, detail=f"parent Ticket {changes['parent_ticket_uid']} not found"
-                )
+            # Tenancy (F4): a re-parent may only target a ticket in the SAME
+            # repository as the ticket being edited.
+            await self._require_ticket_in_repo(changes["parent_ticket_uid"], t.repository_uid)
         for field, value in changes.items():
             setattr(t, field, value)
         t.updated_at = datetime.now(UTC)

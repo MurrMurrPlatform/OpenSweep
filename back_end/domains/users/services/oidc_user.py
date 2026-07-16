@@ -31,9 +31,9 @@ from domains.users.models import User
 from domains.users.schemas import UserDTO
 from infrastructure.oidc import (
     fetch_userinfo,
+    is_platform_admin_claim,
     map_opensweep_role,
     primary_org_id,
-    zitadel_roles,
 )
 from logging_config import logger
 
@@ -126,11 +126,18 @@ async def _provision_new_user(
 async def resolve_oidc_user(claims: dict, access_token: str = "") -> UserDTO:
     sub = str(claims.get("sub", ""))
     now = time.monotonic()
+    # Derived fresh from THIS request's (signature-verified) claims every call,
+    # and pinned to OpenSweep's project (F5). Recomputed even on a cache hit
+    # (F6) so an operator whose `admin` role was removed at the IdP loses
+    # platform-admin immediately instead of after the cache TTL.
+    is_platform_admin = is_platform_admin_claim(claims)
     hit = _cache.get(sub)
     if hit and hit[0] > now:
-        return hit[1]
-
-    is_platform_admin = "admin" in zitadel_roles(claims)
+        cached = hit[1]
+        if cached.is_platform_admin != is_platform_admin:
+            cached = cached.model_copy(update={"is_platform_admin": is_platform_admin})
+            _cache[sub] = (hit[0], cached)
+        return cached
     email = str(claims.get("email", "") or "")
     name = str(claims.get("name", "") or claims.get("preferred_username", "") or "")
     idp_org_id = primary_org_id(claims)

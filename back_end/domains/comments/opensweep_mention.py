@@ -113,7 +113,25 @@ async def trigger_opensweep_reply(
         from domains.investigations.services.lifecycle import trigger_run
 
         thread = await render_thread(subject_type, comment.subject_uid)
-        mentioned = await render_mentioned_items(list(comment.mentions or []))
+        # Scope @-mentions to the org that owns the thread's subject (F2): the
+        # subject was already tenancy-checked at write time, so its repo's org
+        # is the caller's org. Mentions outside that org's repos are dropped.
+        # The thread's own repo is always in scope; resolving the full org set
+        # is best-effort so a DB hiccup narrows the scope rather than aborting
+        # the reply.
+        allowed_repo_uids = {subject.repository_uid}
+        try:
+            from domains.repositories.models import Repository
+            from domains.tenancy import org_repo_uids
+
+            repo = await Repository.nodes.get_or_none(uid=subject.repository_uid)
+            if repo is not None:
+                allowed_repo_uids = await org_repo_uids(repo.org_uid)
+        except Exception:  # noqa: BLE001 — narrow scope, never block the reply
+            pass
+        mentioned = await render_mentioned_items(
+            list(comment.mentions or []), allowed_repo_uids
+        )
         # Specialized refine run: the comment-reply template IS the
         # instructions (custom_intent), so a replace overlay never displaces
         # its reply contract; org append guidance still stacks.
