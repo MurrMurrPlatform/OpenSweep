@@ -108,12 +108,6 @@ class TokenAuthMiddleware:
         opensweep = headers.get(b"x-opensweep-auth", b"").decode("latin-1").strip()
         if opensweep:
             return opensweep
-        # Legacy header from the Koala era — accepted for one release so
-        # existing external clients keep working; remove after the rebrand
-        # transition window.
-        legacy = headers.get(b"x-koala-auth", b"").decode("latin-1").strip()
-        if legacy:
-            return legacy
         # Query-param fallback for header-less clients: WebSocket handshakes
         # only. Not accepted on the general REST surface — tokens don't
         # belong in URLs/access logs.

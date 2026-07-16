@@ -209,34 +209,59 @@ async def test_existing_user_keeps_opensweep_managed_role(oidc_module):
     assert dto.is_platform_admin is True  # the one claim with authz meaning
 
 
-async def test_new_user_joins_legacy_idp_org(oidc_module):
-    """Second-deployment compat: when an Organization node keyed by the
-    Zitadel org id already exists (pre-membership scheme), colleagues from
-    that IdP org join it instead of getting personal orgs."""
+async def test_idp_org_join_seam_is_opt_in_and_least_privilege(oidc_module, monkeypatch):
+    """H3: the IdP-org join seam (join an existing Organization keyed by the
+    Zitadel resourceowner id) is OFF by default — a new user always gets a
+    personal org, so the IdP-controlled claim can't drop them into another
+    tenant. When an operator opts in, the joiner's role is NEVER taken from the
+    token: only the bootstrapping first member is owner/admin; later joiners
+    are least-privilege viewers."""
     oidc_module._test_orgs.store["z-org-1"] = _FakeNode(uid="z-org-1", name="Legacy")
-    claims = {
-        "sub": "u5",
-        "email": "first@b.c",
-        "name": "First",
-        "urn:zitadel:iam:user:resourceowner:id": "z-org-1",
-    }
-    first = await oidc_module.resolve_oidc_user(claims, "token")
+
+    # Default (flag off): personal org, NOT the pre-existing tenant.
+    monkeypatch.setattr(oidc_module.settings, "OPENSWEEP_ALLOW_IDP_ORG_JOIN", False)
+    solo = await oidc_module.resolve_oidc_user(
+        {
+            "sub": "u5",
+            "email": "solo@b.c",
+            "name": "Solo",
+            "urn:zitadel:iam:user:resourceowner:id": "z-org-1",
+        },
+        "token",
+    )
+    assert solo.org_uid == "org-of-u5"  # own personal org
+    assert solo.org_role == "owner"
+
+    # Opt in: first member of the empty legacy org bootstraps ownership.
+    monkeypatch.setattr(oidc_module.settings, "OPENSWEEP_ALLOW_IDP_ORG_JOIN", True)
+    first = await oidc_module.resolve_oidc_user(
+        {
+            "sub": "u6",
+            "email": "first@b.c",
+            "name": "First",
+            "urn:zitadel:iam:user:resourceowner:id": "z-org-1",
+        },
+        "token",
+    )
     assert first.org_uid == "z-org-1"
-    assert first.org_role == "owner"  # first member becomes owner
+    assert first.org_role == "owner"
     assert first.role == "admin"
 
-    claims2 = {
-        "sub": "u6",
-        "email": "second@b.c",
-        "name": "Second",
-        "urn:zitadel:iam:user:resourceowner:id": "z-org-1",
-        "urn:zitadel:iam:org:project:roles": {"maintainer": {}},
-    }
-    second = await oidc_module.resolve_oidc_user(claims2, "token")
+    # A later joiner is a least-privilege viewer — the token's maintainer claim
+    # must NOT confer an in-org capability role.
+    second = await oidc_module.resolve_oidc_user(
+        {
+            "sub": "u7",
+            "email": "second@b.c",
+            "name": "Second",
+            "urn:zitadel:iam:user:resourceowner:id": "z-org-1",
+            "urn:zitadel:iam:org:project:roles": {"maintainer": {}},
+        },
+        "token",
+    )
     assert second.org_uid == "z-org-1"
     assert second.org_role == "member"
-    assert second.role == "maintainer"  # legacy joiners keep claim-derived role
-    assert oidc_module._test_created_orgs == []  # nobody got a personal org
+    assert second.role == "viewer"
 
 
 async def test_placeholder_identity_heals_on_next_login(oidc_module):

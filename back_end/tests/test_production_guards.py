@@ -6,6 +6,7 @@ import pytest
 
 from infrastructure.production_guards import (
     auth_config_errors,
+    deployed_config_errors,
     enforce_production_guards,
     is_production,
     production_config_errors,
@@ -103,16 +104,30 @@ def test_zitadel_alone_satisfies_auth():
     assert production_config_errors(s) == []
 
 
-def test_production_default_neo4j_password_is_error_b_only():
-    errors = production_config_errors(_prod(NEO4J_PASSWORD="opensweeppassword"))
-    assert len(errors) == 1
-    assert "NEO4J_PASSWORD" in errors[0]
+def test_default_neo4j_password_rejected_in_deployed_envs():
+    # F8: the known default must be rejected in production AND staging, but is
+    # fine on a local/dev stack (data-coupled to the dev Neo4j container).
+    for env in ("production", "staging"):
+        errors = deployed_config_errors(
+            _prod(ENVIRONMENT=env, NEO4J_PASSWORD="opensweeppassword")
+        )
+        assert any("NEO4J_PASSWORD" in e for e in errors), env
+    assert deployed_config_errors(_prod(ENVIRONMENT="staging", NEO4J_PASSWORD="koalapassword"))
+    # Local/dev keeps the coupled default without tripping the guard.
+    assert deployed_config_errors(_prod(ENVIRONMENT="local", NEO4J_PASSWORD="koalapassword")) == []
 
 
-def test_production_koalapassword_is_also_rejected():
-    errors = production_config_errors(_prod(NEO4J_PASSWORD="koalapassword"))
-    assert len(errors) == 1
-    assert "NEO4J_PASSWORD" in errors[0]
+def test_enforce_rejects_default_neo4j_password_in_staging():
+    # enforce_production_guards wires deployed_config_errors, so a non-prod
+    # deployed env with the default DB password still fails the boot.
+    with pytest.raises(RuntimeError, match="NEO4J_PASSWORD"):
+        enforce_production_guards(
+            _prod(
+                ENVIRONMENT="staging",
+                ZITADEL_ISSUER="https://auth.example.com",
+                NEO4J_PASSWORD="koalapassword",
+            )
+        )
 
 
 def test_zitadel_issuer_without_audience_pin_blocks_boot():

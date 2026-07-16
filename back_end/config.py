@@ -62,6 +62,16 @@ class Settings(BaseSettings):
     # instance resolution still matches.
     ZITADEL_INTERNAL_URL: str = ""
 
+    # First-login org membership (F5/H3). By default a brand-new user always
+    # gets their OWN personal org. Legacy/migrated instances that provisioned
+    # Organization nodes keyed by the Zitadel resourceowner id (the phase-2
+    # scheme, where the IdP org WAS the OpenSweep org) can opt back into
+    # "colleagues from the same IdP org land together" by setting this True.
+    # Left off, the IdP `resourceowner:id` claim can never place a new user
+    # into an existing tenant — closing the org-join seam. Even when on, a
+    # joiner's in-org capability role is NEVER taken from the token.
+    OPENSWEEP_ALLOW_IDP_ORG_JOIN: bool = False
+
     # Writable sandbox workspace for disposable agent inspection clones.
     # Inside-container paths the backend writes to:
     OPENSWEEP_SANDBOX_HOST_MOUNT: str = "/host/sandboxes"

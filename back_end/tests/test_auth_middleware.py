@@ -75,11 +75,11 @@ def test_allows_x_opensweep_auth_header(client):
     assert res.status_code == 200
 
 
-def test_allows_legacy_x_koala_auth_header(client):
-    # One-release rebrand compat — remove with the legacy header support.
-    res = client.get("/api/v1/thing", headers={"X-Koala-Auth": TOKEN})
-    assert res.status_code == 200
-    assert client.get("/api/v1/thing", headers={"X-Koala-Auth": "nope"}).status_code == 401
+def test_legacy_x_koala_auth_header_no_longer_honored(client):
+    # The Koala-era rebrand-compat header has been removed (F8): even the
+    # correct token in X-Koala-Auth must NOT authenticate — only the
+    # X-OpenSweep-Auth / Authorization surfaces remain.
+    assert client.get("/api/v1/thing", headers={"X-Koala-Auth": TOKEN}).status_code == 401
 
 
 def test_query_param_rejected_on_plain_rest(client):

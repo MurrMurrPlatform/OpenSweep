@@ -64,9 +64,6 @@ MCP_FORWARD_HEADERS = [
     "authorization",
     "x-opensweep-auth",
     "x-opensweep-run-uid",
-    # Legacy Koala-era names — accepted for one release, then remove.
-    "x-koala-auth",
-    "x-koala-run-uid",
 ]
 
 

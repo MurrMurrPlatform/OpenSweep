@@ -19,6 +19,7 @@ re-derived from the token on every cache miss — it is never stored.
 import asyncio
 import time
 
+from config import settings
 from domains.organizations.models import Organization
 from domains.organizations.services.provisioning import (
     create_personal_org,
@@ -32,7 +33,6 @@ from domains.users.schemas import UserDTO
 from infrastructure.oidc import (
     fetch_userinfo,
     is_platform_admin_claim,
-    map_opensweep_role,
     primary_org_id,
 )
 from logging_config import logger
@@ -88,18 +88,25 @@ async def _provision_new_user(
         logger.info(f"OIDC: {email} joined org {inv.org_uid} via invitation {inv.uid}")
         return user
 
-    if idp_org_id and await Organization.nodes.get_or_none(uid=idp_org_id):
-        # Second-deployment seam: this instance provisioned orgs from the
-        # Zitadel resourceowner before OpenSweep owned membership (the dev/prod
-        # setup scripts also stamp repos into such an org). Colleagues from
-        # that IdP org keep landing together instead of being split into
-        # personal orgs. Fresh instances never mint these Organization nodes.
+    if (
+        settings.OPENSWEEP_ALLOW_IDP_ORG_JOIN
+        and idp_org_id
+        and await Organization.nodes.get_or_none(uid=idp_org_id)
+    ):
+        # Second-deployment seam (H3), OFF by default. Only legacy/migrated
+        # instances that provisioned Organization nodes keyed by the Zitadel
+        # resourceowner id opt into "colleagues from the same IdP org land
+        # together" (OPENSWEEP_ALLOW_IDP_ORG_JOIN). Without the flag the
+        # attacker-influenceable resourceowner claim can never drop a new user
+        # into an existing tenant. Even here the joiner's in-org capability
+        # role is NEVER taken from the token — a non-first member is a
+        # least-privilege viewer until an owner promotes them.
         first = await org_member_count(idp_org_id) == 0
         user = await User(
             uid=sub,
             email=email,
             display_name=name,
-            role="admin" if first else map_opensweep_role(claims),
+            role="admin" if first else "viewer",
             org_uid=idp_org_id,
             org_role="owner" if first else "member",
             onboarded=True,

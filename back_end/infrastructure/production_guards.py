@@ -24,6 +24,36 @@ def is_production(env: str) -> bool:
     return (env or "").strip().lower() in ("production", "prod")
 
 
+def is_deployed(env: str) -> bool:
+    """Any environment that isn't a throwaway local/dev/test workstation —
+    a superset of production (staging, prod, …)."""
+    return (env or "").strip().lower() not in ("", "local", "dev", "development", "test")
+
+
+# Neo4j credentials shipped as defaults (config.py / docker-compose): acceptable
+# on a local stack, never on a deployed instance.
+_DEFAULT_NEO4J_PASSWORDS = {"opensweeppassword", "koalapassword"}
+
+
+def deployed_config_errors(s) -> list[str]:
+    """Hard errors for any deployed (non-local) environment (F8).
+
+    A well-known default DB password is fine on a disposable local stack but
+    must never reach a deployed instance — production OR staging. Broader than
+    `production_config_errors`, which only bites ENVIRONMENT=production."""
+    if not is_deployed(getattr(s, "ENVIRONMENT", "")):
+        return []
+    errors: list[str] = []
+    if getattr(s, "NEO4J_PASSWORD", "") in _DEFAULT_NEO4J_PASSWORDS:
+        errors.append(
+            "ENVIRONMENT is deployed (non-local) but NEO4J_PASSWORD is still a "
+            "well-known default ('opensweeppassword' or 'koalapassword'). Set a "
+            "strong NEO4J_PASSWORD (and update the Neo4j container credentials to "
+            "match)."
+        )
+    return errors
+
+
 def auth_config_errors(s) -> list[str]:
     """Hard errors in EVERY environment.
 
@@ -84,14 +114,8 @@ def production_config_errors(s) -> list[str]:
             "ZITADEL_ISSUER for OIDC login."
         )
 
-    _DEFAULT_NEO4J_PASSWORDS = {"opensweeppassword", "koalapassword"}
-    if getattr(s, "NEO4J_PASSWORD", "") in _DEFAULT_NEO4J_PASSWORDS:
-        errors.append(
-            "ENVIRONMENT is production but NEO4J_PASSWORD is still a "
-            "well-known default ('opensweeppassword' or 'koalapassword'). "
-            "Set a strong NEO4J_PASSWORD "
-            "(and update the Neo4j container credentials to match)."
-        )
+    # NEO4J default-password check lives in deployed_config_errors (fires for
+    # production AND staging), wired into enforce_production_guards below.
 
     secrets_key = (getattr(s, "OPENSWEEP_SECRETS_KEY", "") or "").strip()
     if secrets_key and len(secrets_key) < 16:
@@ -134,6 +158,10 @@ def enforce_production_guards(s) -> None:
     """Log every warning; raise RuntimeError joining all hard errors."""
     for warning in production_config_warnings(s):
         logger.warning(warning)
-    errors = auth_config_errors(s) + production_config_errors(s)
+    errors = (
+        auth_config_errors(s)
+        + deployed_config_errors(s)
+        + production_config_errors(s)
+    )
     if errors:
         raise RuntimeError("\n".join(errors))
