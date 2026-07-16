@@ -31,6 +31,7 @@ import httpx
 
 from domains.llm_providers.models import LLMProvider
 from domains.llm_providers.services.credentials import provider_secret
+from infrastructure.process_tree import kill_tree, process_group_kwargs
 from logging_config import logger
 
 _HTTP_KINDS = {"claude_api", "openai_api", "mlx", "lmstudio", "ollama"}
@@ -217,6 +218,9 @@ async def _run_cli(
         env=env,
         cwd=working_dir or None,
         limit=16 * 1024 * 1024,
+        # Group leader, so the timeout kill reaches the CLI's MCP bridge
+        # (npx/mcp-remote) and Bash-tool children too (see process_tree).
+        **process_group_kwargs(),
     )
 
     stdout_parts: list[str] = []
@@ -250,7 +254,7 @@ async def _run_cli(
         else:
             await asyncio.wait_for(pumps, timeout=timeout_seconds)
     except TimeoutError:
-        proc.kill()
+        kill_tree(proc)
         try:
             await proc.wait()
         except Exception:
