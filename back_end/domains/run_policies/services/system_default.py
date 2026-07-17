@@ -27,19 +27,19 @@ LEGACY_DEFAULT_MAX_WALL_SECONDS = (300, 600)
 # tagged limit_exceeded and never pushed (no branch, no draft PR). A policy
 # still sitting on the exact old seeded value was never human-tuned, so the
 # upsert migrates it forward to the current _DEFAULTS; any other value is
-# preserved. Keyed by field name → the exact legacy value to migrate off.
+# preserved. Keyed by field name → the exact legacy values to migrate off.
 LEGACY_DEFAULT_CEILINGS = {
-    "max_dollars": 1.0,
-    "max_tool_turns": 40,
-    "max_files_touched": 50,
+    "max_dollars": (1.0, 3.0),
+    "max_tool_turns": (40,),
+    "max_files_touched": (50,),
 }
 
 
 _DEFAULTS = {
-    "description": "OpenSweep v1 default -- sensible ceilings, cloud allowed, $3/run cap.",
+    "description": "OpenSweep v1 default -- sensible ceilings, cloud allowed, $20/run cap.",
     # Cost ceilings
     "max_tokens": None,
-    "max_dollars": 3.0,
+    "max_dollars": 20.0,
     # Operational ceilings. Sized for a real write-path implement run: it
     # reads, edits, runs tests, and does doc/memory upkeep, which routinely
     # exceeds 40 tool turns. Too-tight ceilings silently convert finished,
@@ -84,8 +84,8 @@ async def ensure_system_default() -> RunPolicy:
         if int(existing.max_wall_seconds or 0) in LEGACY_DEFAULT_MAX_WALL_SECONDS:
             existing.max_wall_seconds = DEFAULT_MAX_WALL_SECONDS
             dirty = True
-        for field, legacy_value in LEGACY_DEFAULT_CEILINGS.items():
-            if getattr(existing, field, None) == legacy_value:
+        for field, legacy_values in LEGACY_DEFAULT_CEILINGS.items():
+            if getattr(existing, field, None) in legacy_values:
                 setattr(existing, field, _DEFAULTS[field])
                 dirty = True
         if dirty:

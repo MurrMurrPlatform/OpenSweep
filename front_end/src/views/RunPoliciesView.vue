@@ -47,6 +47,8 @@ const editingUid = ref<string | null>(null)
 type PolicyForm = {
   name: string
   description: string
+  max_dollars: number | ''
+  max_tokens: number | ''
   max_wall_seconds: number | ''
   max_tool_turns: number | ''
   max_files_touched: number | ''
@@ -60,6 +62,8 @@ type PolicyForm = {
 const emptyForm = (): PolicyForm => ({
   name: '',
   description: '',
+  max_dollars: 20,
+  max_tokens: '',
   max_wall_seconds: 600,
   max_tool_turns: 40,
   max_files_touched: 40,
@@ -97,6 +101,8 @@ function startEdit(p: RunPolicyDTO) {
     description: p.description ?? '',
     // Preserve null (unlimited) — don't fall back to a default that would
     // silently cap a previously-unlimited policy on the next save.
+    max_dollars: p.max_dollars ?? '',
+    max_tokens: p.max_tokens ?? '',
     max_wall_seconds: p.max_wall_seconds ?? '',
     max_tool_turns: p.max_tool_turns ?? '',
     max_files_touched: p.max_files_touched ?? '',
@@ -116,6 +122,8 @@ async function save() {
     const payload = {
       name: form.name,
       description: form.description,
+      max_dollars: numOrNull(form.max_dollars),
+      max_tokens: numOrNull(form.max_tokens),
       max_wall_seconds: numOrNull(form.max_wall_seconds),
       max_tool_turns: numOrNull(form.max_tool_turns),
       max_files_touched: numOrNull(form.max_files_touched),
@@ -188,6 +196,14 @@ async function confirmRemove() {
           <div class="sm:col-span-2">
             <Label for="policy-description" class="mb-1 block text-xs uppercase tracking-wide text-muted-foreground">Description</Label>
             <Input id="policy-description" v-model="form.description" placeholder="Short summary of intent" />
+          </div>
+          <div>
+            <Label for="policy-dollars" class="mb-1 block text-xs uppercase tracking-wide text-muted-foreground">Max $ / run</Label>
+            <Input id="policy-dollars" v-model.number="form.max_dollars" type="number" step="0.5" min="0" placeholder="∞ unlimited" />
+          </div>
+          <div>
+            <Label for="policy-tokens" class="mb-1 block text-xs uppercase tracking-wide text-muted-foreground">Max tokens</Label>
+            <Input id="policy-tokens" v-model.number="form.max_tokens" type="number" placeholder="∞ unlimited" />
           </div>
           <div>
             <Label for="policy-wall" class="mb-1 block text-xs uppercase tracking-wide text-muted-foreground">Max wall (s)</Label>
@@ -267,6 +283,7 @@ async function confirmRemove() {
               </div>
               <div class="text-xs text-muted-foreground">{{ p.description }}</div>
               <div class="text-xs text-muted-foreground font-mono mt-1 break-all">
+                ${{ p.max_dollars ?? '∞' }} · tokens={{ p.max_tokens ?? '∞' }} ·
                 wall={{ p.max_wall_seconds ?? '∞' }}s · turns={{ p.max_tool_turns ?? '∞' }} · files={{ p.max_files_touched ?? '∞' }} ·
                 cloud={{ p.cloud_allowed }} · local_only={{ p.local_only }} · dry_run={{ p.dry_run }} · on_exceed={{ p.on_exceed }}
               </div>
