@@ -6,7 +6,12 @@ construction, so injecting `provider.model` covers both the provider's own
 model and the per-stage override.
 """
 
-from domains.llm_providers.services.llm_executor import with_model_flag
+import shlex
+
+import pytest
+
+from domains.llm_providers.schemas import default_cli_template
+from domains.llm_providers.services.llm_executor import _render_template, with_model_flag
 
 
 def test_claude_gets_model_appended_when_template_lacks_placeholder():
@@ -61,3 +66,38 @@ def test_codex_short_model_flag_is_respected():
 def test_other_kinds_pass_through():
     argv = ["opencode", "run", "hi"]
     assert with_model_flag(argv, kind="opencode", model="x", template="opencode run {{instruction_q}}") == argv
+
+
+# ── Seeded template quoting — argv-flag injection hardening ────────────────
+# The opencode/aider seeds must use the shlex-quoted {{model_q}} placeholder:
+# a model slug is config-controlled data and has to land as ONE argv token,
+# never split into extra flags for the executor's subprocess.
+
+
+@pytest.mark.parametrize("kind", ["opencode", "aider"])
+def test_seeded_templates_quote_the_model_slug(kind):
+    template = default_cli_template(kind)
+    assert "{{model}}" not in template
+    assert "{{model_q}}" in template
+
+
+@pytest.mark.parametrize("kind", ["opencode", "aider"])
+def test_hostile_model_slug_stays_one_argv_token(kind):
+    hostile = "x --load-plugin /tmp/evil"
+    rendered = _render_template(
+        default_cli_template(kind), system_prompt="s", instruction="i", model=hostile
+    )
+    argv = shlex.split(rendered)
+    assert hostile in argv          # the whole slug is a single token
+    assert "--load-plugin" not in argv
+
+
+@pytest.mark.parametrize("kind", ["opencode", "aider"])
+def test_benign_model_slug_renders_unchanged(kind):
+    rendered = _render_template(
+        default_cli_template(kind),
+        system_prompt="s",
+        instruction="i",
+        model="opensweep/Qwen3.6-35B-A3B-4bit",
+    )
+    assert "opensweep/Qwen3.6-35B-A3B-4bit" in shlex.split(rendered)

@@ -93,7 +93,8 @@ def _baseline_providers() -> list[dict[str, Any]]:
             # into opencode.json by llm_executor._prepare_opencode_config; the
             # suffix is the model id the OMLX server exposes.
             "model": "opensweep/Qwen3.6-35B-A3B-4bit",
-            "cli_command_template": "opencode run -m {{model}} {{instruction_q}}",
+            # {{model_q}} (shlex-quoted) keeps the model slug one argv token.
+            "cli_command_template": "opencode run -m {{model_q}} {{instruction_q}}",
             "enabled": True,
             "active": False,
         },

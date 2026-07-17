@@ -476,28 +476,37 @@ def _render_template(template: str, *, system_prompt: str, instruction: str,
 
 
 def _build_cli_env(provider: LLMProvider, *, run_uid: str = "", working_dir: str = "") -> dict:
-    env = os.environ.copy()
+    """Allowlist env for the CLI subprocess (§6/§13).
+
+    Agent CLIs execute repo code with tool access inside the sandbox clone,
+    so anything in their environment is readable by that code. The child env
+    is therefore built from `agent_env.build_agent_env`'s explicit allowlist
+    plus the credentials this provider deliberately passes — never an
+    `os.environ` copy, which would hand every platform secret
+    (NEO4J_PASSWORD, OPENSWEEP_AUTH_TOKEN, GITHUB_TOKEN, …) to the agent.
+    Same rule as `mcp_bridge.claude_env` / `turn_cli.codex_turn_env`.
+    """
+    # Late import — the executors domain imports back into llm_providers.
+    from domains.executors.agent_env import build_agent_env
+
+    extra: dict[str, str] = {}
     secret = provider_secret(provider)
     kind = (provider.kind or "").strip()
     base_url = (provider.base_url or "").strip()
 
     if kind == "claude_subscription":
         if secret:
-            env["CLAUDE_CODE_OAUTH_TOKEN"] = secret
-        # Claude Code refuses --permission-mode bypassPermissions when running
-        # as root (which the worker container is). IS_SANDBOX=1 is the
-        # documented escape hatch: it tells the CLI "trust me, this is a
-        # throwaway container." We always invoke Claude inside a sandbox
-        # clone (see SandboxService.create_for_discovery), so this is safe.
-        env["IS_SANDBOX"] = "1"
+            extra["CLAUDE_CODE_OAUTH_TOKEN"] = secret
+        # IS_SANDBOX=1 (Claude's bypassPermissions-as-root escape hatch) is
+        # set by build_agent_env for every agent invocation.
 
     if kind == "aider":
         # aider's OpenAI-compat path: OPENAI_API_BASE + OPENAI_API_KEY. For local
         # servers, the key can be any non-empty string.
         if base_url:
-            env["OPENAI_API_BASE"] = base_url
-            env["OPENAI_BASE_URL"] = base_url   # newer openai-python also reads this
-        env["OPENAI_API_KEY"] = secret or env.get("OPENAI_API_KEY") or "local-dev"
+            extra["OPENAI_API_BASE"] = base_url
+            extra["OPENAI_BASE_URL"] = base_url   # newer openai-python also reads this
+        extra["OPENAI_API_KEY"] = secret or os.environ.get("OPENAI_API_KEY") or "local-dev"
 
     if kind == "opencode":
         # Generate opencode.json from this LLMProvider row + the current run_uid
@@ -507,15 +516,21 @@ def _build_cli_env(provider: LLMProvider, *, run_uid: str = "", working_dir: str
         # provenance). No host bind-mount, no user setup.
         xdg = _prepare_opencode_config(provider, run_uid=run_uid, working_dir=working_dir)
         if xdg:
-            env["XDG_CONFIG_HOME"] = xdg
+            extra["XDG_CONFIG_HOME"] = xdg
         # The underlying openai SDK boots even when we're not calling OpenAI;
         # set a placeholder so it doesn't complain about a missing key.
-        env.setdefault("OPENAI_API_KEY", secret or "local-dev")
+        extra["OPENAI_API_KEY"] = os.environ.get("OPENAI_API_KEY") or secret or "local-dev"
 
     if provider.api_key_env:
-        # Pass through; assume the operator set it on the worker container.
-        pass
-    return env
+        # Operator-declared credential env var set on the worker container —
+        # a named, deliberate pass-through (the allowlist model), not an
+        # inherited-wholesale environment.
+        name = (provider.api_key_env or "").strip()
+        value = os.environ.get(name, "") if name else ""
+        if value:
+            extra[name] = value
+
+    return build_agent_env(run_uid=run_uid, extra=extra)
 
 
 # ── HTTP transport (OpenAI-compatible /chat/completions) ──────────────────

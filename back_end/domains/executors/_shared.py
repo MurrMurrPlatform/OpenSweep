@@ -393,6 +393,45 @@ def _balanced_brace_spans(s: str) -> list[tuple[int, int]]:
     return spans
 
 
+# Envelope tools that reference an existing object by uid instead of carrying
+# a repository_uid; their tenancy gate resolves the target's repository.
+_BY_UID_TOOLS = frozenset({"update_finding", "attach_artifact"})
+
+# Tenancy violations read as "not found" — existence never leaks (tenancy.py).
+_SCOPE_ERROR = "not found"
+
+
+async def _envelope_target_repository_uid(name: str, args: dict[str, Any]) -> str:
+    """repository_uid of the object a by-uid envelope call targets ("" when
+    the target does not exist). Mirrors the per-endpoint resolution in
+    `api/v1/platform_tools.py`. Lazy imports — these domains import the
+    executors package back at call time."""
+    if name == "update_finding":
+        from domains.findings.models import Finding
+
+        node = await Finding.nodes.get_or_none(uid=str(args.get("finding_uid") or ""))
+        return (node.repository_uid or "") if node else ""
+    # attach_artifact — same target map as _artifact_target_repository_uid.
+    from domains.delivery.models import PullRequest
+    from domains.docs.models import Doc
+    from domains.findings.models import Finding
+    from domains.memory.models import Memory
+    from domains.tickets.models import Ticket
+
+    models = {
+        "run": Run,
+        "finding": Finding,
+        "doc": Doc,
+        "memory": Memory,
+        "ticket": Ticket,
+        "pull_request": PullRequest,
+        "pullrequest": PullRequest,
+    }
+    model = models.get(str(args.get("target_type") or "").strip().lower())
+    node = await model.nodes.get_or_none(uid=str(args.get("target_uid") or "")) if model else None
+    return (node.repository_uid or "") if node else ""
+
+
 async def execute_envelope_tool_calls(
     *,
     calls: Any,
@@ -407,6 +446,15 @@ async def execute_envelope_tool_calls(
     structured end-of-run summary is harvested into `outcome`. `deny_tools`
     maps a tool name to the error recorded instead of dispatching it (e.g.
     patch tools in tracking-only v1).
+
+    Tenancy: the envelope is model-emitted text, so its args are untrusted.
+    Scope keys (`repository_uid`, `source_run_uid`, `executor`) are FORCED to
+    the run's own values — override, never setdefault — and by-uid calls must
+    target an object inside the run's repository, mirroring what
+    `api/platform_scope.require_tool_repo_access` does for the HTTP surface.
+    A run's authority is exactly one repository; without this a run scoped to
+    repo A could read from or write into any other org's data by naming a
+    foreign uid.
     """
     results: list[dict[str, Any]] = []
     refs: list[str] = []
@@ -427,8 +475,21 @@ async def execute_envelope_tool_calls(
             results.append({"tool": name, "error": deny_tools[name]})
             continue
         args = dict(call.get("args") or {})
-        args.setdefault("source_run_uid", req.run_uid)
-        args.setdefault("executor", executor_value)
+        if name in _BY_UID_TOOLS:
+            target_repo = await _envelope_target_repository_uid(name, args)
+            if not target_repo or target_repo != req.repository_uid:
+                results.append({"tool": name, "error": _SCOPE_ERROR})
+                append_event(
+                    req.run_uid, "tool_result", name=name, output=_SCOPE_ERROR, is_error=True
+                )
+                continue
+            if name == "attach_artifact":
+                args["repository_uid"] = req.repository_uid
+                args["executor"] = executor_value
+        else:
+            args["repository_uid"] = req.repository_uid
+            args["source_run_uid"] = req.run_uid
+            args["executor"] = executor_value
         append_event(req.run_uid, "tool_use", name=name, input=preview(args))
         try:
             result = await dispatch_platform_tool(name, **args)

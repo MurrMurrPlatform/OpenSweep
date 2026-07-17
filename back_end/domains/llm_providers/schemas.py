@@ -265,7 +265,10 @@ KIND_CATALOG: dict[LLMProviderKind, dict] = {
         "transport": "local CLI + cwd",
         # `{{instruction_q}}` is the rendered prompt; opencode reads files in cwd itself.
         # Override the template in the UI if you want a non-default model flag etc.
-        "default_cli": 'opencode run -m {{model}} {{instruction_q}}',
+        # `{{model_q}}` (shlex-quoted): the model slug is config-controlled data,
+        # so it must land as ONE argv token — raw {{model}} would let a slug
+        # like "x --flag" inject flags into the CLI invocation.
+        "default_cli": 'opencode run -m {{model_q}} {{instruction_q}}',
         "needs_api_key": False,
         "needs_base_url": True,
         "needs_credential": False,
@@ -285,9 +288,10 @@ KIND_CATALOG: dict[LLMProviderKind, dict] = {
         "transport": "local CLI + cwd",
         # --yes-always to skip every interactive prompt; --no-auto-commits so we
         # control the commit boundary; --no-pretty to keep stdout machine-readable.
+        # {{model_q}} keeps the model slug a single argv token (no flag injection).
         "default_cli": (
             'aider --no-auto-commits --no-pretty --yes-always '
-            '--model {{model}} --message {{instruction_q}}'
+            '--model {{model_q}} --message {{instruction_q}}'
         ),
         "needs_api_key": False,
         "needs_base_url": True,
