@@ -2,7 +2,6 @@
 
 from domains.threads.services.thread_service import (
     build_answers_message,
-    normalize_plan_steps,
     open_question_events,
     pending_answer_events,
 )
@@ -44,25 +43,3 @@ def test_forced_continue_names_the_skipped():
     msg = build_answers_message([_q("a", "answered", "yes")], skipped=[_q("b")])
     assert "CONTINUE WITHOUT ANSWERING" in msg
     assert "Q-b?" in msg and "best judgment" in msg
-
-
-# ── Plan steps normalization ─────────────────────────────────────────────────
-
-
-def test_steps_from_strings_and_dicts():
-    steps = normalize_plan_steps(
-        ["Add model field", {"title": "Wire API", "notes": "PATCH too"}, "", 42]
-    )
-    assert [s["id"] for s in steps] == ["s1", "s2"]
-    assert steps[0] == {"id": "s1", "title": "Add model field", "status": "pending", "notes": ""}
-    assert steps[1]["notes"] == "PATCH too"
-
-
-def test_steps_are_capped():
-    steps = normalize_plan_steps([f"step {i}" for i in range(100)])
-    assert len(steps) == 40
-
-
-def test_empty_steps_are_fine():
-    assert normalize_plan_steps(None) == []
-    assert normalize_plan_steps([]) == []

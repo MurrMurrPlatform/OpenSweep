@@ -29,7 +29,9 @@ class ThreadRunSummaryDTO(BaseModel):
 
 class ThreadDetailDTO(ThreadDTO):
     plan_text: str = ""
-    plan_steps: list[dict] = []
+    # Native executor todos mirrored per phase: {phase: [{content, status,
+    # activeForm}]}.
+    todos: dict = {}
     events: list[dict] = []
     runs: list[ThreadRunSummaryDTO] = []
 

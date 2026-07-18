@@ -138,7 +138,6 @@ def test_platform_tools_are_tracking_safe():
         # like Gate 1) and structured user questions. Both write OpenSweep
         # thread STATE only, never the source repository.
         "opensweep_platform_submit_thread_plan",
-        "opensweep_platform_update_plan_step",
         "opensweep_platform_ask_user",
     }
     missing_delivery = delivery - actual

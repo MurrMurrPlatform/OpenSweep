@@ -27,6 +27,80 @@ from logging_config import logger
 _TURN_TASKS: set[asyncio.Task] = set()
 
 
+def parse_native_todos(tool_name: str, tool_input) -> list[dict] | None:
+    """Normalize an executor's NATIVE todo/plan tool call into the platform
+    shape [{content, status, activeForm}]. Returns None when the tool isn't a
+    todo tool. Supported: Claude Code `TodoWrite` and OpenCode `todowrite`
+    ({todos: [{content, status, activeForm}]}); Codex `update_plan`
+    ({plan: [{step, status}]})."""
+    import json
+
+    low = (tool_name or "").strip().lower()
+    if low not in {"todowrite", "update_plan"}:
+        return None
+    inp = tool_input
+    if isinstance(inp, str):
+        try:
+            inp = json.loads(inp)
+        except (ValueError, TypeError):
+            return None
+    if not isinstance(inp, dict):
+        return None
+    raw = inp.get("todos") if low == "todowrite" else inp.get("plan")
+    if not isinstance(raw, list):
+        return None
+    out: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content") or item.get("step") or "").strip()
+        if not content:
+            continue
+        status = str(item.get("status") or "pending")
+        if status not in {"pending", "in_progress", "completed"}:
+            status = "completed" if status in {"done", "complete"} else "pending"
+        entry: dict = {"content": content[:300], "status": status}
+        if item.get("activeForm"):
+            entry["activeForm"] = str(item["activeForm"])[:300]
+        out.append(entry)
+        if len(out) >= 50:
+            break
+    return out
+
+
+async def _capture_native_todos(thread, run) -> None:
+    """Mirror the run's latest native todo snapshot onto the thread, keyed by
+    the CURRENT phase — incremental over the transcript (todos_seq cursor).
+    Best-effort: a capture failure never touches the finalize path."""
+    try:
+        from datetime import UTC, datetime
+
+        from domains.investigations.services.run_events import read_events
+
+        events = read_events(run.uid, after_seq=int(thread.todos_seq or 0))
+        if not events:
+            return
+        latest: list[dict] | None = None
+        for e in events:
+            if e.get("type") != "tool_use":
+                continue
+            parsed = parse_native_todos(e.get("name") or "", e.get("input"))
+            if parsed is not None:
+                latest = parsed  # last snapshot in the window wins
+        thread.todos_seq = int(events[-1].get("seq") or thread.todos_seq or 0)
+        if latest is not None:
+            todos = dict(thread.todos or {})
+            todos[thread.phase] = latest
+            thread.todos = todos
+        thread.updated_at = datetime.now(UTC)
+        await thread.save()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            f"native todo capture failed for thread {thread.uid}: {exc}",
+            extra={"tag": "threads"},
+        )
+
+
 async def finalize_thread_run(run) -> None:
     """Per-turn playbook hook. Never raises (playbooks.py contract)."""
     from domains.threads.models import Thread
@@ -35,7 +109,12 @@ async def finalize_thread_run(run) -> None:
     if not thread_uid:
         return
     thread = await Thread.nodes.get_or_none(uid=thread_uid)
-    if thread is None or thread.phase in {"refining", "done", "abandoned"}:
+    if thread is None:
+        return
+    # Mirror the executor's native todo list in EVERY phase — progress is
+    # data, whatever stage the thread is in.
+    await _capture_native_todos(thread, run)
+    if thread.phase in {"refining", "done", "abandoned"}:
         # Planning turns produce plan/ticket state via platform tools only;
         # the sandbox contents are inert until the phase gate opens.
         return
@@ -75,7 +154,6 @@ def build_go_message(
     base_branch: str,
     denylist: list[str],
     children: list | None = None,
-    steps: list | None = None,
 ) -> str:
     """The platform's implementation go-signal, sent into the thread
     conversation when the user approves. Carries the write-run contract that
@@ -97,17 +175,6 @@ def build_go_message(
         from domains.threads.services.intents import build_group_addendum
 
         group_block = build_group_addendum(children)
-    steps_block = ""
-    if steps:
-        listing = "\n".join(f"- [{s.get('id')}] {s.get('title')}" for s in steps)
-        steps_block = (
-            "\n## Implementation checklist (keep it in sync)\n"
-            "The plan's steps are tracked on the ticket. As you work, mark "
-            "each step with `opensweep_platform_update_plan_step` "
-            "(thread_uid, step_id, status `in_progress` when you start it, "
-            "`done` when it holds):\n"
-            f"{listing}\n"
-        )
     return (
         "GO — the user approved implementation. PLANNING MODE IS OVER for "
         "this conversation: implement now, in this workspace.\n"
@@ -137,7 +204,6 @@ def build_go_message(
         "- When done, summarize: commits made (sha + message), test results, "
         "and anything you deviated on. Then stop — review runs take it from "
         "here, and their findings will arrive in this conversation.\n"
-        f"{steps_block}"
         f"{group_block}"
     )
 

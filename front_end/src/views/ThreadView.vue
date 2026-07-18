@@ -309,11 +309,10 @@ async function onFix() {
           :plan-text="thread.plan_text"
           :plan-state="thread.plan_state"
           :editable="thread.phase === 'refining'"
-          :steps="thread.plan_steps"
           @save="onSavePlan"
           @approve="onApprovePlan"
         />
-        <AgentTodosPanel :todos="todos" />
+        <AgentTodosPanel :live="todos" :stored="thread.todos" :phase="thread.phase" />
         <ThreadTimeline :events="thread.events" :runs="thread.runs" />
       </aside>
     </div>

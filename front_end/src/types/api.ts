@@ -1107,19 +1107,10 @@ export type TicketPriority = 'low' | 'medium' | 'high' | 'urgent'
 export type TicketSize = '' | 'trivial' | 'small' | 'medium' | 'large'
 export type TicketOrigin = 'finding' | 'human' | 'agent-proposal'
 
-/** One tracked step of the implementation checklist (ticket.plan.steps). */
-export interface PlanStep {
-  id: string
-  title: string
-  status: 'pending' | 'in_progress' | 'done'
-  notes?: string
-}
-
 /** Thread-authored implementation plan, mirrored onto the ticket as
  *  metadata (unified dev flow). Empty object = no plan yet. */
 export interface TicketPlan {
   markdown?: string
-  steps?: PlanStep[]
   state?: 'drafted' | 'approved' | 'none'
   thread_uid?: string
   updated_at?: string | null
@@ -1371,7 +1362,8 @@ export interface ThreadEventDTO {
 
 export interface ThreadDetailDTO extends ThreadDTO {
   plan_text: string
-  plan_steps: PlanStep[]
+  /** Native executor todos mirrored per phase (durable, updated per turn). */
+  todos: Record<string, AgentTodo[]>
   events: ThreadEventDTO[]
   runs: ThreadRunSummaryDTO[]
 }

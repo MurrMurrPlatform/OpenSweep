@@ -11,6 +11,7 @@ legality-checked and audited.
 from neomodel import (
     AsyncStructuredNode,
     DateTimeProperty,
+    IntegerProperty,
     JSONProperty,
     StringProperty,
 )
@@ -28,10 +29,6 @@ class Thread(AsyncStructuredNode):
     # implement; an approved plan is injected into the implement run context.
     plan_state = StringProperty(default="none")
     plan_text = StringProperty(default="")
-    # Implementation checklist: [{id, title, status: pending|in_progress|done,
-    # notes}] — submitted with the plan, updated by the agent as it works,
-    # mirrored to Ticket.plan.steps (the durable copy).
-    plan_steps = JSONProperty(default=[])
     plan_approved_by = StringProperty(default="")
     plan_approved_at = DateTimeProperty()
 
@@ -46,6 +43,14 @@ class Thread(AsyncStructuredNode):
     # Timeline events: [{ts, type, ...payload}] — phase_changed, plan_drafted,
     # plan_approved, run_attached, pr_opened, merged, abandoned.
     events = JSONProperty(default=[])
+
+    # Native executor todo lists (Claude Code TodoWrite, Codex update_plan,
+    # OpenCode todowrite), mirrored per phase from the transcript after every
+    # turn: {phase: [{content, status, activeForm}]}. The union across phases
+    # is the thread's "big" todo list.
+    todos = JSONProperty(default={})
+    # Last transcript seq already scanned for todo updates (incremental).
+    todos_seq = IntegerProperty(default=0)
 
     created_by = StringProperty(default="")
     created_at = DateTimeProperty(default_now=True)

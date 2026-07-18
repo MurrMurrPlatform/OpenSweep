@@ -387,9 +387,6 @@ async def http_ask_user(
 
 class SubmitThreadPlanBody(BaseModel):
     plan_markdown: str = Field(min_length=1)
-    # Implementation checklist: strings or {title, notes} dicts — becomes
-    # ticket.plan.steps, updated during implementation via update_plan_step.
-    steps: list = Field(default_factory=list, max_length=40)
 
 
 @router.post(
@@ -417,45 +414,6 @@ async def http_submit_thread_plan(
         submit_thread_plan,
         thread_uid=thread.uid,
         plan_markdown=req.plan_markdown,
-        steps=req.steps,
-        executor=executor,
-    )
-
-
-class UpdatePlanStepBody(BaseModel):
-    step_id: str = Field(min_length=1)
-    status: str = Field(min_length=1)
-    notes: str = ""
-
-
-@router.post(
-    "/update-plan-step/{thread_uid}",
-    operation_id="opensweep_platform_update_plan_step",
-)
-async def http_update_plan_step(
-    thread_uid: str,
-    req: UpdatePlanStepBody,
-    request: Request,
-    user: UserDTO = Depends(get_current_user),
-):
-    from domains.platform_tools.update_plan_step import update_plan_step
-    from domains.threads.services.thread_service import (
-        THREAD_NOT_FOUND_DETAIL,
-        resolve_thread,
-    )
-
-    executor = request.headers.get("x-opensweep-run-uid") or "manual"
-    thread = await resolve_thread(thread_uid, run_uid=executor)
-    if thread is None:
-        raise HTTPException(status_code=404, detail=THREAD_NOT_FOUND_DETAIL)
-    await require_tool_repo_access(request, user, thread.repository_uid)
-    return await _invoke_platform_tool(
-        "update_plan_step",
-        update_plan_step,
-        thread_uid=thread.uid,
-        step_id=req.step_id,
-        status=req.status,
-        notes=req.notes,
         executor=executor,
     )
 

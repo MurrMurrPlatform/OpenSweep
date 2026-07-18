@@ -119,7 +119,6 @@ OPENSWEEP_PLATFORM_TOOL_OPERATIONS = [
     # (drafts only; approval is human-only) and asks the user structured
     # questions the thread UI renders as answer cards.
     "opensweep_platform_submit_thread_plan",
-    "opensweep_platform_update_plan_step",
     "opensweep_platform_ask_user",
     # Comments — the human↔agent conversation on any data item. Agents read
     # the thread (also injected into run briefings) and reply in-thread;

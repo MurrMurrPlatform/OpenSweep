@@ -41,31 +41,6 @@ def has_active_thread(threads: list) -> bool:
     return any(t.phase not in TERMINAL_PHASES for t in threads)
 
 
-PLAN_STEP_STATUSES = {"pending", "in_progress", "done"}
-
-
-def normalize_plan_steps(raw) -> list[dict]:
-    """Agent-submitted steps (strings or dicts) → the canonical checklist
-    shape. Pure; caps sizes so a runaway plan can't bloat the node."""
-    steps: list[dict] = []
-    for item in raw or []:
-        if isinstance(item, str):
-            title, notes = item.strip(), ""
-        elif isinstance(item, dict):
-            title = str(item.get("title") or item.get("content") or "").strip()
-            notes = str(item.get("notes") or "")[:500]
-        else:
-            continue
-        if not title:
-            continue
-        steps.append(
-            {"id": f"s{len(steps) + 1}", "title": title[:300], "status": "pending", "notes": notes}
-        )
-        if len(steps) >= 40:
-            break
-    return steps
-
-
 async def mirror_plan_to_ticket(thread: Thread) -> None:
     """The plan's canonical public home is the TICKET's `plan` JSON metadata
     (user-facing, survives the thread). The thread stays the editing surface;
@@ -80,7 +55,6 @@ async def mirror_plan_to_ticket(thread: Thread) -> None:
         now = datetime.now(UTC)
         ticket.plan = {
             "markdown": thread.plan_text or "",
-            "steps": list(thread.plan_steps or []),
             "state": thread.plan_state or "none",
             "thread_uid": thread.uid,
             "updated_at": now.isoformat(),
@@ -370,7 +344,7 @@ class ThreadService:
         return ThreadDetailDTO(
             **base,
             plan_text=t.plan_text or "",
-            plan_steps=list(t.plan_steps or []),
+            todos=dict(t.todos or {}),
             events=t.events or [],
             runs=runs,
         )
@@ -627,7 +601,6 @@ class ThreadService:
             base_branch=str(target.get("base_branch") or "main"),
             denylist=effective_denylist(policy),
             children=children,
-            steps=list(t.plan_steps or []),
         )
         await self.transition(uid, "implementing", actor_uid=actor_uid)
         await self.record_event(t, "implement_started", by=actor_uid)
