@@ -445,6 +445,12 @@ class PullRequestService:
             payload={"pr": pr.pr_key, "sha": req.sha, "result": req.result.value},
         )
         await self.recompute_and_publish(pr)
+
+        # Thread follow-through: the verdict lands on the PR's thread timeline.
+        from domains.threads.services.hooks import note_verdict_for_pr
+
+        await note_verdict_for_pr(pr.uid, result=v.result, verdict_uid=v.uid, sha=v.sha)
+
         repo = await Repository.nodes.get_or_none(uid=pr.repository_uid)
         if repo is not None:
             gh_state, description = review_status_for(

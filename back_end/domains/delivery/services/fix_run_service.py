@@ -223,6 +223,12 @@ async def trigger_fix_run(
                 "run_uid": run.uid,
             },
         )
+
+        # Thread follow-through: the conversation continues with the fixer.
+        from domains.threads.services.hooks import note_fix_run_for_pr
+
+        await note_fix_run_for_pr(pr.uid, run)
+
         return run
 
     # In-flight guard: one WRITE run per PR at a time — two writers race over

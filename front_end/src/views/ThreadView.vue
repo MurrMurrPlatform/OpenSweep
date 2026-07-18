@@ -11,12 +11,15 @@ import { PageHeader } from '@/components/ui/page-header'
 import PlanPanel from '@/components/threads/PlanPanel.vue'
 import ThreadChat from '@/components/threads/ThreadChat.vue'
 import ThreadTimeline from '@/components/threads/ThreadTimeline.vue'
+import ConvergenceChecklist from '@/components/delivery/ConvergenceChecklist.vue'
 import TestLocallyButton from '@/components/delivery/TestLocallyButton.vue'
+import VerdictCard from '@/components/delivery/VerdictCard.vue'
+import { Card, CardContent } from '@/components/ui/card'
 import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
 import { useDeliveryStore } from '@/stores/deliveryStore'
 import { useThreadStore } from '@/stores/threadStore'
-import type { PullRequestDTO, ThreadDetailDTO, ThreadPhase } from '@/types/api'
+import type { PullRequestDTO, ThreadDetailDTO, ThreadPhase, VerdictDTO } from '@/types/api'
 
 const route = useRoute()
 const threads = useThreadStore()
@@ -26,6 +29,7 @@ const toast = useToast()
 const uid = computed(() => String(route.params.uid))
 const thread = ref<ThreadDetailDTO | null>(null)
 const pr = ref<PullRequestDTO | null>(null)
+const verdict = ref<VerdictDTO | null>(null)
 const loading = ref(true)
 const error = ref<string | null>(null)
 
@@ -44,11 +48,13 @@ const active = computed(
 async function reload() {
   try {
     thread.value = await threads.getThread(uid.value)
-    if (thread.value.pr_uid && pr.value?.uid !== thread.value.pr_uid) {
+    if (thread.value.pr_uid) {
       try {
         pr.value = await delivery.getPullRequest(thread.value.pr_uid)
+        verdict.value = await delivery.getLatestVerdict(thread.value.pr_uid)
       } catch {
         pr.value = null
+        verdict.value = null
       }
     }
     error.value = null
@@ -114,6 +120,24 @@ async function onAbandon() {
   }
   await reload()
 }
+
+const fixing = ref(false)
+async function onFix() {
+  if (!thread.value?.pr_uid || fixing.value) return
+  fixing.value = true
+  try {
+    await delivery.triggerFix(thread.value.pr_uid)
+    toast.success('Fix round started', 'The conversation continues with the fix run.')
+  } catch (e) {
+    toast.error(
+      'Couldn’t start fix',
+      e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e),
+    )
+  } finally {
+    fixing.value = false
+  }
+  await reload()
+}
 </script>
 
 <template>
@@ -172,6 +196,24 @@ async function onAbandon() {
       </section>
 
       <aside class="w-96 shrink-0 space-y-4 overflow-y-auto">
+        <Card v-if="pr && thread.phase === 'in_review'">
+          <CardContent class="space-y-3 p-4">
+            <div class="flex items-center justify-between">
+              <h3 class="text-sm font-semibold">Convergence</h3>
+              <Button
+                v-if="verdict?.result === 'request_changes'"
+                size="sm"
+                variant="outline"
+                :loading="fixing"
+                @click="onFix"
+              >
+                Run fix
+              </Button>
+            </div>
+            <ConvergenceChecklist :convergence="pr.convergence" />
+            <VerdictCard v-if="verdict" :verdict="verdict" :head-sha="pr.head_sha" />
+          </CardContent>
+        </Card>
         <PlanPanel
           :plan-text="thread.plan_text"
           :plan-state="thread.plan_state"

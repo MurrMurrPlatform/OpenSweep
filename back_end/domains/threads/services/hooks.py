@@ -38,6 +38,56 @@ async def note_pr_opened_for_run(run) -> None:
         )
 
 
+async def note_verdict_for_pr(pr_uid: str, *, result: str, verdict_uid: str, sha: str) -> None:
+    """Verdict submitted → timeline event on every active thread for this PR."""
+    if not (pr_uid or "").strip():
+        return
+    try:
+        from domains.threads.models import Thread
+        from domains.threads.services.thread_service import ThreadService
+
+        svc = ThreadService()
+        for thread in await Thread.nodes.filter(pr_uid=pr_uid).all():
+            if thread.phase == "in_review":
+                await svc.record_event(
+                    thread,
+                    "review_verdict",
+                    result=result,
+                    verdict_uid=verdict_uid,
+                    sha=sha,
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            f"thread hook verdict failed for PR {pr_uid}: {type(exc).__name__}: {exc}",
+            extra={"tag": "threads"},
+        )
+
+
+async def note_fix_run_for_pr(pr_uid: str, run) -> None:
+    """Fix run dispatched → the thread's conversation continues with the fixer.
+
+    Attaches the fix run to every active thread on this PR (sets
+    active_run_uid so the thread chat targets the fix conversation) and
+    records a fix_started event.
+    """
+    if not (pr_uid or "").strip():
+        return
+    try:
+        from domains.threads.models import Thread
+        from domains.threads.services.thread_service import ThreadService
+
+        svc = ThreadService()
+        for thread in await Thread.nodes.filter(pr_uid=pr_uid).all():
+            if thread.phase == "in_review":
+                await svc.attach_run(thread, run.uid)
+                await svc.record_event(thread, "fix_started", run_uid=run.uid)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            f"thread hook fix_started failed for PR {pr_uid}: {type(exc).__name__}: {exc}",
+            extra={"tag": "threads"},
+        )
+
+
 async def note_pr_merged(pr_uid: str) -> None:
     """Merge webhook hook: every in_review thread on this PR → done."""
     if not (pr_uid or "").strip():
