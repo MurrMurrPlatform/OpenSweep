@@ -335,79 +335,17 @@ async def implement_ticket(uid: str, user: UserDTO = Depends(require_role("maint
     }
 
 
-def _build_ticket_refine_intent(t) -> str:
-    ac = "\n".join(f"- {c}" for c in (t.acceptance_criteria or [])) or "- (none yet)"
-    return (
-        "Refine the Ticket below: study the relevant code, then sharpen the "
-        "ticket in place using the platform tools. This is read-only against "
-        "the repository — do not modify any code.\n"
-        "\n"
-        f"Ticket uid: {t.uid}\n"
-        f"Title: {t.title}\n"
-        f"Priority: {t.priority}\n"
-        "\n"
-        "Current description:\n"
-        f"{(t.description or '(not provided)').strip()}\n"
-        "\n"
-        "Current acceptance criteria:\n"
-        f"{ac}\n"
-        "\n"
-        "Task:\n"
-        "1. Read the code the ticket touches to ground the work in reality. "
-        "Quote concrete file:line references.\n"
-        "2. Call `opensweep_platform_update_ticket` (ticket_uid "
-        f"`{t.uid}`) to improve `title`, rewrite `description` so it is "
-        "implementable without re-deriving the analysis, and set "
-        "`acceptance_criteria` to 2-6 short, independently testable clauses.\n"
-        "3. Attach an implementation plan and the list of relevant files with "
-        f"`opensweep_platform_attach_artifact` (target_type `ticket`, target_uid "
-        f"`{t.uid}`, artifact_type `plan`) — the concrete steps and files a "
-        "developer should touch.\n"
-        "Persist every conclusion through the tools above — a plan in your reply "
-        "that is not written back does not count. Do not change the ticket's "
-        "status; Gate 1 stays human-only."
-    )
-
-
 @router.post("/{uid}/refine", operation_id="opensweep_ticket_refine")
 async def refine_ticket(uid: str, user: UserDTO = Depends(require_role("maintainer"))) -> dict:
     """Dispatch a read-only refine run that enriches the ticket in place —
     sharpening its title, description and acceptance criteria and attaching an
     implementation plan + relevant files via the platform tools."""
-    from domains.agent_overlays.services.composition import compose_playbook_intent
-    from domains.investigations.schemas import InvestigationEffort, RunTrigger
-    from domains.investigations.services.lifecycle import LifecycleError, trigger_run
-    from domains.repositories.services.workflow import stage_prompt_body
-    from domains.run_policies.services.effort import ensure_policy_for_effort
+    from domains.tickets.services.refine_dispatch import dispatch_refine_run
 
     service = TicketService()
     ticket = await service.get_node(uid)
     await require_repo_in_org(ticket.repository_uid, user.org_uid)
-    guidance = await stage_prompt_body(ticket.repository_uid, "refine")
-    composed = await compose_playbook_intent(
-        repository_uid=ticket.repository_uid,
-        playbook="refine",
-        stage="refine",
-        repo_guidance=guidance or "",
-        structural=_build_ticket_refine_intent(ticket),
-        org_uid=user.org_uid,
-    )
-    intent = composed.text
-    policy = await ensure_policy_for_effort(InvestigationEffort.NORMAL)
-    try:
-        run = await trigger_run(
-            repository_uid=ticket.repository_uid,
-            intent=intent,
-            playbook="refine",
-            title=f"Refine: {(ticket.title or 'ticket')[:80]}",
-            target={"ticket_uid": uid},
-            linked_ticket_uid=uid,
-            run_policy_uid=policy.uid,
-            trigger=RunTrigger.MANUAL,
-            triggered_by=user.uid,
-        )
-    except LifecycleError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    run = await dispatch_refine_run(ticket, actor_uid=user.uid, org_uid=user.org_uid)
     return {"run_uid": run.uid, "investigation_uid": run.investigation_uid, "ticket_uid": uid}
 
 

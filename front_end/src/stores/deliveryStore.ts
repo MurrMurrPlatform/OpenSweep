@@ -142,6 +142,19 @@ export const useDeliveryStore = defineStore('delivery', () => {
     })
   }
 
+  /** Adopt an externally-opened PR onto the board: create + link its ticket.
+   *  mode `ai` additionally dispatches a refine run that drafts the ticket
+   *  content from the PR's diff. */
+  async function createTicketForPr(
+    prUid: string,
+    mode: 'manual' | 'ai',
+  ): Promise<{ ticket_uid: string; run_uid: string }> {
+    return apiPost<{ ticket_uid: string; run_uid: string }>(
+      `/delivery/pull-requests/${prUid}/create-ticket`,
+      { mode },
+    )
+  }
+
   // ── Merge policy ───────────────────────────────────────────────────────────
 
   async function getMergePolicy(repositoryUid: string): Promise<MergePolicyDTO> {
@@ -174,6 +187,7 @@ export const useDeliveryStore = defineStore('delivery', () => {
     deferResolution,
     reopenResolution,
     setBlockingOverride,
+    createTicketForPr,
     getMergePolicy,
     updateMergePolicy,
   }

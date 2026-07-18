@@ -293,6 +293,102 @@ async def link_pr_to_ticket(
     return pull_request_to_dto(pr)
 
 
+class CreateTicketForPrRequest(BaseModel):
+    """mode `manual`: placeholder ticket from PR metadata, human fills it in.
+    mode `ai`: same + a refine run drafts the content from the PR's diff."""
+
+    mode: str = Field(default="manual", pattern="^(manual|ai)$")
+
+
+@router.post(
+    "/pull-requests/{uid}/create-ticket",
+    operation_id="opensweep_pr_create_ticket",
+)
+async def create_ticket_for_pr(
+    uid: str,
+    req: CreateTicketForPrRequest,
+    user: UserDTO = Depends(require_role("maintainer")),
+) -> dict:
+    """Adopt an externally-opened PR into the board: create its ticket, link
+    both directions, and (mode `ai`) draft the ticket content from the PR's
+    actual diff via a read-only refine run.
+
+    The new ticket is born under review — the work already exists as a PR,
+    and the human clicking create IS the Gate-1 approval (audited)."""
+    from datetime import datetime
+
+    from domains.tickets.schemas import CreateTicketRequest
+    from domains.tickets.services.refine_dispatch import dispatch_refine_run
+    from domains.tickets.services.ticket_service import TicketService
+    from infrastructure.audit import write_audit
+
+    service = PullRequestService()
+    pr = await service.get_node(uid)
+    await require_repo_in_org(pr.repository_uid, user.org_uid)
+    if pr.ticket_uid:
+        raise HTTPException(status_code=409, detail="PR already has a ticket")
+
+    branch_line = f"`{pr.head_ref}` → `{pr.base_ref}`"
+    description = (
+        f"Imported from pull request [#{pr.github_number}]({pr.url}) ({branch_line}), "
+        "which was opened outside OpenSweep.\n\n"
+        "_Describe what the change does and why — or let the refine agent draft "
+        "it from the PR's diff._"
+    )
+    ticket_service = TicketService()
+    ticket = await ticket_service.create(
+        CreateTicketRequest(
+            repository_uid=pr.repository_uid,
+            title=pr.title or f"PR #{pr.github_number}",
+            description=description,
+            labels=["pr-import"],
+        ),
+        actor_uid=user.uid,
+    )
+    # Board placement matches reality: an open PR is work under review, a
+    # merged one is done. Direct set (not transition()) — this is an import,
+    # not a board move; the explicit human create carries Gate 1.
+    now = datetime.now(UTC)
+    ticket.approved_by = user.uid
+    ticket.approved_at = now
+    target_status = {"open": "in-review", "merged": "done"}.get(pr.state or "open")
+    if target_status:
+        await ticket_service._set_status(ticket, target_status)  # noqa: SLF001
+    else:
+        await ticket.save()
+    await write_audit(
+        kind="ticket.imported_from_pr",
+        subject_uid=ticket.uid,
+        subject_type="Ticket",
+        actor_uid=user.uid,
+        payload={"pull_request_uid": pr.uid, "status": ticket.status, "mode": req.mode},
+    )
+
+    pr.ticket_uid = ticket.uid
+    pr.updated_at = now
+    await pr.save()
+    await ticket_service.link_pr(ticket.uid, pr.uid, actor_uid=user.uid, auto_review=False)
+
+    run_uid = ""
+    if req.mode == "ai":
+        extra = (
+            "IMPORTANT CONTEXT — this ticket is a placeholder imported from an "
+            f"EXISTING pull request #{pr.github_number} (head `{pr.head_ref}`, "
+            f"base `{pr.base_ref}`). Ground your refinement in the PR's actual "
+            f"changes: `git fetch origin {pr.head_ref}`, then read "
+            f"`git diff {pr.base_ref}...origin/{pr.head_ref}` (read-only). "
+            "Write the title, description and acceptance criteria so they "
+            "describe what the PR changes and why — good enough for a reviewer "
+            "to judge the PR against."
+        )
+        run = await dispatch_refine_run(
+            ticket, actor_uid=user.uid, org_uid=user.org_uid, extra_context=extra
+        )
+        run_uid = run.uid
+
+    return {"ticket_uid": ticket.uid, "run_uid": run_uid}
+
+
 @router.get(
     "/pull-requests/{uid}/verdict",
     response_model=VerdictDTO | None,

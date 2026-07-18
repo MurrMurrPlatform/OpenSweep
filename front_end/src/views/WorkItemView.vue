@@ -19,8 +19,21 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
-import { CheckCircle2, GitPullRequest, MessagesSquare, Search, SquareKanban } from 'lucide-vue-next'
+import {
+  CheckCircle2,
+  GitPullRequest,
+  MessagesSquare,
+  Pencil,
+  Plus,
+  Search,
+  Sparkles,
+  SquareKanban,
+} from 'lucide-vue-next'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import { useToast } from '@/composables/useToast'
+import { ApiError } from '@/services/api'
 import CiStateBadge from '@/components/delivery/CiStateBadge.vue'
 import TicketOriginBadge from '@/components/tickets/TicketOriginBadge.vue'
 import TicketDetailView from '@/views/TicketDetailView.vue'
@@ -41,6 +54,7 @@ const tickets = useTicketStore()
 const threads = useThreadStore()
 const delivery = useDeliveryStore()
 const repos = useRepositoryStore()
+const toast = useToast()
 
 const KIND_BY_ROUTE: Record<string, Kind> = {
   'ticket-detail': 'ticket',
@@ -177,8 +191,14 @@ interface Tab {
   label: string
   icon: typeof SquareKanban
   target: string | null
+  clickable: boolean
   hint: string
 }
+
+/** A ticketless PR's Ticket tab is clickable anyway: it opens the create
+ *  pane (adopt the PR onto the board), not a dead end. */
+const showTicketCreate = ref(false)
+watch([uid, kind], () => (showTicketCreate.value = false))
 
 const tabs = computed<Tab[]>(() => [
   {
@@ -186,13 +206,15 @@ const tabs = computed<Tab[]>(() => [
     label: 'Ticket',
     icon: SquareKanban,
     target: ticket.value?.uid ?? null,
-    hint: 'No ticket is linked — this PR was opened outside OpenSweep.',
+    clickable: Boolean(ticket.value || pr.value),
+    hint: 'No ticket yet — click to create one for this pull request.',
   },
   {
     kind: 'thread',
     label: 'Thread',
     icon: MessagesSquare,
     target: thread.value?.uid ?? null,
+    clickable: Boolean(thread.value),
     hint: 'No thread yet — use “Start thread” to begin the dev conversation.',
   },
   {
@@ -200,6 +222,7 @@ const tabs = computed<Tab[]>(() => [
     label: 'Pull request',
     icon: GitPullRequest,
     target: pr.value?.uid ?? null,
+    clickable: Boolean(pr.value),
     hint: 'No pull request yet — one opens when the thread finishes implementing.',
   },
 ])
@@ -211,8 +234,45 @@ const ROUTE_BY_KIND: Record<Kind, string> = {
 }
 
 function selectTab(tab: Tab) {
-  if (!tab.target || tab.kind === kind.value) return
-  void router.replace({ name: ROUTE_BY_KIND[tab.kind], params: { uid: tab.target } })
+  if (tab.target) {
+    showTicketCreate.value = false
+    if (tab.kind !== kind.value) {
+      void router.replace({ name: ROUTE_BY_KIND[tab.kind], params: { uid: tab.target } })
+    }
+    return
+  }
+  if (tab.kind === 'ticket' && pr.value) showTicketCreate.value = true
+}
+
+/** Which facet the page is showing — the route's kind, unless the ticket
+ *  create pane is open on a ticketless PR. */
+const activeFacet = computed<Kind>(() => (showTicketCreate.value ? 'ticket' : kind.value))
+
+// ── Adopt a ticketless PR onto the board ────────────────────────────────────
+
+const creatingTicket = ref<'manual' | 'ai' | null>(null)
+
+async function createTicket(mode: 'manual' | 'ai') {
+  if (!pr.value || creatingTicket.value) return
+  creatingTicket.value = mode
+  try {
+    const result = await delivery.createTicketForPr(pr.value.uid, mode)
+    if (mode === 'ai') {
+      toast.success(
+        'Ticket created — AI is drafting it',
+        `A refine run is reading the PR diff (run ${result.run_uid.slice(0, 8)}).`,
+      )
+    } else {
+      toast.success('Ticket created', 'Prefilled from the PR — edit it to fill in the details.')
+    }
+    showTicketCreate.value = false
+    void router.replace({ name: 'ticket-detail', params: { uid: result.ticket_uid } })
+  } catch (e) {
+    const msg = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
+    toast.error('Couldn’t create ticket', msg)
+  } finally {
+    creatingTicket.value = null
+  }
 }
 
 /** The prop each embedded view receives — its OWN uid, never the anchor's. */
@@ -272,29 +332,62 @@ const focusedUid = computed(() => {
           type="button"
           class="-mb-px inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors"
           :class="
-            tab.kind === kind
+            tab.kind === activeFacet
               ? 'border-primary font-medium text-foreground'
-              : tab.target
+              : tab.clickable
                 ? 'border-transparent text-muted-foreground hover:border-border hover:text-foreground'
                 : 'cursor-not-allowed border-transparent text-muted-foreground/40'
           "
-          :disabled="!tab.target && !resolving"
+          :disabled="!tab.clickable && !resolving"
           :title="tab.target ? undefined : tab.hint"
           @click="selectTab(tab)"
         >
           <component :is="tab.icon" class="size-3.5" /> {{ tab.label }}
+          <Plus v-if="tab.kind === 'ticket' && !tab.target && tab.clickable" class="size-3 text-muted-foreground" />
         </button>
       </nav>
     </header>
 
-    <p v-if="!resolving && kind === 'pr' && !ticket" class="text-xs text-muted-foreground">
-      This pull request has no linked ticket — it was likely opened outside OpenSweep. You can
-      still review, discuss and converge it here.
+    <p
+      v-if="!resolving && kind === 'pr' && !ticket && !showTicketCreate"
+      class="text-xs text-muted-foreground"
+    >
+      This pull request has no linked ticket — it was likely opened outside OpenSweep. Use the
+      Ticket tab to create one, or keep reviewing it as-is.
     </p>
 
     <!-- ── Focused facet ─────────────────────────────────────────────────── -->
-    <TicketDetailView v-if="kind === 'ticket'" :uid="focusedUid" />
-    <ThreadView v-else-if="kind === 'thread'" :uid="focusedUid" />
+    <!-- Adopt pane: a ticketless PR's Ticket tab offers creation instead of
+         a dead end. -->
+    <Card v-if="activeFacet === 'ticket' && !ticket && pr">
+      <CardContent class="flex flex-col items-center gap-3 p-10 text-center">
+        <SquareKanban class="size-8 text-muted-foreground" />
+        <h2 class="text-base font-semibold">No ticket for this pull request</h2>
+        <p class="max-w-md text-sm text-muted-foreground">
+          PR #{{ pr.github_number }} was probably created outside OpenSweep. Adopt it onto the
+          board by creating its ticket — it will be born under review, linked to this PR.
+        </p>
+        <div class="flex items-center gap-2">
+          <Button :loading="creatingTicket === 'ai'" :disabled="!!creatingTicket" @click="createTicket('ai')">
+            <Sparkles /> Draft with AI from the PR
+          </Button>
+          <Button
+            variant="outline"
+            :loading="creatingTicket === 'manual'"
+            :disabled="!!creatingTicket"
+            @click="createTicket('manual')"
+          >
+            <Pencil /> Create ticket manually
+          </Button>
+        </div>
+        <p class="max-w-md text-xs text-muted-foreground">
+          “Draft with AI” dispatches a read-only refine run that reads the PR's diff and writes
+          the title, description and acceptance criteria for you.
+        </p>
+      </CardContent>
+    </Card>
+    <TicketDetailView v-else-if="activeFacet === 'ticket' && ticket" :uid="focusedUid" />
+    <ThreadView v-else-if="activeFacet === 'thread'" :uid="focusedUid" />
     <PullRequestDetailView v-else :uid="focusedUid" />
   </div>
 </template>

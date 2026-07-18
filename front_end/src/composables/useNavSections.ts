@@ -24,20 +24,32 @@ export function useNavSections(): { sections: ComputedRef<NavSection[]> } {
     const slug = ui.currentRepoSlug
     const r = slug ? `/r/${slug}` : ''
     return [
+      // Grouped by what the user is doing: the core working set, the
+      // operate/observe surfaces, then the incoming-signal inbox.
       {
         label: 'Workspace',
         items: [
           { to: r || '/', label: 'Dashboard', icon: LayoutGrid, scoped: true, exact: true },
           { to: `${r}/docs`, label: 'Documentation', icon: BookOpen, scoped: true },
           { to: `${r}/findings`, label: 'Findings', icon: ClipboardList, scoped: true },
-          { to: `${r}/ideas`, label: 'Ideas', icon: Lightbulb, scoped: true },
-          { to: `${r}/tickets`, label: 'Tickets', icon: SquareKanban, scoped: true },
-          { to: `${r}/queue`, label: 'Queue', icon: GitPullRequest, scoped: true },
-          { to: `${r}/runs`, label: 'Runs', icon: Activity, scoped: true },
-          { to: `${r}/health`, label: 'Health', icon: Search, scoped: true },
-          { to: `${r}/analyses`, label: 'Analyses', icon: Radar, scoped: true },
-          { to: `${r}/news`, label: 'News', icon: Newspaper, scoped: true },
+          { to: `${r}/workitems`, label: 'Work items', icon: SquareKanban, scoped: true },
+        ],
+      },
+      {
+        label: 'Operate',
+        items: [
           { to: `${r}/ask`, label: 'Ask', icon: MessageCircleQuestion, scoped: true },
+          { to: `${r}/analyses`, label: 'Analyses', icon: Radar, scoped: true },
+          { to: `${r}/health`, label: 'Health', icon: Search, scoped: true },
+          { to: `${r}/runs`, label: 'Runs', icon: Activity, scoped: true },
+          { to: `${r}/queue`, label: 'Queue', icon: GitPullRequest, scoped: true },
+        ],
+      },
+      {
+        label: 'Inbox',
+        items: [
+          { to: `${r}/news`, label: 'News', icon: Newspaper, scoped: true },
+          { to: `${r}/ideas`, label: 'Ideas', icon: Lightbulb, scoped: true },
         ],
       },
       {

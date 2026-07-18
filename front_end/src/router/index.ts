@@ -46,8 +46,11 @@ const router = createRouter({
               meta: { title: 'Feature ideas', eyebrow: 'Inbox', section: 'main', repoScoped: true } },
             { path: 'news', name: 'news', component: () => import('@/views/NewsView.vue'),
               meta: { title: 'News', eyebrow: 'Inbox', section: 'main', repoScoped: true } },
-            { path: 'tickets', name: 'tickets', component: () => import('@/views/TicketsView.vue'),
-              meta: { title: 'Tickets', eyebrow: 'Deliver', section: 'main', repoScoped: true } },
+            // "Work items" absorbs the old Tickets index: the board plus
+            // externally-opened PRs that have no ticket yet. Old /tickets
+            // links keep working via the alias.
+            { path: 'workitems', alias: 'tickets', name: 'tickets', component: () => import('@/views/TicketsView.vue'),
+              meta: { title: 'Work items', eyebrow: 'Deliver', section: 'main', repoScoped: true } },
             { path: 'queue', name: 'queue', component: () => import('@/views/QueueView.vue'),
               meta: { title: 'Queue', eyebrow: 'Deliver', section: 'main', repoScoped: true } },
             { path: 'docs', name: 'documentation', component: () => import('@/views/DocumentationView.vue'),
