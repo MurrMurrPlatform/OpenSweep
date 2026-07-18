@@ -124,7 +124,9 @@ const DEPTH_HELP: Record<ReviewDepth, string> = {
   deep: 'All lenses (correctness, security, API, performance, tests, maintainability) with subagent fan-out. Always reviews the full diff.',
 }
 
-const uid = computed(() => String(route.params.uid))
+// Embeddable in WorkItemView: an explicit uid prop wins over the route param.
+const props = defineProps<{ uid?: string }>()
+const uid = computed(() => props.uid || String(route.params.uid))
 
 // In-flight runs targeting this PR — surface a "view run" chip and gate the
 // dispatch buttons per the overlap rules: a review is blocked only by another

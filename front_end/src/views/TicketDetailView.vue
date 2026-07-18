@@ -77,7 +77,9 @@ const { discussing, discuss: discussInRun } = useDiscussInRun(() =>
     : null,
 )
 
-const uid = computed(() => String(route.params.uid))
+// Embeddable in WorkItemView: an explicit uid prop wins over the route param.
+const props = defineProps<{ uid?: string }>()
+const uid = computed(() => props.uid || String(route.params.uid))
 
 async function load() {
   loading.value = true

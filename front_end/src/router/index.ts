@@ -65,11 +65,13 @@ const router = createRouter({
         },
 
         // Detail pages stay flat — detail context is the item itself, not the workspace.
-        { path: 'pull-requests/:uid', name: 'pull-request-detail', component: () => import('@/views/PullRequestDetailView.vue'),
+        // Ticket, thread and PR are the SAME piece of work: all three routes
+        // render the unified WorkItemView (tabbed); the route picks the tab.
+        { path: 'pull-requests/:uid', name: 'pull-request-detail', component: () => import('@/views/WorkItemView.vue'),
           meta: { title: 'Pull request', eyebrow: 'Deliver', section: 'main' } },
-        { path: 'tickets/:uid', name: 'ticket-detail', component: () => import('@/views/TicketDetailView.vue'),
+        { path: 'tickets/:uid', name: 'ticket-detail', component: () => import('@/views/WorkItemView.vue'),
           meta: { title: 'Ticket', eyebrow: 'Deliver', section: 'main' } },
-        { path: 'threads/:uid', name: 'thread-detail', component: () => import('@/views/ThreadView.vue'),
+        { path: 'threads/:uid', name: 'thread-detail', component: () => import('@/views/WorkItemView.vue'),
           meta: { title: 'Thread', eyebrow: 'Deliver', section: 'main' } },
         // OAuth consent for `opensweep connect` — the backend gateway
         // redirects MCP clients' browsers here (login enforced by the guard).
