@@ -23,6 +23,7 @@ from domains.platform_tools.news_tools import (
     list_news_items,
 )
 from domains.platform_tools.set_analysis_section import set_analysis_section
+from domains.platform_tools.submit_thread_plan import submit_thread_plan
 from domains.platform_tools.update_finding import update_finding
 from domains.platform_tools.upsert_analysis import upsert_analysis
 from domains.platform_tools.web_tools import fetch_url, web_search
@@ -38,6 +39,7 @@ __all__ = [
     "search_memory",
     "attach_artifact",
     "complete_run",
+    "submit_thread_plan",
     # Deep-scan Analysis authoring
     "upsert_analysis",
     "set_analysis_section",

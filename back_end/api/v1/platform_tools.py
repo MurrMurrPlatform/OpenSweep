@@ -29,6 +29,7 @@ from domains.platform_tools.docs_tools import confirm_doc_current, propose_doc_e
 from domains.platform_tools.memory_tools import write_memory
 from domains.platform_tools.news_tools import create_news_item
 from domains.platform_tools.set_analysis_section import set_analysis_section
+from domains.platform_tools.submit_thread_plan import submit_thread_plan
 from domains.platform_tools.update_finding import update_finding
 from domains.platform_tools.upsert_analysis import upsert_analysis
 from domains.platform_tools.web_tools import fetch_url, web_search
@@ -343,6 +344,36 @@ async def http_update_finding(
         finding_uid=finding_uid,
         changes=req.changes,
         actor=req.actor,
+    )
+
+
+class SubmitThreadPlanBody(BaseModel):
+    plan_markdown: str = Field(min_length=1)
+
+
+@router.post(
+    "/submit-thread-plan/{thread_uid}",
+    operation_id="opensweep_platform_submit_thread_plan",
+)
+async def http_submit_thread_plan(
+    thread_uid: str,
+    req: SubmitThreadPlanBody,
+    request: Request,
+    user: UserDTO = Depends(get_current_user),
+):
+    from domains.threads.models import Thread
+
+    thread = await Thread.nodes.get_or_none(uid=thread_uid)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="not found")
+    await require_tool_repo_access(request, user, thread.repository_uid)
+    executor = request.headers.get("x-opensweep-run-uid") or "manual"
+    return await _invoke_platform_tool(
+        "submit_thread_plan",
+        submit_thread_plan,
+        thread_uid=thread_uid,
+        plan_markdown=req.plan_markdown,
+        executor=executor,
     )
 
 
