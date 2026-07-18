@@ -73,7 +73,26 @@ async def finalize_thread_run(run) -> None:
         return
     from domains.delivery.services.implement_run_service import finalize_implement_run
 
-    await finalize_implement_run(run, quiet_when_unchanged=True)
+    try:
+        await finalize_implement_run(run, quiet_when_unchanged=True)
+    except Exception as exc:  # noqa: BLE001
+        # A failed push / PR open is invisible from inside the conversation —
+        # without this the thread just sits in `implementing` with changed
+        # files and no PR and no explanation (seen live: a push rejected for
+        # missing repo write permission). Surface it on the thread timeline.
+        detail = f"{type(exc).__name__}: {exc}"[:500]
+        logger.warning(
+            f"thread {thread_uid}: delivery finalize failed: {detail}",
+            extra={"tag": "threads"},
+        )
+        try:
+            from domains.threads.services.thread_service import ThreadService
+
+            last = (thread.events or [])[-1] if thread.events else {}
+            if not (last.get("type") == "delivery_blocked" and last.get("detail") == detail):
+                await ThreadService().record_event(thread, "delivery_blocked", detail=detail)
+        except Exception:  # noqa: BLE001
+            pass  # timeline bookkeeping must not break the turn
 
 
 def send_message_turn(run_uid: str, text: str) -> None:

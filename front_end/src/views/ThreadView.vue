@@ -4,10 +4,10 @@
 // plan + timeline rail right.
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
-import { Bot, GitPullRequest, Hammer, MessagesSquare, XCircle } from 'lucide-vue-next'
+import { Bot, Hammer, XCircle } from 'lucide-vue-next'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { PageHeader } from '@/components/ui/page-header'
+import ActionMenuBar from '@/components/workitem/ActionMenuBar.vue'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import PlanPanel from '@/components/threads/PlanPanel.vue'
 import ThreadChat from '@/components/threads/ThreadChat.vue'
@@ -133,6 +133,16 @@ const active = computed(
   () => thread.value && thread.value.phase !== 'done' && thread.value.phase !== 'abandoned',
 )
 
+/** Latest delivery_blocked detail — shown until a PR exists (a successful
+ *  push/PR supersedes any earlier failure). */
+const deliveryBlocked = computed(() => {
+  if (!thread.value || thread.value.pr_uid) return ''
+  if (thread.value.phase !== 'implementing' && thread.value.phase !== 'in_review') return ''
+  const events = thread.value.events ?? []
+  const last = [...events].reverse().find((e) => e.type === 'delivery_blocked')
+  return last ? String(last.detail ?? 'delivery failed') : ''
+})
+
 async function reload() {
   try {
     thread.value = await threads.getThread(uid.value)
@@ -147,6 +157,7 @@ async function reload() {
     }
     await loadActiveRun()
     error.value = null
+    window.dispatchEvent(new CustomEvent('workitem:changed'))
   } catch (e) {
     error.value = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
   } finally {
@@ -286,46 +297,45 @@ async function onFix() {
 </script>
 
 <template>
-  <div class="flex h-full flex-col gap-4 p-4">
-    <PageHeader title="Thread">
-      <template #breadcrumb>
-        <div class="mb-1 flex flex-wrap items-center gap-2">
-          <MessagesSquare class="h-4 w-4 text-muted-foreground" />
-          <Badge v-if="thread" variant="secondary">{{ thread.progress?.label ?? PHASE_LABELS[thread.phase] }}</Badge>
-          <Badge v-if="thread" variant="outline" class="px-1.5 text-[10px]">
-            plan: {{ thread.plan_state }}
-          </Badge>
-        </div>
+  <div class="flex h-full flex-col gap-4">
+    <!-- Identity lives in WorkItemView's unified header — this bar is ONLY
+         actions. Ticket/PR navigation is the tabs' job now. -->
+    <ActionMenuBar v-if="thread">
+      <Button
+        v-if="thread.phase === 'refining'"
+        size="sm"
+        :loading="implementing"
+        @click="onImplement"
+      >
+        <Hammer /> Implement
+      </Button>
+      <TestLocallyButton
+        v-if="thread.branch || pr"
+        :branch="pr?.head_ref || thread.branch"
+        :pr-number="pr?.github_number ?? null"
+      />
+      <Button v-if="active" size="sm" variant="ghost" @click="onAbandon">
+        <XCircle /> Abandon
+      </Button>
+      <template #trailing>
+        <Badge variant="secondary">{{ thread.progress?.label ?? PHASE_LABELS[thread.phase] }}</Badge>
+        <Badge variant="outline" class="px-1.5 text-[10px]">plan: {{ thread.plan_state }}</Badge>
       </template>
+    </ActionMenuBar>
 
-      <div v-if="thread" class="flex flex-wrap items-center gap-2">
-        <Button
-          v-if="thread.phase === 'refining'"
-          size="sm"
-          :loading="implementing"
-          @click="onImplement"
-        >
-          <Hammer /> Implement
-        </Button>
-        <TestLocallyButton
-          v-if="thread.branch || pr"
-          :branch="pr?.head_ref || thread.branch"
-          :pr-number="pr?.github_number ?? null"
-        />
-        <RouterLink
-          v-if="thread.pr_uid"
-          :to="{ name: 'pull-request-detail', params: { uid: thread.pr_uid } }"
-        >
-          <Button size="sm" variant="outline"><GitPullRequest /> Pull request</Button>
-        </RouterLink>
-        <RouterLink :to="{ name: 'ticket-detail', params: { uid: thread.subject_ticket_uid } }">
-          <Button size="sm" variant="ghost">Ticket</Button>
-        </RouterLink>
-        <Button v-if="active" size="sm" variant="ghost" @click="onAbandon">
-          <XCircle /> Abandon
-        </Button>
-      </div>
-    </PageHeader>
+    <!-- Delivery failures (push rejected, PR open failed) are otherwise
+         invisible: the thread just sits in `implementing` with changed files
+         and no PR. Say WHY, loudly. -->
+    <div
+      v-if="deliveryBlocked"
+      class="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm"
+    >
+      <strong>Couldn’t deliver the work:</strong> {{ deliveryBlocked }}
+      <span class="block text-xs text-muted-foreground">
+        The changes are safe in the workspace. Fix the cause (usually GitHub write access for the
+        connected credential), then send any message in the conversation to retry the push.
+      </span>
+    </div>
 
     <div v-if="error" class="text-sm text-bad">{{ error }}</div>
     <div v-else-if="loading" class="text-sm text-muted-foreground">Loading thread…</div>

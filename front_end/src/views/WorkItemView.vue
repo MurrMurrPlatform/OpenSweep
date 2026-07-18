@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
- * Unified work-item view — ONE page with tabs for the ticket, its thread and
- * its pull request, which are inherently the same piece of work.
+ * Unified work-item view — ONE page with ONE header for the ticket, its
+ * thread and its pull request, which are the same piece of work.
  *
  * All three legacy routes (/tickets/:uid, /threads/:uid, /pull-requests/:uid)
  * render this view; the route decides the focused tab and the uid kind, and
@@ -9,20 +9,29 @@
  * links keep working and tab switches rewrite the URL (router.replace) so
  * what you share matches what you see.
  *
+ * The header (title, state chips, tabs) lives HERE; the embedded views only
+ * render their content + one horizontal action menu. They announce state
+ * changes by dispatching a `workitem:changed` window event, which refreshes
+ * the header.
+ *
  * A PR can exist WITHOUT a ticket (hand-made branch pushed to GitHub and
- * synced in) — then only the PR tab exists and the page says so.
+ * synced in) — then only the PR tab is enabled and the page says so.
  */
-import { computed, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { GitPullRequest, MessagesSquare, SquareKanban } from 'lucide-vue-next'
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { CheckCircle2, GitPullRequest, MessagesSquare, Search, SquareKanban } from 'lucide-vue-next'
+import { Badge } from '@/components/ui/badge'
+import CiStateBadge from '@/components/delivery/CiStateBadge.vue'
+import TicketOriginBadge from '@/components/tickets/TicketOriginBadge.vue'
 import TicketDetailView from '@/views/TicketDetailView.vue'
 import ThreadView from '@/views/ThreadView.vue'
 import PullRequestDetailView from '@/views/PullRequestDetailView.vue'
 import { useDeliveryStore } from '@/stores/deliveryStore'
 import { useThreadStore } from '@/stores/threadStore'
 import { useTicketStore } from '@/stores/ticketStore'
-import type { ThreadDTO } from '@/types/api'
+import { useRepositoryStore } from '@/stores/repositoryStore'
+import { STATUS_LABELS, priorityVariant, statusVariant } from '@/components/tickets/ticketMeta'
+import type { PullRequestDTO, ThreadDTO, TicketDTO } from '@/types/api'
 
 type Kind = 'ticket' | 'thread' | 'pr'
 
@@ -31,6 +40,7 @@ const router = useRouter()
 const tickets = useTicketStore()
 const threads = useThreadStore()
 const delivery = useDeliveryStore()
+const repos = useRepositoryStore()
 
 const KIND_BY_ROUTE: Record<string, Kind> = {
   'ticket-detail': 'ticket',
@@ -41,10 +51,18 @@ const KIND_BY_ROUTE: Record<string, Kind> = {
 const kind = computed<Kind>(() => KIND_BY_ROUTE[String(route.name)] ?? 'ticket')
 const uid = computed(() => String(route.params.uid))
 
-const ticketUid = ref<string | null>(null)
-const threadUid = ref<string | null>(null)
-const prUid = ref<string | null>(null)
+const ticket = ref<TicketDTO | null>(null)
+const thread = ref<ThreadDTO | null>(null)
+const pr = ref<PullRequestDTO | null>(null)
 const resolving = ref(true)
+
+const THREAD_PHASE_LABELS: Record<string, string> = {
+  refining: 'Planning',
+  implementing: 'Implementing',
+  in_review: 'In review',
+  done: 'Done',
+  abandoned: 'Abandoned',
+}
 
 function pickThread(list: ThreadDTO[]): ThreadDTO | null {
   const active = list.find((t) => t.phase !== 'done' && t.phase !== 'abandoned')
@@ -53,9 +71,26 @@ function pickThread(list: ThreadDTO[]): ThreadDTO | null {
   return [...list].sort((a, b) => ((a.created_at ?? '') < (b.created_at ?? '') ? 1 : -1))[0] ?? null
 }
 
-async function threadForTicket(tUid: string): Promise<string | null> {
+async function threadForTicket(tUid: string): Promise<ThreadDTO | null> {
   try {
-    return pickThread(await threads.listThreads({ subject_ticket_uid: tUid }))?.uid ?? null
+    return pickThread(await threads.listThreads({ subject_ticket_uid: tUid }))
+  } catch {
+    return null
+  }
+}
+
+async function fetchTicket(tUid: string): Promise<TicketDTO | null> {
+  try {
+    const { children: _children, ...fields } = await tickets.getTicket(tUid)
+    return fields as TicketDTO
+  } catch {
+    return null
+  }
+}
+
+async function fetchPr(pUid: string): Promise<PullRequestDTO | null> {
+  try {
+    return await delivery.getPullRequest(pUid)
   } catch {
     return null
   }
@@ -65,57 +100,77 @@ async function threadForTicket(tUid: string): Promise<string | null> {
 async function resolve() {
   resolving.value = true
   const anchor = uid.value
-  let t: string | null = null
-  let th: string | null = null
-  let pr: string | null = null
+  let t: TicketDTO | null = null
+  let th: ThreadDTO | null = null
+  let p: PullRequestDTO | null = null
   try {
     if (kind.value === 'ticket') {
-      t = anchor
-      th = await threadForTicket(anchor)
-      try {
-        const detail = await tickets.getTicket(anchor)
-        pr = detail.linked_pr_uids?.[detail.linked_pr_uids.length - 1] ?? null
-      } catch {
-        pr = null
-      }
-      if (!pr && th) {
-        try {
-          pr = (await threads.getThread(th)).pr_uid || null
-        } catch {
-          pr = null
-        }
-      }
+      ;[t, th] = await Promise.all([fetchTicket(anchor), threadForTicket(anchor)])
+      const prUid = th?.pr_uid || t?.linked_pr_uids?.[t.linked_pr_uids.length - 1] || ''
+      if (prUid) p = await fetchPr(prUid)
     } else if (kind.value === 'thread') {
-      th = anchor
       try {
-        const detail = await threads.getThread(anchor)
-        t = detail.subject_ticket_uid || null
-        pr = detail.pr_uid || null
+        th = await threads.getThread(anchor)
       } catch {
-        t = null
+        th = null
       }
+      ;[t, p] = await Promise.all([
+        th?.subject_ticket_uid ? fetchTicket(th.subject_ticket_uid) : Promise.resolve(null),
+        th?.pr_uid ? fetchPr(th.pr_uid) : Promise.resolve(null),
+      ])
     } else {
-      pr = anchor
-      try {
-        const detail = await delivery.getPullRequest(anchor)
-        t = detail.ticket_uid || null
-        if (t) th = await threadForTicket(t)
-      } catch {
-        t = null
+      p = await fetchPr(anchor)
+      if (p?.ticket_uid) {
+        ;[t, th] = await Promise.all([fetchTicket(p.ticket_uid), threadForTicket(p.ticket_uid)])
       }
     }
+    if (!repos.loaded) await repos.fetchAll().catch(() => undefined)
   } finally {
     // Route anchor may have changed mid-flight — only commit the latest.
     if (anchor === uid.value) {
-      ticketUid.value = t
-      threadUid.value = th
-      prUid.value = pr
+      ticket.value = t
+      thread.value = th
+      pr.value = p
       resolving.value = false
     }
   }
 }
 
 watch([uid, kind], () => void resolve(), { immediate: true })
+
+// Embedded views announce mutations (status moved, plan approved, PR opened)
+// via a window event — the header refreshes without prop drilling.
+let refreshTimer: ReturnType<typeof setTimeout> | undefined
+function onChanged() {
+  clearTimeout(refreshTimer)
+  refreshTimer = setTimeout(() => void resolve(), 400)
+}
+onMounted(() => window.addEventListener('workitem:changed', onChanged))
+onBeforeUnmount(() => {
+  window.removeEventListener('workitem:changed', onChanged)
+  clearTimeout(refreshTimer)
+})
+
+// ── Header ───────────────────────────────────────────────────────────────────
+
+const title = computed(() => {
+  if (ticket.value?.title) return ticket.value.title
+  if (pr.value) return `#${pr.value.github_number} · ${pr.value.title || '(untitled)'}`
+  if (thread.value) return 'Thread'
+  return resolving.value ? '…' : 'Work item'
+})
+
+const repoName = computed(() => {
+  const repoUid = ticket.value?.repository_uid || pr.value?.repository_uid || thread.value?.repository_uid
+  return repoUid ? (repos.find(repoUid)?.name ?? '') : ''
+})
+
+const branchLine = computed(() => {
+  if (pr.value) return `${pr.value.head_ref} → ${pr.value.base_ref}`
+  return thread.value?.branch || ''
+})
+
+// ── Tabs ─────────────────────────────────────────────────────────────────────
 
 interface Tab {
   kind: Kind
@@ -125,28 +180,26 @@ interface Tab {
   hint: string
 }
 
-/** ALWAYS all three tabs — missing facets render disabled with a hint, so
- *  the unified page is discoverable even on a bare ticket. */
 const tabs = computed<Tab[]>(() => [
   {
     kind: 'ticket',
     label: 'Ticket',
     icon: SquareKanban,
-    target: ticketUid.value,
+    target: ticket.value?.uid ?? null,
     hint: 'No ticket is linked — this PR was opened outside OpenSweep.',
   },
   {
     kind: 'thread',
     label: 'Thread',
     icon: MessagesSquare,
-    target: threadUid.value,
-    hint: 'No thread yet — use “Start thread” on the ticket to begin the dev conversation.',
+    target: thread.value?.uid ?? null,
+    hint: 'No thread yet — use “Start thread” to begin the dev conversation.',
   },
   {
     kind: 'pr',
     label: 'Pull request',
     icon: GitPullRequest,
-    target: prUid.value,
+    target: pr.value?.uid ?? null,
     hint: 'No pull request yet — one opens when the thread finishes implementing.',
   },
 ])
@@ -157,44 +210,91 @@ const ROUTE_BY_KIND: Record<Kind, string> = {
   pr: 'pull-request-detail',
 }
 
-const activeTab = computed({
-  get: () => kind.value,
-  set: (next: Kind) => {
-    const target =
-      next === 'ticket' ? ticketUid.value : next === 'thread' ? threadUid.value : prUid.value
-    if (!target || next === kind.value) return
-    void router.replace({ name: ROUTE_BY_KIND[next], params: { uid: target } })
-  },
-})
+function selectTab(tab: Tab) {
+  if (!tab.target || tab.kind === kind.value) return
+  void router.replace({ name: ROUTE_BY_KIND[tab.kind], params: { uid: tab.target } })
+}
 
 /** The prop each embedded view receives — its OWN uid, never the anchor's. */
-const focusedUid = computed(() =>
-  kind.value === 'ticket' ? ticketUid.value : kind.value === 'thread' ? threadUid.value : prUid.value,
-)
+const focusedUid = computed(() => {
+  if (kind.value === 'ticket') return ticket.value?.uid ?? uid.value
+  if (kind.value === 'thread') return thread.value?.uid ?? uid.value
+  return pr.value?.uid ?? uid.value
+})
 </script>
 
 <template>
-  <div class="space-y-3">
-    <Tabs v-model="activeTab">
-      <TabsList>
-        <TabsTrigger
+  <div class="space-y-4">
+    <!-- ── Unified header: one identity for ticket + thread + PR ─────────── -->
+    <header class="space-y-2.5">
+      <h1 class="text-xl font-semibold leading-snug tracking-tight sm:text-2xl">{{ title }}</h1>
+
+      <div class="flex flex-wrap items-center gap-2">
+        <template v-if="ticket">
+          <Badge :variant="statusVariant(ticket.status)" class="px-1.5 text-[10px]">
+            {{ STATUS_LABELS[ticket.status] }}
+          </Badge>
+          <Badge :variant="priorityVariant(ticket.priority)" class="px-1.5 text-[10px]">
+            {{ ticket.priority }}
+          </Badge>
+          <TicketOriginBadge :origin="ticket.origin" />
+        </template>
+        <Badge v-if="thread" variant="info" class="px-1.5 text-[10px]">
+          <MessagesSquare class="size-3" /> {{ THREAD_PHASE_LABELS[thread.phase] ?? thread.phase }}
+        </Badge>
+        <template v-if="pr">
+          <Badge :variant="pr.state === 'merged' ? 'success' : pr.state === 'closed' ? 'secondary' : 'info'" class="px-1.5 text-[10px]">
+            <GitPullRequest class="size-3" /> {{ pr.state }}<template v-if="pr.draft"> · draft</template>
+          </Badge>
+          <CiStateBadge :state="pr.ci_state" />
+          <Badge v-if="pr.converged" variant="success" class="px-1.5 text-[10px]">
+            <CheckCircle2 class="size-3" /> converged
+          </Badge>
+        </template>
+        <RouterLink
+          v-if="ticket?.origin_finding_uid"
+          :to="{ name: 'finding-detail', params: { uid: ticket.origin_finding_uid } }"
+          class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        >
+          <Search class="size-3" /> origin finding
+        </RouterLink>
+        <span class="text-xs text-muted-foreground">
+          <template v-if="repoName">{{ repoName }}</template>
+          <template v-if="branchLine"> · <span class="font-mono">{{ branchLine }}</span></template>
+        </span>
+      </div>
+
+      <!-- Underline tabs, attached to a full-width rule -->
+      <nav class="flex gap-0.5 border-b" aria-label="Work item facets">
+        <button
           v-for="tab in tabs"
           :key="tab.kind"
-          :value="tab.kind"
+          type="button"
+          class="-mb-px inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors"
+          :class="
+            tab.kind === kind
+              ? 'border-primary font-medium text-foreground'
+              : tab.target
+                ? 'border-transparent text-muted-foreground hover:border-border hover:text-foreground'
+                : 'cursor-not-allowed border-transparent text-muted-foreground/40'
+          "
           :disabled="!tab.target && !resolving"
-          :title="tab.target ? '' : tab.hint"
+          :title="tab.target ? undefined : tab.hint"
+          @click="selectTab(tab)"
         >
-          <component :is="tab.icon" class="mr-1 size-3.5" /> {{ tab.label }}
-        </TabsTrigger>
-      </TabsList>
-    </Tabs>
-    <p v-if="!resolving && kind === 'pr' && !ticketUid" class="text-xs text-muted-foreground">
+          <component :is="tab.icon" class="size-3.5" /> {{ tab.label }}
+        </button>
+      </nav>
+    </header>
+
+    <p v-if="!resolving && kind === 'pr' && !ticket" class="text-xs text-muted-foreground">
       This pull request has no linked ticket — it was likely opened outside OpenSweep. You can
       still review, discuss and converge it here.
     </p>
 
-    <TicketDetailView v-if="kind === 'ticket' && focusedUid" :uid="focusedUid" />
-    <ThreadView v-else-if="kind === 'thread' && focusedUid" :uid="focusedUid" />
-    <PullRequestDetailView v-else-if="kind === 'pr' && focusedUid" :uid="focusedUid" />
+    <!-- ── Focused facet ─────────────────────────────────────────────────── -->
+    <TicketDetailView v-if="kind === 'ticket'" :uid="focusedUid" />
+    <ThreadView v-else-if="kind === 'thread'" :uid="focusedUid" />
+    <PullRequestDetailView v-else :uid="focusedUid" />
   </div>
 </template>

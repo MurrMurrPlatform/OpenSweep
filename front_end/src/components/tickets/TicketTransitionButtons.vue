@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { ArrowLeft, ArrowRight, Check, Trash2 } from 'lucide-vue-next'
+import { ArrowLeft, ArrowRight, Check, ChevronDown, Trash2 } from 'lucide-vue-next'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { useTicketStore } from '@/stores/ticketStore'
 import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
@@ -81,38 +88,41 @@ async function confirmRemove() {
 </script>
 
 <template>
-  <div
-    v-if="transitions.length || (showDelete && ticket.status === 'backlog')"
-    class="flex flex-wrap items-center gap-1.5"
-  >
-    <template v-for="t in transitions" :key="t.to">
-      <!-- Gate 1: Approve is the human gate — primary button + explicit confirm. -->
-      <Button v-if="t.kind === 'gate'" size="sm" :disabled="!!busy" @click="approveOpen = true">
-        <Check /> {{ t.label }}
-      </Button>
+  <div v-if="transitions.length || (showDelete && ticket.status === 'backlog')">
+    <!-- Gate 1 (Approve) stays a first-class button — it is THE human gate.
+         Everything else folds into one calm "Move" menu. -->
+    <div class="flex items-center gap-1.5">
       <Button
-        v-else
-        variant="outline"
+        v-if="transitions.some((t) => t.kind === 'gate')"
         size="sm"
         :disabled="!!busy"
-        :loading="busy === t.to"
-        @click="transition(t)"
+        @click="approveOpen = true"
       >
-        <ArrowLeft v-if="t.kind === 'back'" />
-        {{ t.label }}
-        <ArrowRight v-if="t.kind === 'forward'" />
+        <Check /> Approve
       </Button>
-    </template>
-    <Button
-      v-if="showDelete && ticket.status === 'backlog'"
-      variant="ghost"
-      size="sm"
-      :disabled="!!busy"
-      :loading="busy === 'delete'"
-      @click="remove"
-    >
-      <Trash2 /> Delete
-    </Button>
+      <DropdownMenu v-if="transitions.some((t) => t.kind !== 'gate') || (showDelete && ticket.status === 'backlog')">
+        <DropdownMenuTrigger as-child>
+          <Button variant="ghost" size="sm" :disabled="!!busy" :loading="!!busy && busy !== 'delete'">
+            Move <ChevronDown class="size-3.5 opacity-60" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" class="w-52">
+          <template v-for="t in transitions" :key="t.to">
+            <DropdownMenuItem v-if="t.kind !== 'gate'" @select="transition(t)">
+              <ArrowRight v-if="t.kind === 'forward'" />
+              <ArrowLeft v-else />
+              {{ t.label }}
+            </DropdownMenuItem>
+          </template>
+          <template v-if="showDelete && ticket.status === 'backlog'">
+            <DropdownMenuSeparator v-if="transitions.some((t) => t.kind !== 'gate')" />
+            <DropdownMenuItem class="text-destructive focus:text-destructive" @select="remove">
+              <Trash2 /> Delete ticket
+            </DropdownMenuItem>
+          </template>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
 
     <!-- Gate 1 confirm -->
     <Dialog v-model:open="approveOpen">

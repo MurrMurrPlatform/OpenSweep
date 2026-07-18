@@ -43,7 +43,7 @@ async function dispatch() {
 </script>
 
 <template>
-  <Button variant="outline" size="sm" :loading="refining" @click="dispatch">
+  <Button variant="ghost" size="sm" :loading="refining" @click="dispatch">
     <Wand2 /> Refine
   </Button>
 </template>

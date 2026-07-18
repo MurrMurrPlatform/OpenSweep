@@ -24,7 +24,7 @@ import { extractDispatchConflict, useActiveRuns } from '@/composables/useActiveR
 import { useDiscussions } from '@/composables/useDiscussions'
 import { useDiscussInRun } from '@/composables/useDiscussInRun'
 import { ApiError } from '@/services/api'
-import { PageHeader } from '@/components/ui/page-header'
+import ActionMenuBar from '@/components/workitem/ActionMenuBar.vue'
 import { Card, CardHeader, CardContent, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge, type BadgeVariants } from '@/components/ui/badge'
@@ -166,6 +166,7 @@ async function load() {
     verdict.value = v
     resolutions.value = rs
     fixSelection.value = new Set()
+    window.dispatchEvent(new CustomEvent('workitem:changed'))
     try {
       policy.value = await delivery.getMergePolicy(p.repository_uid)
     } catch {
@@ -480,84 +481,64 @@ async function onResolutionUpdated(updated: FindingResolutionDTO) {
     </ErrorState>
 
     <template v-else-if="pr">
-      <PageHeader :title="`#${pr.github_number} · ${pr.title || '(untitled)'}`">
-        <template #breadcrumb>
-          <div class="flex flex-wrap items-center gap-2 mb-1">
-            <Badge :variant="stateVariant" class="px-1.5 text-[10px]">{{ pr.state }}</Badge>
-            <Badge v-if="pr.draft" variant="outline" class="px-1.5 text-[10px]">draft</Badge>
-            <CiStateBadge :state="pr.ci_state" />
-            <Badge v-if="pr.converged" variant="success" class="px-1.5 text-[10px]">
-              <CheckCircle2 class="h-3 w-3" /> converged
-            </Badge>
-            <!-- The ticket is this PR's counterpart — keep the jump at the very top. -->
-            <RouterLink
-              v-if="pr.ticket_uid"
-              :to="{ name: 'ticket-detail', params: { uid: pr.ticket_uid } }"
-              class="inline-flex max-w-72 items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/20"
-              :title="ticketTitle || undefined"
+      <!-- Identity (title, state, CI, branch) lives in WorkItemView's unified
+           header — this bar is ONLY actions. -->
+      <ActionMenuBar>
+        <Button
+          size="sm"
+          :loading="reviewing"
+          :disabled="pr.state !== 'open' || !pr.head_sha || reviewInFlight"
+          :title="reviewInFlight ? 'A review run is already in flight for this PR' : undefined"
+          @click="openReviewDialog"
+        >
+          <Search /> Request review
+        </Button>
+        <TestLocallyButton :branch="pr.head_ref" :pr-number="pr.github_number" />
+        <Button variant="ghost" size="sm" :loading="discussing" @click="discussInRun">
+          <MessagesSquare /> Discuss
+        </Button>
+        <Button v-if="pr.url" as="a" :href="pr.url" target="_blank" rel="noopener" variant="ghost" size="sm">
+          <ExternalLink /> GitHub
+        </Button>
+        <button
+          v-if="!pr.ticket_uid"
+          type="button"
+          class="inline-flex items-center gap-1 rounded-full border border-dashed px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          @click="linkTicketOpen = true"
+        >
+          <Link2 class="size-3" /> Link ticket
+        </button>
+        <!-- Maintenance actions — needed rarely, kept out of the primary row. -->
+        <DropdownMenu>
+          <DropdownMenuTrigger as-child>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              class="size-8"
+              title="More actions"
+              :loading="syncing || recomputing"
             >
-              <SquareKanban class="size-3 shrink-0" />
-              <span class="truncate">{{ ticketTitle || `ticket ${pr.ticket_uid.slice(0, 8)}` }}</span>
-            </RouterLink>
-            <button
-              v-else
-              type="button"
-              class="inline-flex items-center gap-1 rounded-full border border-dashed px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              @click="linkTicketOpen = true"
-            >
-              <Link2 class="size-3" /> Link ticket
-            </button>
-            <span class="text-xs text-muted-foreground">
-              <span class="font-mono">{{ pr.head_ref }} → {{ pr.base_ref }}</span>
-              <template v-if="pr.author"> · {{ pr.author }}</template>
-              <template v-if="pr.head_sha"> · head <span class="font-mono">{{ pr.head_sha.slice(0, 10) }}</span></template>
-            </span>
-          </div>
-        </template>
-
-        <div class="flex flex-wrap items-center gap-2">
+              <MoreHorizontal />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" class="w-48">
+            <DropdownMenuItem :disabled="syncing" @select="resync">
+              <RefreshCw /> Re-sync from GitHub
+            </DropdownMenuItem>
+            <DropdownMenuItem :disabled="recomputing" @select="recompute">
+              <Target /> Recompute convergence
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <template #trailing>
+          <span v-if="pr.author || pr.head_sha" class="text-xs text-muted-foreground">
+            <template v-if="pr.author">{{ pr.author }}</template>
+            <template v-if="pr.head_sha"> · head <span class="font-mono">{{ pr.head_sha.slice(0, 10) }}</span></template>
+          </span>
           <DiscussionChip v-for="chat in discussions" :key="chat.uid" :run="chat" />
           <ActiveRunChip v-if="activeRun" :run="activeRun" />
-          <Button v-if="pr.url" as="a" :href="pr.url" target="_blank" rel="noopener" variant="ghost" size="sm">
-            <ExternalLink /> GitHub
-          </Button>
-          <TestLocallyButton :branch="pr.head_ref" :pr-number="pr.github_number" />
-          <Button variant="outline" size="sm" :loading="discussing" @click="discussInRun">
-            <MessagesSquare /> Discuss
-          </Button>
-          <Button
-            size="sm"
-            :loading="reviewing"
-            :disabled="pr.state !== 'open' || !pr.head_sha || reviewInFlight"
-            :title="reviewInFlight ? 'A review run is already in flight for this PR' : undefined"
-            @click="openReviewDialog"
-          >
-            <Search /> Request review
-          </Button>
-          <!-- Maintenance actions — needed rarely, kept out of the primary row. -->
-          <DropdownMenu>
-            <DropdownMenuTrigger as-child>
-              <Button
-                variant="outline"
-                size="icon-sm"
-                class="size-8"
-                title="More actions"
-                :loading="syncing || recomputing"
-              >
-                <MoreHorizontal />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" class="w-48">
-              <DropdownMenuItem :disabled="syncing" @select="resync">
-                <RefreshCw /> Re-sync from GitHub
-              </DropdownMenuItem>
-              <DropdownMenuItem :disabled="recomputing" @select="recompute">
-                <Target /> Recompute convergence
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </PageHeader>
+        </template>
+      </ActionMenuBar>
 
       <Dialog :open="reviewDialogOpen" @update:open="reviewDialogOpen = $event">
         <DialogContent class="sm:max-w-lg">

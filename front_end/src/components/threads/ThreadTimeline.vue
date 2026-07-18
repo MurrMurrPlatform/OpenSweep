@@ -19,6 +19,10 @@ const LABELS: Record<string, string> = {
   finding_bound: 'Review finding',
   fix_started: 'Fix round started',
   question: 'Agent asked a question',
+  implement_blocked: 'Implementation blocked',
+  delivery_blocked: 'Push / PR delivery failed',
+  questions_continued: 'Continued past open questions',
+  implement_started: 'Implementation started',
 }
 
 const items = computed(() =>

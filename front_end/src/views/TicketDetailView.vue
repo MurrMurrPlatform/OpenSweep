@@ -22,7 +22,7 @@ import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
 import { useDiscussions } from '@/composables/useDiscussions'
 import { useDiscussInRun } from '@/composables/useDiscussInRun'
-import { PageHeader } from '@/components/ui/page-header'
+import ActionMenuBar from '@/components/workitem/ActionMenuBar.vue'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -92,6 +92,7 @@ async function load() {
     const { children: subtickets, ...ticketFields } = detail
     ticket.value = ticketFields
     children.value = subtickets
+    window.dispatchEvent(new CustomEvent('workitem:changed'))
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -108,6 +109,7 @@ const repoName = computed(() =>
 
 function onUpdated(updated: TicketDTO) {
   ticket.value = updated
+  window.dispatchEvent(new CustomEvent('workitem:changed'))
 }
 
 function onDeleted() {
@@ -241,57 +243,29 @@ async function startThread() {
     </ErrorState>
 
     <template v-else-if="ticket">
-      <PageHeader :title="ticket.title || '(untitled)'">
-        <template #breadcrumb>
-          <div class="mb-1 flex flex-wrap items-center gap-2">
-            <Badge :variant="statusVariant(ticket.status)" class="px-1.5 text-[10px]">{{ STATUS_LABELS[ticket.status] }}</Badge>
-            <Badge :variant="priorityVariant(ticket.priority)" class="px-1.5 text-[10px]">{{ ticket.priority }}</Badge>
-            <Badge v-if="ticket.size" variant="outline" class="px-1.5 text-[10px]">{{ ticket.size }}</Badge>
-            <TicketOriginBadge :origin="ticket.origin" />
-            <Badge v-for="label in ticket.labels" :key="label" variant="secondary" class="px-1.5 text-[10px]">{{ label }}</Badge>
-            <span class="text-xs text-muted-foreground">{{ repoName }}</span>
-            <!-- The PR is this ticket's counterpart — keep the jump at the very top. -->
-            <RouterLink
-              v-for="prUid in ticket.linked_pr_uids"
-              :key="prUid"
-              :to="{ name: 'pull-request-detail', params: { uid: prUid } }"
-              class="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/20"
-            >
-              <GitPullRequest class="size-3" />
-              PR <span class="font-mono">{{ prUid.slice(0, 8) }}</span>
-            </RouterLink>
-            <RouterLink
-              v-if="ticket.origin_finding_uid"
-              :to="{ name: 'finding-detail', params: { uid: ticket.origin_finding_uid } }"
-              class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
-              <Search class="size-3" />
-              origin finding <span class="font-mono">{{ ticket.origin_finding_uid.slice(0, 8) }}</span>
-            </RouterLink>
-          </div>
-        </template>
-
-        <div class="flex flex-wrap items-center gap-2">
+      <!-- Identity (title, status, cross-links) lives in WorkItemView's
+           unified header — this bar is ONLY actions. -->
+      <ActionMenuBar>
+        <!-- The thread carries refine→plan→implement as ONE conversation;
+             once it exists the Thread tab is the way in. Refine stays as a
+             lighter one-shot that sharpens the ticket without starting it. -->
+        <Button v-if="!activeThreadUid" size="sm" :loading="startingThread" @click="startThread">
+          <MessagesSquare /> Start thread
+        </Button>
+        <TicketRefineButton :ticket="ticket" />
+        <Button variant="ghost" size="sm" :loading="discussing" @click="discussInRun">
+          <MessagesSquare /> Discuss
+        </Button>
+        <Button variant="ghost" size="sm" @click="editOpen = true">
+          <Pencil /> Edit
+        </Button>
+        <TicketTransitionButtons :ticket="ticket" @updated="onUpdated" @deleted="onDeleted" />
+        <template #trailing>
+          <Badge v-for="label in ticket.labels" :key="label" variant="secondary" class="px-1.5 text-[10px]">{{ label }}</Badge>
+          <Badge v-if="ticket.size" variant="outline" class="px-1.5 text-[10px]">{{ ticket.size }}</Badge>
           <DiscussionChip v-for="chat in discussions" :key="chat.uid" :run="chat" />
-          <!-- The thread carries refine→plan→implement as ONE conversation;
-               Refine stays as a lighter one-shot: a read-only run that
-               sharpens the ticket without starting the dev flow. -->
-          <Button size="sm" :loading="startingThread" @click="startThread">
-            <MessagesSquare /> {{ activeThreadUid ? 'Open thread' : 'Start thread' }}
-          </Button>
-          <TicketRefineButton :ticket="ticket" />
-          <Badge v-if="activeThreadPhase" variant="info" class="px-1.5 text-[10px]">
-            {{ THREAD_PHASE_LABELS[activeThreadPhase] ?? activeThreadPhase }}
-          </Badge>
-          <Button variant="outline" size="sm" :loading="discussing" @click="discussInRun">
-            <MessagesSquare /> Discuss
-          </Button>
-          <Button variant="outline" size="sm" @click="editOpen = true">
-            <Pencil /> Edit
-          </Button>
-          <TicketTransitionButtons :ticket="ticket" @updated="onUpdated" @deleted="onDeleted" />
-        </div>
-      </PageHeader>
+        </template>
+      </ActionMenuBar>
 
       <div class="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_340px] items-start">
         <!-- ── Main column ─────────────────────────────────────────────── -->
