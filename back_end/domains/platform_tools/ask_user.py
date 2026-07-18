@@ -60,4 +60,29 @@ async def ask_user(
     ]
     thread.updated_at = now
     await thread.save()
+
+    # Mirror to the ticket's discussion so followers see the question without
+    # opening the thread (the agent itself cannot post comments — the
+    # platform does, deterministically). Best-effort.
+    try:
+        from domains.comments import service as comment_service
+        from domains.comments.schemas import CommentAuthorKind, CommentSubjectType
+
+        opts_block = "\n".join(f"- {o}" for o in opts)
+        body = (
+            f"❓ **Agent question** (from the ticket's thread)\n\n{question.strip()}"
+            + (f"\n\n{opts_block}" if opts_block else "")
+            + "\n\n_Answer it in the thread — the answer will be posted back here._"
+        )
+        await comment_service.create_comment(
+            subject_type=CommentSubjectType.TICKET,
+            subject_uid=thread.subject_ticket_uid,
+            body=body,
+            author_uid=executor,
+            author_kind=CommentAuthorKind.OPENSWEEP,
+            source_run_uid=executor if executor != "manual" else "",
+        )
+    except Exception:  # noqa: BLE001 — mirroring must never fail the question
+        pass
+
     return {"thread_uid": thread_uid, "question_uid": question_uid, "status": "open"}

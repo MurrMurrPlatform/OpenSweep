@@ -34,5 +34,7 @@ def test_session_intent_forbids_comment_side_channel():
     intent = build_thread_session_intent(ticket, "th-1")
     # Observed failure: the agent posted its question and plan as ticket
     # COMMENTS, so submit_thread_plan never fired and the plan stayed empty.
-    assert "NEVER use `opensweep_platform_add_comment`" in intent
+    # The ban is structural now (test_thread_comment_guard); the prompt
+    # declares it so the agent isn't surprised by rejections.
+    assert "add_comment" in intent and "DISABLED" in intent
     assert "ONLY place the platform reads it from" in intent

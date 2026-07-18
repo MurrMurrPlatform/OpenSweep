@@ -310,6 +310,34 @@ class ThreadService:
         t.events = events
         t.updated_at = now
         await t.save()
+
+        # Mirror the answer next to the mirrored question on the ticket's
+        # discussion. Best-effort.
+        try:
+            from domains.comments import service as comment_service
+            from domains.comments.schemas import CommentAuthorKind, CommentSubjectType
+
+            question_text = next(
+                (
+                    str(e.get("question") or "")
+                    for e in events
+                    if e.get("type") == "question" and e.get("uid") == question_uid
+                ),
+                "",
+            )
+            body = f"✅ **Answer**: {answer.strip()}"
+            if question_text:
+                short = question_text if len(question_text) <= 160 else question_text[:160] + "…"
+                body = f"✅ **Answer** to “{short}”:\n\n{answer.strip()}"
+            await comment_service.create_comment(
+                subject_type=CommentSubjectType.TICKET,
+                subject_uid=t.subject_ticket_uid,
+                body=body,
+                author_uid=actor_uid,
+                author_kind=CommentAuthorKind.USER,
+            )
+        except Exception:  # noqa: BLE001 — mirroring must never fail the answer
+            pass
         return t
 
     async def transition(self, uid: str, to_phase: str, *, actor_uid: str) -> Thread:

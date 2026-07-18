@@ -30,6 +30,23 @@ class AddCommentRequest(BaseModel):
     body: str = Field(min_length=1)
 
 
+THREAD_COMMENT_REJECTION = (
+    "add_comment is disabled inside thread conversations. Ask the user "
+    "questions with `opensweep_platform_ask_user`, submit or update the plan "
+    "with `opensweep_platform_submit_thread_plan`, and say everything else "
+    "directly in this conversation — the platform mirrors your questions to "
+    "the ticket's discussion for you."
+)
+
+
+def thread_comment_error(playbook: str) -> str | None:
+    """Structural (not prompt-level) guard: thread-playbook runs may not post
+    comments — dogfooding showed agents route plans/questions there no matter
+    what the intent says. The rejection text teaches the model the correct
+    tools mid-run."""
+    return THREAD_COMMENT_REJECTION if (playbook or "") == "thread" else None
+
+
 @router.post(
     "",
     response_model=CommentDTO,
@@ -50,6 +67,13 @@ async def platform_add_comment(
         raise HTTPException(status_code=404, detail="not found")
     await require_tool_repo_access(request, user, subject.repository_uid)
     run_uid = request.headers.get("X-OpenSweep-Run-Uid") or ""
+    if run_uid:
+        from domains.investigations.models import Run
+
+        run = await Run.nodes.get_or_none(uid=run_uid)
+        rejection = thread_comment_error(run.playbook if run else "")
+        if rejection:
+            raise HTTPException(status_code=403, detail=rejection)
     c = await comment_service.create_comment(
         subject_type=req.subject_type,
         subject_uid=req.subject_uid,
