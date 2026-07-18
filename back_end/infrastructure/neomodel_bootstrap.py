@@ -52,6 +52,10 @@ _CONSTRAINTS = [
     "CREATE CONSTRAINT slack_connection_uid IF NOT EXISTS FOR (n:SlackConnection) REQUIRE n.uid IS UNIQUE",
     "CREATE CONSTRAINT slack_connection_team IF NOT EXISTS FOR (n:SlackConnection) REQUIRE n.team_id IS UNIQUE",
     "CREATE CONSTRAINT slack_rule_uid IF NOT EXISTS FOR (n:SlackNotificationRule) REQUIRE n.uid IS UNIQUE",
+    # Notifications — per-user read state for the in-app inbox. Uniqueness on
+    # (user_uid, event_uid) via the composite `key` property (composite unique
+    # constraints need Enterprise — same pattern as per-org repo slugs).
+    "CREATE CONSTRAINT notification_read_key IF NOT EXISTS FOR (n:NotificationRead) REQUIRE n.key IS UNIQUE",
     # Schema migration ledger (infrastructure/migration_runner.py)
     "CREATE CONSTRAINT schema_migration_version IF NOT EXISTS FOR (n:SchemaMigration) REQUIRE n.version IS UNIQUE",
 ]
@@ -73,6 +77,9 @@ _INDEXES = [
     "CREATE INDEX sandbox_purpose IF NOT EXISTS FOR (n:Sandbox) ON (n.purpose)",
     "CREATE INDEX event_occurred_at IF NOT EXISTS FOR (n:Event) ON (n.occurred_at)",
     "CREATE INDEX event_subject IF NOT EXISTS FOR (n:Event) ON (n.subject_uid)",
+    "CREATE INDEX event_kind IF NOT EXISTS FOR (n:Event) ON (n.kind)",
+    "CREATE INDEX notification_read_user IF NOT EXISTS FOR (n:NotificationRead) ON (n.user_uid)",
+    "CREATE INDEX notification_read_event IF NOT EXISTS FOR (n:NotificationRead) ON (n.event_uid)",
     "CREATE INDEX llm_provider_active IF NOT EXISTS FOR (n:LLMProvider) ON (n.active)",
     "CREATE INDEX llm_provider_org IF NOT EXISTS FOR (n:LLMProvider) ON (n.org_uid)",
     # Investigations

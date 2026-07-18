@@ -6,6 +6,7 @@ import { computed } from 'vue'
 import { useTheme } from '@/composables/useTheme'
 import { soundsEnabled, toggleSounds } from '@/lib/notifySound'
 import ColorSchemeSwitcher from '@/components/shell/ColorSchemeSwitcher.vue'
+import NotificationBell from '@/components/shell/NotificationBell.vue'
 import WorkspaceSwitcher from '@/components/shell/WorkspaceSwitcher.vue'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
@@ -73,6 +74,7 @@ const initials = computed(() =>
       >
         <SearchIcon class="size-4" />
       </Button>
+      <NotificationBell />
       <ColorSchemeSwitcher class="hidden sm:inline-flex" />
       <Button
         variant="ghost"

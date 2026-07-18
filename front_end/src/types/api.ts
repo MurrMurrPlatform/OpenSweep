@@ -854,6 +854,31 @@ export interface AuditEvent {
   occurred_at: string
 }
 
+// ── Notifications (inbox / attention centre) ────────────────────────────────
+
+export type NotificationCategory = 'attention' | 'activity' | 'mentions'
+
+export interface NotificationDTO {
+  uid: string
+  kind: string
+  category: NotificationCategory
+  label: string
+  title: string
+  subject_type: string
+  subject_uid: string
+  repository_uid: string
+  payload: Record<string, unknown>
+  occurred_at: string | null
+  read_at?: string | null
+}
+
+export interface NotificationCountsDTO {
+  total: number
+  attention: number
+  activity: number
+  mentions: number
+}
+
 // ── Delivery (PR convergence ledger) ────────────────────────────────────────
 
 export type PRState = 'open' | 'closed' | 'merged'

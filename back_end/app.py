@@ -501,6 +501,8 @@ def _include_routers(application: FastAPI):
         "api.v1.interests",
         # Slack — per-org workspace connection, notification rules, inbound bot
         "api.v1.slack",
+        # Notifications — the in-app inbox / attention centre (audit-derived)
+        "api.v1.notifications",
         # Internal machinery (Admin)
         "api.v1.llm_providers",
         "api.v1.sandboxes",

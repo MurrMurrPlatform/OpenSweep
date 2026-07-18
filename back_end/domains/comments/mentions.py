@@ -3,7 +3,8 @@
 Two mention forms live inline in a comment body:
   - `@opensweep` (word-boundary, case-insensitive) summons the platform agent.
   - `@[Label](type:uid)` references another data item; `type` is a
-    CommentSubjectType value or `group` (a TicketGroupProposal).
+    CommentSubjectType value, `group` (a TicketGroupProposal), or `user`
+    (a User — records a `comment.mention` notification for that user).
 """
 
 from __future__ import annotations
@@ -16,7 +17,8 @@ OPENSWEEP_MENTION_RE = re.compile(r"(?<!\w)@opensweep\b", re.IGNORECASE)
 ITEM_MENTION_RE = re.compile(r"@\[([^\]]+)\]\((\w+):([A-Za-z0-9_-]+)\)")
 
 # Every type addressable from the composer. Superset of the comment subject
-# types: `group` mentions a TicketGroupProposal, which carries no thread.
+# types: `group` mentions a TicketGroupProposal, which carries no thread;
+# `user` mentions a person and lands in their notification inbox.
 MENTIONABLE_TYPES = {
     "finding",
     "ticket",
@@ -26,7 +28,13 @@ MENTIONABLE_TYPES = {
     "investigation",
     "doc",
     "group",
+    "user",
 }
+
+
+def user_mentions(refs: list[dict[str, str]]) -> list[dict[str, str]]:
+    """The `user`-type refs among parsed mentions — the people to notify."""
+    return [ref for ref in refs if ref.get("type") == "user" and ref.get("uid")]
 
 
 def mentions_opensweep(body: str) -> bool:

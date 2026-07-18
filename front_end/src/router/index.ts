@@ -33,6 +33,10 @@ const router = createRouter({
         { path: 'audit', name: 'audit', component: () => import('@/views/AuditLogView.vue'),
           meta: { title: 'Audit log', eyebrow: 'History', section: 'main' } },
 
+        // Inbox / attention centre — org-wide, reached from the topbar bell.
+        { path: 'notifications', name: 'notifications', component: () => import('@/views/NotificationsView.vue'),
+          meta: { title: 'Notifications', eyebrow: 'Inbox', section: 'main' } },
+
         // ── Workspace-scoped (/r/:repoSlug/...) ─────────────────────────────
         {
           path: 'r/:repoSlug',

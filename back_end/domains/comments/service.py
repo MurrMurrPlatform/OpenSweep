@@ -21,7 +21,7 @@ from domains.comments.schemas import (
     CommentSubjectType,
     MentionRef,
 )
-from domains.comments.subjects import get_subject, subject_snapshot
+from domains.comments.subjects import get_subject, subject_repository_uid, subject_snapshot
 from domains.users.models import User
 from domains.users.services.local_user import get_local_user
 from infrastructure.audit import write_audit
@@ -110,11 +110,16 @@ async def create_comment(
         created_at=datetime.now(UTC),
     )
     await c.save()
+    # Comment nodes carry no repository_uid — anchor the audit events to the
+    # subject's repository explicitly so they are org-visible (audit feed,
+    # Slack, notification inbox) instead of platform-level.
+    repo_uid = await subject_repository_uid(subject_type, subject_uid) or ""
     await write_audit(
         kind="comment.created",
         subject_uid=c.uid,
         subject_type="Comment",
         actor_uid=author_uid,
+        repository_uid=repo_uid,
         payload={
             "comment_subject_type": subject_type.value,
             "comment_subject_uid": subject_uid,
@@ -123,6 +128,24 @@ async def create_comment(
             "mentions_opensweep": mention_lib.mentions_opensweep(body),
         },
     )
+    # `@[Name](user:uid)` tokens land in the mentioned users' notification
+    # inboxes — one comment.mention event per mentioned user (not the author).
+    for ref in mention_lib.user_mentions(c.mentions or []):
+        if ref["uid"] == author_uid:
+            continue
+        await write_audit(
+            kind="comment.mention",
+            subject_uid=c.uid,
+            subject_type="Comment",
+            actor_uid=author_uid,
+            repository_uid=repo_uid,
+            payload={
+                "comment_subject_type": subject_type.value,
+                "comment_subject_uid": subject_uid,
+                "mentioned_user_uid": ref["uid"],
+                "mentioned_user_label": ref.get("label", ""),
+            },
+        )
     return c
 
 
