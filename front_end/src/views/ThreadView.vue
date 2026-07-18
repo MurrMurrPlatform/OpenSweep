@@ -8,8 +8,10 @@ import { GitPullRequest, Hammer, MessagesSquare, XCircle } from 'lucide-vue-next
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { PageHeader } from '@/components/ui/page-header'
+import AgentTodosPanel from '@/components/threads/AgentTodosPanel.vue'
 import PlanPanel from '@/components/threads/PlanPanel.vue'
 import ThreadChat from '@/components/threads/ThreadChat.vue'
+import ThreadQuestionCard from '@/components/threads/ThreadQuestionCard.vue'
 import ThreadTimeline from '@/components/threads/ThreadTimeline.vue'
 import ConvergenceChecklist from '@/components/delivery/ConvergenceChecklist.vue'
 import TestLocallyButton from '@/components/delivery/TestLocallyButton.vue'
@@ -19,7 +21,13 @@ import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
 import { useDeliveryStore } from '@/stores/deliveryStore'
 import { useThreadStore } from '@/stores/threadStore'
-import type { PullRequestDTO, ThreadDetailDTO, ThreadPhase, VerdictDTO } from '@/types/api'
+import type {
+  AgentTodo,
+  PullRequestDTO,
+  ThreadDetailDTO,
+  ThreadPhase,
+  VerdictDTO,
+} from '@/types/api'
 
 const route = useRoute()
 const threads = useThreadStore()
@@ -121,6 +129,26 @@ async function onAbandon() {
   await reload()
 }
 
+// ── Structured questions + agent task list ──────────────────────────────────
+
+const chatRef = ref<InstanceType<typeof ThreadChat> | null>(null)
+const todos = ref<AgentTodo[]>([])
+
+const openQuestions = computed(() =>
+  (thread.value?.events ?? []).filter((e) => e.type === 'question' && e.status === 'open'),
+)
+
+async function onAnswerQuestion(questionUid: string, questionText: string, answer: string) {
+  try {
+    await threads.answerQuestion(uid.value, questionUid, answer)
+    // Deliver the answer into the conversation so the agent resumes.
+    await chatRef.value?.sendText(`Answer to "${questionText}": ${answer}`)
+  } catch (e) {
+    toast.error('Couldn’t answer', e instanceof ApiError ? e.detail : String(e))
+  }
+  await reload()
+}
+
 const fixing = ref(false)
 async function onFix() {
   if (!thread.value?.pr_uid || fixing.value) return
@@ -186,11 +214,20 @@ async function onFix() {
     <div v-else-if="loading" class="text-sm text-muted-foreground">Loading thread…</div>
 
     <div v-else-if="thread" class="flex min-h-0 flex-1 gap-4">
-      <section class="flex min-h-0 min-w-0 flex-1 flex-col">
+      <section class="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+        <ThreadQuestionCard
+          v-for="q in openQuestions"
+          :key="String(q.uid)"
+          :question="q"
+          @answer="(text) => onAnswerQuestion(String(q.uid), String(q.question ?? ''), text)"
+        />
         <ThreadChat
           v-if="thread.active_run_uid"
+          ref="chatRef"
+          :run-uids="thread.runs.map((r) => r.uid)"
           :run-uid="thread.active_run_uid"
           @turn-settled="reload"
+          @todos="todos = $event"
         />
         <p v-else class="text-sm text-muted-foreground">No conversation attached yet.</p>
       </section>
@@ -221,6 +258,7 @@ async function onFix() {
           @save="onSavePlan"
           @approve="onApprovePlan"
         />
+        <AgentTodosPanel :todos="todos" />
         <ThreadTimeline :events="thread.events" :runs="thread.runs" />
       </aside>
     </div>

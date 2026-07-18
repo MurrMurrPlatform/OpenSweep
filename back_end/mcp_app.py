@@ -115,6 +115,11 @@ OPENSWEEP_PLATFORM_TOOL_OPERATIONS = [
     # Grouping — agents may PROPOSE batching related tickets under one parent;
     # approval (which materializes the parent) is human-only, like Gate 1.
     "opensweep_platform_propose_ticket_group",
+    # Threads (unified dev flow) — the session agent persists its plan
+    # (drafts only; approval is human-only) and asks the user structured
+    # questions the thread UI renders as answer cards.
+    "opensweep_platform_submit_thread_plan",
+    "opensweep_platform_ask_user",
     # Comments — the human↔agent conversation on any data item. Agents read
     # the thread (also injected into run briefings) and reply in-thread;
     # @opensweep-summoned runs MUST answer via add_comment.

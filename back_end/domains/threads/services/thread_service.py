@@ -200,6 +200,33 @@ class ThreadService:
         )
         return t
 
+    async def answer_question(
+        self, uid: str, question_uid: str, answer: str, *, actor_uid: str
+    ) -> Thread:
+        """Mark a structured `question` event answered. The answer itself is
+        delivered to the agent as a normal follow-up message by the caller
+        (the thread chat) — this records the metadata side."""
+        t = await self.get_node(uid)
+        if not (answer or "").strip():
+            raise HTTPException(status_code=422, detail="answer must be non-empty")
+        now = datetime.now(UTC)
+        events = list(t.events or [])
+        for event in events:
+            if event.get("type") == "question" and event.get("uid") == question_uid:
+                if event.get("status") == "answered":
+                    return t  # idempotent
+                event["status"] = "answered"
+                event["answer"] = answer.strip()
+                event["answered_by"] = actor_uid
+                event["answered_at"] = now.isoformat()
+                break
+        else:
+            raise HTTPException(status_code=404, detail="question not found")
+        t.events = events
+        t.updated_at = now
+        await t.save()
+        return t
+
     async def transition(self, uid: str, to_phase: str, *, actor_uid: str) -> Thread:
         t = await self.get_node(uid)
         if not is_legal_phase_transition(t.phase, to_phase):

@@ -18,6 +18,7 @@ const LABELS: Record<string, string> = {
   review_verdict: 'Review verdict',
   finding_bound: 'Review finding',
   fix_started: 'Fix round started',
+  question: 'Agent asked a question',
 }
 
 const items = computed(() =>

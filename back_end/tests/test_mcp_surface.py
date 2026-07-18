@@ -134,6 +134,11 @@ def test_platform_tools_are_tracking_safe():
         # thread reply attributed to the run), never the source repository.
         "opensweep_platform_list_comments",
         "opensweep_platform_add_comment",
+        # Threads (unified dev flow) — plan DRAFTS (approval is human-only,
+        # like Gate 1) and structured user questions. Both write OpenSweep
+        # thread STATE only, never the source repository.
+        "opensweep_platform_submit_thread_plan",
+        "opensweep_platform_ask_user",
     }
     missing_delivery = delivery - actual
     assert not missing_delivery, f"delivery tools missing: {missing_delivery}"

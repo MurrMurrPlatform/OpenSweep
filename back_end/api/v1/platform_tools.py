@@ -347,6 +347,41 @@ async def http_update_finding(
     )
 
 
+class AskUserBody(BaseModel):
+    question: str = Field(min_length=1)
+    options: list[str] = Field(default_factory=list, max_length=6)
+    context: str = ""
+
+
+@router.post(
+    "/ask-user/{thread_uid}",
+    operation_id="opensweep_platform_ask_user",
+)
+async def http_ask_user(
+    thread_uid: str,
+    req: AskUserBody,
+    request: Request,
+    user: UserDTO = Depends(get_current_user),
+):
+    from domains.platform_tools.ask_user import ask_user
+    from domains.threads.models import Thread
+
+    thread = await Thread.nodes.get_or_none(uid=thread_uid)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="not found")
+    await require_tool_repo_access(request, user, thread.repository_uid)
+    executor = request.headers.get("x-opensweep-run-uid") or "manual"
+    return await _invoke_platform_tool(
+        "ask_user",
+        ask_user,
+        thread_uid=thread_uid,
+        question=req.question,
+        options=req.options,
+        context=req.context,
+        executor=executor,
+    )
+
+
 class SubmitThreadPlanBody(BaseModel):
     plan_markdown: str = Field(min_length=1)
 

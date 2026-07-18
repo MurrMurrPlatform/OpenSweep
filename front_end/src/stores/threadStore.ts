@@ -41,5 +41,22 @@ export const useThreadStore = defineStore('threads', () => {
     return apiPost<ThreadDTO>(`/threads/${uid}/abandon`)
   }
 
-  return { createThread, getThread, listThreads, updatePlan, approvePlan, implement, abandon }
+  async function answerQuestion(
+    uid: string,
+    questionUid: string,
+    answer: string,
+  ): Promise<ThreadDetailDTO> {
+    return apiPost<ThreadDetailDTO>(`/threads/${uid}/questions/${questionUid}/answer`, { answer })
+  }
+
+  return {
+    createThread,
+    getThread,
+    listThreads,
+    updatePlan,
+    approvePlan,
+    implement,
+    abandon,
+    answerQuestion,
+  }
 })

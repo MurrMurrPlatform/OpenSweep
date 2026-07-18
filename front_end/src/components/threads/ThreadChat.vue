@@ -15,10 +15,19 @@ import { useRunSocket, type RunSocketState } from '@/composables/useRunSocket'
 import { acceptsFollowUp, runStatusLabel, runStatusVariant } from '@/lib/runStatus'
 import { ApiError } from '@/services/api'
 import { useRunStore } from '@/stores/runStore'
-import type { RunDTO, RunStatus, RunTranscriptEvent } from '@/types/api'
+import type { AgentTodo, RunDTO, RunStatus, RunTranscriptEvent } from '@/types/api'
 
-const props = defineProps<{ runUid: string }>()
-const emit = defineEmits<{ (e: 'turn-settled'): void }>()
+const props = defineProps<{
+  /** Every run in the thread, oldest first — earlier runs render as the
+   *  read-only head of ONE continuous conversation. */
+  runUids: string[]
+  /** The run currently accepting messages (composer + live socket). */
+  runUid: string
+}>()
+const emit = defineEmits<{
+  (e: 'turn-settled'): void
+  (e: 'todos', todos: AgentTodo[]): void
+}>()
 
 const runs = useRunStore()
 const toast = useToast()
@@ -27,6 +36,58 @@ const run = ref<RunDTO | null>(null)
 /** Narrated feed by default; raw transcript on demand. */
 const narrated = ref(true)
 const events = ref<RunTranscriptEvent[]>([])
+/** Read-only transcripts of the thread's EARLIER runs, stitched above the
+ *  active run so the whole thread reads as one conversation. */
+const priorEvents = ref<RunTranscriptEvent[]>([])
+
+async function loadPriorRuns() {
+  const prior = props.runUids.filter((uid) => uid !== props.runUid)
+  const out: RunTranscriptEvent[] = []
+  for (const uid of prior) {
+    try {
+      const chunk = await runs.getTranscript(uid, 0)
+      out.push(...chunk.events)
+      out.push({
+        seq: 0,
+        ts: '',
+        turn: 0,
+        type: 'system',
+        text: 'conversation continues in a new workspace',
+      })
+    } catch {
+      /* an expired/errored earlier run must not block the live conversation */
+    }
+  }
+  priorEvents.value = out
+}
+
+const allEvents = computed(() => [...priorEvents.value, ...events.value])
+
+// Agent working plan: mirror of the LAST TodoWrite call in the conversation.
+const todos = computed<AgentTodo[]>(() => {
+  for (let i = allEvents.value.length - 1; i >= 0; i--) {
+    const e = allEvents.value[i]
+    if (e.type !== 'tool_use' || e.name !== 'TodoWrite') continue
+    try {
+      const parsed = JSON.parse(e.input || '{}')
+      const list = Array.isArray(parsed?.todos) ? parsed.todos : []
+      return list
+        .filter((t: unknown): t is Record<string, string> => typeof t === 'object' && t !== null)
+        .map((t: Record<string, string>) => ({
+          content: String(t.content ?? ''),
+          status: (['pending', 'in_progress', 'completed'].includes(t.status)
+            ? t.status
+            : 'pending') as AgentTodo['status'],
+          activeForm: t.activeForm ? String(t.activeForm) : undefined,
+        }))
+        .filter((t: AgentTodo) => t.content)
+    } catch {
+      return []
+    }
+  }
+  return []
+})
+watch(todos, (v) => emit('todos', v), { immediate: true })
 const lastSeq = ref(0)
 const draft = ref('')
 const awaitingReply = ref(false)
@@ -121,6 +182,7 @@ async function refetchTranscriptFull() {
 
 async function load() {
   try {
+    await loadPriorRuns()
     run.value = await runs.get(props.runUid)
     await refetchTranscriptFull()
     openSocket()
@@ -135,6 +197,8 @@ onBeforeUnmount(() => socket.value?.close())
 watch(
   () => props.runUid,
   () => {
+    // Run swap (implement/fix dispatched): the finished conversation moves
+    // into the stitched read-only head; the pane stays ONE conversation.
     events.value = []
     lastSeq.value = 0
     streamingText.value = ''
@@ -188,6 +252,13 @@ async function send() {
   if (!canSend.value || !run.value) return
   const text = draft.value.trim()
   draft.value = ''
+  await sendText(text)
+}
+
+/** Programmatic send — used by the thread view to deliver question answers
+ *  into the conversation. */
+async function sendText(text: string) {
+  if (!run.value || !text.trim()) return
   const optimistic = pushOptimisticUserEvent(text)
 
   if (socket.value && wsState.value === 'open' && socket.value.send(text)) {
@@ -215,6 +286,8 @@ async function send() {
     restPending.value = false
   }
 }
+
+defineExpose({ sendText })
 
 async function interrupt() {
   if (!run.value || interrupting.value) return
@@ -264,7 +337,7 @@ async function interrupt() {
 
       <div class="min-h-0 flex-1 overflow-y-auto">
         <RunTranscript
-          :events="events"
+          :events="allEvents"
           :live="showWorking"
           :streaming-text="streamingText"
           :narrated="narrated"

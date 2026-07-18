@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable
 from domains.platform_tools import (
     add_analysis_note,
     ask_question,
+    ask_user,
     attach_artifact,
     complete_run,
     confirm_doc_current,
@@ -47,6 +48,7 @@ _TOOLS: dict[str, Callable[..., Awaitable[Any]]] = {
     "attach_artifact": attach_artifact,
     "complete_run": complete_run,
     "submit_thread_plan": submit_thread_plan,
+    "ask_user": ask_user,
     "upsert_analysis": upsert_analysis,
     "set_analysis_section": set_analysis_section,
     "add_analysis_note": add_analysis_note,

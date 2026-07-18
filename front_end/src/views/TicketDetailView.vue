@@ -41,8 +41,6 @@ import {
 } from '@/components/ui/alert-dialog'
 import TicketCard from '@/components/tickets/TicketCard.vue'
 import TicketDialog from '@/components/tickets/TicketDialog.vue'
-import TicketImplementButton from '@/components/tickets/TicketImplementButton.vue'
-import TicketRefineButton from '@/components/tickets/TicketRefineButton.vue'
 import TicketOriginBadge from '@/components/tickets/TicketOriginBadge.vue'
 import TicketStatusPipeline from '@/components/tickets/TicketStatusPipeline.vue'
 import TicketTransitionButtons from '@/components/tickets/TicketTransitionButtons.vue'
@@ -245,11 +243,11 @@ async function startThread() {
 
         <div class="flex flex-wrap items-center gap-2">
           <DiscussionChip v-for="chat in discussions" :key="chat.uid" :run="chat" />
+          <!-- The thread IS the refine→plan→implement flow; the old one-shot
+               Refine/Implement buttons were removed to keep one path. -->
           <Button size="sm" :loading="startingThread" @click="startThread">
             <MessagesSquare /> {{ activeThreadUid ? 'Open thread' : 'Start thread' }}
           </Button>
-          <TicketRefineButton :ticket="ticket" />
-          <TicketImplementButton :ticket="ticket" @updated="onUpdated" />
           <Button variant="outline" size="sm" :loading="discussing" @click="discussInRun">
             <MessagesSquare /> Discuss
           </Button>

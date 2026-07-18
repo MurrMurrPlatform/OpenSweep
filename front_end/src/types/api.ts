@@ -1346,6 +1346,14 @@ export interface ThreadDetailDTO extends ThreadDTO {
   runs: ThreadRunSummaryDTO[]
 }
 
+/** Agent working-plan item, mirrored live from Claude Code's TodoWrite calls
+ *  in the transcript (unified dev flow). */
+export interface AgentTodo {
+  content: string
+  status: 'pending' | 'in_progress' | 'completed'
+  activeForm?: string
+}
+
 // ── Legacy short-name aliases ───────────────────────────────────────────────
 // Components written before the *DTO rename import these. Cheaper to keep the
 // aliases than touch every component.

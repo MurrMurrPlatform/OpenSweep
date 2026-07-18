@@ -6,6 +6,7 @@ lifecycle: create, plan gate, implement, abandon.
 """
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel, Field
 
 from api.dependencies import get_current_user, require_role
 from domains.tenancy import require_repo_in_org
@@ -100,6 +101,28 @@ async def implement_thread(
     await require_repo_in_org(t.repository_uid, user.org_uid)
     run = await svc.start_implement(uid, actor_uid=user.uid)
     return {"run_uid": run.uid, "thread_uid": uid}
+
+
+class AnswerQuestionRequest(BaseModel):
+    answer: str = Field(min_length=1)
+
+
+@router.post(
+    "/{uid}/questions/{question_uid}/answer",
+    response_model=ThreadDetailDTO,
+    operation_id="opensweep_thread_answer_question",
+)
+async def answer_question(
+    uid: str,
+    question_uid: str,
+    req: AnswerQuestionRequest,
+    user: UserDTO = Depends(require_role("maintainer")),
+):
+    svc = ThreadService()
+    t = await svc.get_node(uid)
+    await require_repo_in_org(t.repository_uid, user.org_uid)
+    await svc.answer_question(uid, question_uid, req.answer, actor_uid=user.uid)
+    return await svc.get_detail(uid)
 
 
 @router.post(
