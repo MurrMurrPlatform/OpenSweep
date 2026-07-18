@@ -4,26 +4,40 @@
 // plan + timeline rail right.
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
-import { GitPullRequest, Hammer, MessagesSquare, XCircle } from 'lucide-vue-next'
+import { Bot, GitPullRequest, Hammer, MessagesSquare, XCircle } from 'lucide-vue-next'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { PageHeader } from '@/components/ui/page-header'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import PlanPanel from '@/components/threads/PlanPanel.vue'
 import ThreadChat from '@/components/threads/ThreadChat.vue'
 import ThreadTimeline from '@/components/threads/ThreadTimeline.vue'
 import ConvergenceChecklist from '@/components/delivery/ConvergenceChecklist.vue'
 import TestLocallyButton from '@/components/delivery/TestLocallyButton.vue'
 import VerdictCard from '@/components/delivery/VerdictCard.vue'
-import { Card, CardContent } from '@/components/ui/card'
+import RunFilesPanel from '@/components/runs/RunFilesPanel.vue'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
 import { useDeliveryStore } from '@/stores/deliveryStore'
+import { useRunPolicyStore } from '@/stores/runPolicyStore'
+import { useRunStore } from '@/stores/runStore'
 import { useThreadStore } from '@/stores/threadStore'
-import type { PullRequestDTO, ThreadDetailDTO, ThreadPhase, VerdictDTO } from '@/types/api'
+import { isLiveRunStatus } from '@/lib/runStatus'
+import type {
+  PullRequestDTO,
+  RunDTO,
+  RunPolicyDTO,
+  ThreadDetailDTO,
+  ThreadPhase,
+  VerdictDTO,
+} from '@/types/api'
 
 const route = useRoute()
 const threads = useThreadStore()
 const delivery = useDeliveryStore()
+const runs = useRunStore()
+const runPolicies = useRunPolicyStore()
 const toast = useToast()
 
 const uid = computed(() => String(route.params.uid))
@@ -32,6 +46,78 @@ const pr = ref<PullRequestDTO | null>(null)
 const verdict = ref<VerdictDTO | null>(null)
 const loading = ref(true)
 const error = ref<string | null>(null)
+
+// ── Run parity: the thread IS a conversation over runs, so it gets the same
+// surfaces the Run page has — a Files (diff) tab against the active run's
+// workspace, and the policy / provider / usage facts of that run.
+const activeTab = ref<'conversation' | 'files' | 'details'>('conversation')
+const activeRun = ref<RunDTO | null>(null)
+const runPolicy = ref<RunPolicyDTO | null>(null)
+const filesTabOpened = ref(false)
+const filesRefreshKey = ref(0)
+const changedFilesCount = ref<number | null>(null)
+watch(activeTab, (tab) => {
+  if (tab === 'files') filesTabOpened.value = true
+})
+const filesTabLabel = computed(() =>
+  changedFilesCount.value === null ? 'Files' : `Files (${changedFilesCount.value})`,
+)
+const isLiveRun = computed(() =>
+  Boolean(activeRun.value && isLiveRunStatus(activeRun.value.status)),
+)
+
+async function loadActiveRun() {
+  const runUid = thread.value?.active_run_uid || ''
+  if (!runUid) {
+    activeRun.value = null
+    runPolicy.value = null
+    return
+  }
+  try {
+    activeRun.value = await runs.get(runUid)
+  } catch {
+    activeRun.value = null
+  }
+  const policyUid = activeRun.value?.run_policy_uid || ''
+  if (!policyUid) {
+    runPolicy.value = null
+  } else if (runPolicy.value?.uid !== policyUid) {
+    try {
+      runPolicy.value = await runPolicies.get(policyUid)
+    } catch {
+      runPolicy.value = null
+    }
+  }
+}
+
+const policyLabel = computed(() => {
+  if (!activeRun.value?.run_policy_uid) return 'system default'
+  if (runPolicy.value) return `${runPolicy.value.name} (v${runPolicy.value.version})`
+  return activeRun.value.run_policy_uid.slice(0, 8)
+})
+
+const policyLimits = computed(() => {
+  const p = runPolicy.value
+  if (!p) return ''
+  const bits: string[] = []
+  if (p.max_wall_seconds) bits.push(`${p.max_wall_seconds}s wall`)
+  if (p.max_tokens) bits.push(`${p.max_tokens.toLocaleString()} tokens`)
+  if (p.max_dollars) bits.push(`$${p.max_dollars}`)
+  if (p.max_tool_turns) bits.push(`${p.max_tool_turns} tool turns`)
+  if (p.local_only) bits.push('local-only')
+  if (p.dry_run) bits.push('dry-run')
+  return bits.join(' · ')
+})
+
+const usageSummary = computed(() => {
+  const usage = (activeRun.value?.usage ?? {}) as Record<string, unknown>
+  const bits: string[] = []
+  const tokens = usage.tokens
+  const dollars = usage.dollars
+  if (typeof tokens === 'number' && tokens > 0) bits.push(`${tokens.toLocaleString()} tokens`)
+  if (typeof dollars === 'number' && dollars > 0) bits.push(`$${dollars.toFixed(2)}`)
+  return bits.join(' · ')
+})
 
 const PHASE_LABELS: Record<ThreadPhase, string> = {
   refining: 'Refining & planning',
@@ -57,6 +143,7 @@ async function reload() {
         verdict.value = null
       }
     }
+    await loadActiveRun()
     error.value = null
   } catch (e) {
     error.value = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
@@ -65,10 +152,17 @@ async function reload() {
   }
 }
 
+function onTurnSettled() {
+  filesRefreshKey.value += 1 // the Files panel refetches the workspace diff
+  void reload()
+}
+
 onMounted(reload)
 watch(uid, () => {
   thread.value = null
   pr.value = null
+  activeRun.value = null
+  changedFilesCount.value = null
   loading.value = true
   void reload()
 })
@@ -236,6 +330,14 @@ async function onFix() {
 
     <div v-else-if="thread" class="flex min-h-0 flex-1 gap-4">
       <section class="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+        <Tabs v-model="activeTab">
+          <TabsList>
+            <TabsTrigger value="conversation">Conversation</TabsTrigger>
+            <TabsTrigger value="files">{{ filesTabLabel }}</TabsTrigger>
+            <TabsTrigger value="details">Details</TabsTrigger>
+          </TabsList>
+        </Tabs>
+
         <div
           v-if="openQuestions.length"
           class="flex items-center gap-2 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs"
@@ -257,15 +359,99 @@ async function onFix() {
         </div>
         <ThreadChat
           v-if="thread.active_run_uid"
+          v-show="activeTab === 'conversation'"
           ref="chatRef"
           :run-uids="thread.runs.map((r) => r.uid)"
           :run-uid="thread.active_run_uid"
           :questions="openQuestions"
           :answering-uid="answeringUid"
-          @turn-settled="reload"
+          @turn-settled="onTurnSettled"
           @answer="onAnswerQuestion"
         />
-        <p v-else class="text-sm text-muted-foreground">No conversation attached yet.</p>
+        <p
+          v-else-if="activeTab === 'conversation'"
+          class="text-sm text-muted-foreground"
+        >
+          No conversation attached yet.
+        </p>
+
+        <RunFilesPanel
+          v-if="filesTabOpened && thread.active_run_uid"
+          v-show="activeTab === 'files'"
+          :run-uid="thread.active_run_uid"
+          :refresh-key="filesRefreshKey"
+          :live="isLiveRun"
+          @loaded="changedFilesCount = $event"
+        />
+        <p
+          v-else-if="activeTab === 'files' && !thread.active_run_uid"
+          class="text-sm text-muted-foreground"
+        >
+          No workspace yet — files appear once the conversation starts.
+        </p>
+
+        <div v-if="activeTab === 'details'" class="space-y-4 overflow-y-auto">
+          <Card>
+            <CardHeader class="p-4"><h2 class="text-sm font-semibold">Session facts</h2></CardHeader>
+            <CardContent class="p-4 pt-0">
+              <dl v-if="activeRun" class="grid grid-cols-[120px_1fr] gap-x-2 gap-y-1 text-xs">
+                <dt class="text-muted-foreground">run</dt>
+                <dd>
+                  <RouterLink
+                    :to="{ name: 'run-detail', params: { uid: activeRun.uid } }"
+                    class="font-mono text-primary hover:underline"
+                  >
+                    {{ activeRun.uid.slice(0, 12) }}
+                  </RouterLink>
+                </dd>
+                <dt class="text-muted-foreground">playbook</dt><dd>{{ activeRun.playbook }}</dd>
+                <dt class="text-muted-foreground">executor</dt><dd>{{ activeRun.executor }}</dd>
+                <template v-if="activeRun.provider_label || activeRun.provider_kind">
+                  <dt class="text-muted-foreground">provider</dt>
+                  <dd>
+                    <div>{{ activeRun.provider_label || activeRun.provider_kind }}</div>
+                    <div v-if="activeRun.provider_model" class="font-mono text-muted-foreground">
+                      {{ activeRun.provider_model }}
+                    </div>
+                  </dd>
+                </template>
+                <dt class="text-muted-foreground">policy</dt>
+                <dd :title="runPolicy?.description || ''">
+                  {{ policyLabel }}
+                  <span v-if="policyLimits" class="block text-muted-foreground">{{ policyLimits }}</span>
+                </dd>
+                <dt class="text-muted-foreground">turns</dt><dd>{{ activeRun.turns }}</dd>
+                <template v-if="usageSummary">
+                  <dt class="text-muted-foreground">usage</dt><dd>{{ usageSummary }}</dd>
+                </template>
+                <dt class="text-muted-foreground">workspace</dt>
+                <dd class="font-mono">{{ activeRun.sandbox_uid || 'destroyed' }}</dd>
+                <dt class="text-muted-foreground">branch</dt>
+                <dd class="font-mono">{{ thread.branch || '—' }}</dd>
+                <dt class="text-muted-foreground">started</dt><dd>{{ activeRun.started_at || '—' }}</dd>
+                <dt class="text-muted-foreground">last activity</dt>
+                <dd>{{ activeRun.last_activity_at || '—' }}</dd>
+              </dl>
+              <p v-else class="text-xs text-muted-foreground">No active run.</p>
+            </CardContent>
+          </Card>
+          <Card v-if="thread.runs.length > 1">
+            <CardHeader class="p-4"><h2 class="text-sm font-semibold">All runs in this thread</h2></CardHeader>
+            <CardContent class="space-y-1 p-4 pt-0">
+              <RouterLink
+                v-for="r in thread.runs"
+                :key="r.uid"
+                :to="{ name: 'run-detail', params: { uid: r.uid } }"
+                class="flex items-center gap-2 rounded-sm border bg-muted px-2 py-1.5 text-xs hover:border-primary/60"
+              >
+                <Bot class="size-3.5 text-muted-foreground" />
+                <span class="font-mono">{{ r.uid.slice(0, 8) }}</span>
+                <span>{{ r.playbook }}</span>
+                <span class="ml-auto text-muted-foreground">{{ r.status }}</span>
+              </RouterLink>
+            </CardContent>
+          </Card>
+        </div>
       </section>
 
       <aside class="w-96 shrink-0 space-y-4 overflow-y-auto">

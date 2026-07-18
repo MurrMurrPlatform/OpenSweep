@@ -1,9 +1,15 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { Check, Pencil } from 'lucide-vue-next'
+import { Check, Maximize2, Pencil } from 'lucide-vue-next'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import {
+  Dialog,
+  DialogHeader,
+  DialogScrollContent,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import MarkdownView from '@/components/ui/markdown/MarkdownView.vue'
 import type { PlanState } from '@/types/api'
 
@@ -18,6 +24,7 @@ const emit = defineEmits<{
 }>()
 
 const editing = ref(false)
+const expanded = ref(false)
 const draft = ref(props.planText)
 watch(
   () => props.planText,
@@ -41,6 +48,9 @@ function save() {
           <Badge :variant="planState === 'approved' ? 'success' : 'secondary'">
             {{ planState }}
           </Badge>
+          <Button v-if="planText" variant="ghost" size="sm" title="Expand plan" @click="expanded = true">
+            <Maximize2 />
+          </Button>
           <Button v-if="editable && !editing && planText" variant="ghost" size="sm" @click="editing = true">
             <Pencil />
           </Button>
@@ -60,10 +70,42 @@ function save() {
           <Button size="sm" variant="ghost" @click="editing = false">Cancel</Button>
         </div>
       </template>
-      <MarkdownView v-else-if="planText" :model-value="planText" :preview-only="true" compact />
+      <button
+        v-else-if="planText"
+        type="button"
+        class="block w-full cursor-zoom-in text-left"
+        title="Click to read the full plan"
+        @click="expanded = true"
+      >
+        <MarkdownView :model-value="planText" :preview-only="true" compact />
+      </button>
       <p v-else class="text-sm text-muted-foreground">
         No plan yet — the agent drafts one in the conversation, or tell it to “just implement it”.
       </p>
     </CardContent>
   </Card>
+
+  <!-- Full-plan reader: the sidebar preview is deliberately compact; this
+       modal is where the plan becomes fully readable (and approvable). -->
+  <Dialog v-model:open="expanded">
+    <DialogScrollContent class="max-w-3xl">
+      <DialogHeader>
+        <DialogTitle class="flex items-center gap-2">
+          Plan
+          <Badge :variant="planState === 'approved' ? 'success' : 'secondary'">
+            {{ planState }}
+          </Badge>
+          <Button
+            v-if="editable && planState === 'drafted'"
+            size="sm"
+            class="ml-auto mr-6"
+            @click="((expanded = false), emit('approve'))"
+          >
+            <Check /> Approve
+          </Button>
+        </DialogTitle>
+      </DialogHeader>
+      <MarkdownView :model-value="planText" :preview-only="true" min-height="0" />
+    </DialogScrollContent>
+  </Dialog>
 </template>
