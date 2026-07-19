@@ -39,5 +39,7 @@ async def test_human_tuned_dollars_preserved(monkeypatch):
     assert p.max_dollars == 7.5
 
 
-async def test_current_default_is_20(monkeypatch):
-    assert system_default._DEFAULTS["max_dollars"] == 20.0
+async def test_current_default_is_unlimited(monkeypatch):
+    assert system_default._DEFAULTS["max_dollars"] is None
+    assert system_default._DEFAULTS["max_wall_seconds"] == 0
+    assert system_default._DEFAULTS["max_tool_turns"] is None

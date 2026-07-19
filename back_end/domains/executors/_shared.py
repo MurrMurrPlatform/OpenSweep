@@ -80,17 +80,17 @@ async def resolve_provider(
 def resolve_wall_ceiling(req: DispatchRequest, provider_kind: str) -> int | None:
     """Effective wall ceiling for the run; None disables the guard.
 
-    Ladder: an explicit per-stage override outranks everything (including
-    the local-provider skip); local providers otherwise run unbounded (the
-    user pays with their own electricity, not metered tokens); else the
-    policy ceiling; else the system default.
+    Ladder: explicit per-stage override > local-provider skip > policy value
+    (0 = explicitly unlimited, positive = ceiling, None/unset = fall through)
+    > system default.
     """
     if req.max_wall_seconds_override:
         return int(req.max_wall_seconds_override)
     if is_local_provider_kind(provider_kind):
         return None
-    if req.policy and req.policy.max_wall_seconds:
-        return int(req.policy.max_wall_seconds)
+    if req.policy is not None and req.policy.max_wall_seconds is not None:
+        value = int(req.policy.max_wall_seconds)
+        return value if value > 0 else None
     return DEFAULT_MAX_WALL_SECONDS
 
 
