@@ -49,6 +49,16 @@ def handoff_mode(*, executor: str, cli_session_id: str, sandbox_live: bool) -> t
     return "seeded", ""
 
 
+def _shell_path(host_path: str) -> str:
+    """Quote a host path for the paste command. The stored path deliberately
+    starts with an unexpanded `~` (OPENSWEEP_SANDBOX_HOST_PATH) — plain quoting
+    would kill that expansion, so `~/` becomes an explicit `$HOME/` inside
+    double quotes; anything else is double-quoted verbatim."""
+    if host_path.startswith("~/"):
+        return f'"$HOME/{host_path[2:]}"'
+    return f'"{host_path}"'
+
+
 def build_resume_command(*, host_path: str, container_path: str, cli_session_id: str) -> str:
     """One-paste 3A command. The destination slug is computed ON THE HOST from
     the resolved cwd (`pwd -P` — macOS /tmp-style symlinks would break a
@@ -57,7 +67,7 @@ def build_resume_command(*, host_path: str, container_path: str, cli_session_id:
     silenced so a missing source degrades to claude's own clear error."""
     src_slug = claude_project_slug(container_path)
     return (
-        f"cd {host_path} && "
+        f"cd {_shell_path(host_path)} && "
         "dst=\"$HOME/.claude/projects/$(pwd -P | sed 's/[^a-zA-Z0-9]/-/g')\" && "
         'mkdir -p "$dst" && '
         f'cp -n "$HOME/.claude/projects/{src_slug}/{cli_session_id}.jsonl" "$dst/" 2>/dev/null; '
@@ -68,7 +78,7 @@ def build_resume_command(*, host_path: str, container_path: str, cli_session_id:
 def build_seeded_command(*, host_path: str) -> str:
     """One-paste 3B command: fresh claude, seeded by the handoff brief."""
     return (
-        f"cd {host_path} && claude "
+        f"cd {_shell_path(host_path)} && claude "
         f'"Read {HANDOFF_FILENAME} at the repository root first — it hands over an '
         'OpenSweep agent conversation — then continue that work."'
     )
@@ -87,6 +97,18 @@ def render_handoff_markdown(
     contract, and the transcript tail. Written for the LOCAL agent — platform
     push validation no longer applies, but the branch contract still does so
     the platform can pick the conversation back up."""
+    # Header fields are user-editable (ticket titles, branch names): keep them
+    # to one line with no backtick/bold markers so they cannot escape their
+    # inline context and rewrite the brief's instructions. The transcript
+    # below is untrusted by nature — it is labelled as conversation content.
+    def _inline(value: str) -> str:
+        return " ".join((value or "").replace("`", "'").replace("*", "").split())
+
+    title = _inline(title)
+    playbook = _inline(playbook)
+    work_branch = _inline(work_branch)
+    base_branch = _inline(base_branch)
+
     lines = [f"{e.get('role', '?')}: {e.get('content', '')}" for e in entries]
     transcript = "\n\n".join(lines)
     if len(transcript) > cap:
@@ -167,8 +189,19 @@ async def prepare_handoff(run) -> RunHandoffDTO:
         entries=transcript_entries(run.uid),
     )
     # Written in BOTH modes: if a resume ever fails (custom CLAUDE_CONFIG_DIR,
-    # pruned session), the brief is already in place as the fallback.
-    write_handoff_file(sandbox.container_path, content)
+    # pruned session), the brief is already in place as the fallback. The
+    # sandbox can be destroyed between the liveness read and this write — that
+    # race degrades to the same "unavailable" answer, never a 500.
+    try:
+        write_handoff_file(sandbox.container_path, content)
+    except OSError:
+        return RunHandoffDTO(
+            mode="unavailable",
+            reason=(
+                "workspace destroyed — send a message in the conversation to "
+                "rebuild it, then retry"
+            ),
+        )
 
     if mode == "resume":
         command = build_resume_command(

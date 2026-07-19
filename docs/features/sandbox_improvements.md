@@ -106,7 +106,7 @@ backend).
 The shipped command (copy-to-clipboard, next to Test Locally):
 
 ```sh
-cd ~/.opensweep/sandboxes/<uid> && \
+cd "$HOME/.opensweep/sandboxes/<uid>" && \
   dst="$HOME/.claude/projects/$(pwd -P | sed 's/[^a-zA-Z0-9]/-/g')" && \
   mkdir -p "$dst" && \
   cp -n "$HOME/.claude/projects/-host-sandboxes-<uid>/<sid>.jsonl" "$dst/" 2>/dev/null; \
