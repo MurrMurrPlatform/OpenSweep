@@ -63,6 +63,12 @@ services:
       - ./back_end:/app:cached
       # Writable workspace for sandbox clones (fresh GitHub clones for agent execution).
       - ${HOME}/.opensweep/sandboxes:/host/sandboxes:rw
+      # Claude Code session store, shared with the HOST and the worker: follow-up
+      # turns run in this container and resume by session id — the session files
+      # must live in the same store the worker writes and the user's own terminal
+      # reads (Continue-in-terminal handoff). On Linux hosts, files created from
+      # the container are root-owned (Docker Desktop on macOS maps to the host user).
+      - ${HOME}/.claude:/root/.claude:rw
       # Codex reuses the host's logged-in session via the bind-mounted auth dir.
       # Claude Code stores its OAuth in the macOS Keychain (not in a file), so we
       # use a long-lived headless token instead — pass CLAUDE_CODE_OAUTH_TOKEN via
