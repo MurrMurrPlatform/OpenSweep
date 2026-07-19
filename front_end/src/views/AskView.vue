@@ -46,7 +46,7 @@ const selectedPrompt = ref<AgentPromptDTO | null>(null)
 const customMode = ref(false)
 const editingBody = ref(false)
 const body = ref('')
-const effort = ref<'small' | 'normal' | 'large'>('normal')
+const effort = ref<'short' | 'normal' | 'deep' | 'unlimited'>('normal')
 const submitting = ref(false)
 
 // The Ask page dispatches audit runs. Hide internal composition layers:
@@ -83,10 +83,13 @@ function pickPrompt(p: AgentPromptDTO) {
   editingBody.value = false
   body.value = p.body
   const eff = (p.default_effort || 'normal').toString()
-  effort.value = (['small', 'normal', 'large'].includes(eff) ? eff : 'normal') as
-    | 'small'
+  const legacy: Record<string, string> = { quick: 'short', small: 'short', light: 'short', large: 'deep' }
+  const mapped = legacy[eff] ?? eff
+  effort.value = (['short', 'normal', 'deep', 'unlimited'].includes(mapped) ? mapped : 'normal') as
+    | 'short'
     | 'normal'
-    | 'large'
+    | 'deep'
+    | 'unlimited'
 }
 
 function startCustom() {
@@ -303,9 +306,10 @@ async function submit() {
                 <SelectValue placeholder="Effort" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="small">Small</SelectItem>
+                <SelectItem value="short">Short</SelectItem>
                 <SelectItem value="normal">Normal</SelectItem>
-                <SelectItem value="large">Large</SelectItem>
+                <SelectItem value="deep">Deep</SelectItem>
+                <SelectItem value="unlimited">Unlimited</SelectItem>
               </SelectContent>
             </Select>
           </div>

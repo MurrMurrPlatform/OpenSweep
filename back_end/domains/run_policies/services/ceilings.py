@@ -16,10 +16,11 @@ from domains.run_policies.models import RunPolicy
 
 
 class CeilingExceeded(RuntimeError):
-    """Raised when usage crosses a hard ceiling.
+    """Raised only when a caller passes raise_on_exceed=True.
 
-    Adapters catch this, set Run.status='limit_exceeded', record usage and
-    `complete_run` themselves.
+    No runtime caller does this anymore — ceilings are now warnings-only
+    (adapters never hard-stop a run on usage). The class and flag are kept for
+    API stability and are still exercised by tests.
     """
 
     def __init__(self, field: str, value: float, ceiling: float) -> None:

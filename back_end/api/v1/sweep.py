@@ -14,10 +14,10 @@ See domains.investigations.services.sweep for the orchestration logic.
 
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from api.dependencies import get_current_user, require_role
-from domains.investigations.schemas import InvestigationEffort
+from domains.investigations.schemas import InvestigationEffort, normalize_effort
 from domains.investigations.services.active_runs import active_runs_for, conflict_detail
 from domains.run_policies.services.effort import ensure_policy_for_effort
 from domains.investigations.services.sweep import (
@@ -68,6 +68,13 @@ class AuditRequest(BaseModel):
     # Compute dial: resolves to the run policy applied to the dispatched
     # repository-scoped audit run (whole-repo path).
     effort: InvestigationEffort = InvestigationEffort.NORMAL
+
+    @field_validator("effort", mode="before")
+    @classmethod
+    def _normalize_effort(cls, v):
+        if v is None:
+            return v
+        return normalize_effort(v if isinstance(v, str) else (v.value if v else ""))
 
 
 class AuditResultDTO(BaseModel):
@@ -183,6 +190,13 @@ class DeepScanRequest(BaseModel):
     # Compute dial → run policy. Deep by default: a whole-repo sweep needs a
     # generous wall ceiling.
     effort: InvestigationEffort = InvestigationEffort.DEEP
+
+    @field_validator("effort", mode="before")
+    @classmethod
+    def _normalize_effort(cls, v):
+        if v is None:
+            return v
+        return normalize_effort(v if isinstance(v, str) else (v.value if v else ""))
 
 
 class DeepScanResultDTO(BaseModel):

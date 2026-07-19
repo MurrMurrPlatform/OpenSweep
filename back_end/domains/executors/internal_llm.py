@@ -11,7 +11,7 @@ and dispatches them sequentially. A multi-turn loop is a future
 enhancement.
 
 Shared plumbing (provider/ceiling resolution, stream recording, envelope
-extraction + tool dispatch, live ceilings) lives in `_shared.py`.
+extraction + tool dispatch, warnings-only ceiling accounting) lives in `_shared.py`.
 """
 
 from __future__ import annotations
@@ -22,8 +22,7 @@ from typing import Any
 
 from domains.executors._shared import (
     StreamRecorder,
-    enforce_ceilings,
-    exceeded_usage,
+    ceiling_warnings,
     execute_envelope_tool_calls,
     extract_envelope,
     record_input,
@@ -160,8 +159,9 @@ class InternalLLMAdapter(ExecutorAdapter):
         elif kind in _LOCAL_KINDS:
             dollars = 0.0
 
-        # Live ceilings (audit #48): internal_llm is the metered executor, so
-        # tokens AND dollars feed the check alongside wall/tool-turns.
+        # Post-run ceiling accounting (Task 5): warnings only — a finished run
+        # is never retroactively failed; LIMIT_EXCEEDED is reserved for runs a
+        # limit actually stopped (wall kill surfaces as inv.error "timed out").
         # `timeout` already encodes the local-provider wall skip.
         usage_snapshot = UsageSnapshot(
             wall_seconds=wall,
@@ -169,28 +169,14 @@ class InternalLLMAdapter(ExecutorAdapter):
             tokens=tokens_in + tokens_out,
             dollars=dollars,
         )
-        warnings, exceeded = enforce_ceilings(
+        warnings = ceiling_warnings(
             policy=req.policy, usage=usage_snapshot, wall_ceiling=timeout
         )
-        if exceeded is not None:
-            return DispatchResult(
-                status=RunStatus.LIMIT_EXCEEDED,
-                raw_artifact_uri=raw_uri,
-                parse_status=parse_status,
-                usage=exceeded_usage(
-                    exceeded,
-                    wall_seconds=round(wall, 2),
-                    tokens=tokens_in + tokens_out,
-                    dollars=dollars if kind in _PRICING_PER_1K_TOK else 0.0,
-                    provider_kind=kind,
-                ),
-                output_refs=output_refs,
-                error=str(exceeded),
-                summary="internal_llm ceiling exceeded",
-                outcome=outcome,
-            )
 
-        if inv.error:
+        wall_killed = inv.error.startswith("timed out") if inv.error else False
+        if wall_killed:
+            status = RunStatus.LIMIT_EXCEEDED
+        elif inv.error:
             status = RunStatus.FAILED
         else:
             status = RunStatus.AWAITING_INPUT

@@ -148,8 +148,12 @@ KIND_CATALOG: dict[LLMProviderKind, dict] = {
         # `{{mcp_config_path}}` placeholder is substituted automatically.
         # --permission-mode bypassPermissions lets the CLI run its file/bash tools
         # without asking, which is what we need in a sandbox.
+        # --append-system-prompt (NOT --system-prompt): the platform contract is
+        # layered on top of Claude Code's own system prompt. Replacing it strips
+        # the CLI's agentic scaffolding (persistence, planning, tool guidance)
+        # and produces visibly shallower, shorter runs.
         "default_cli": (
-            'claude -p {{instruction_q}} --system-prompt {{system_prompt_q}} '
+            'claude -p {{instruction_q}} --append-system-prompt {{system_prompt_q}} '
             '--mcp-config {{mcp_config_path_q}} '
             '--permission-mode bypassPermissions --output-format stream-json --verbose'
         ),
@@ -334,3 +338,29 @@ def default_cli_template(kind: str | LLMProviderKind) -> str:
     wiring), so it must never be required user input: executors and the
     provider service fall back to this whenever a row's template is empty."""
     return str(kind_meta(kind).get("default_cli") or "")
+
+
+# Provider rows are stamped with the catalog default at creation, so a row
+# whose template exactly matches an OLD seeded default was never human-tuned.
+# Executors resolve those forward at dispatch time (no DB migration; a
+# human-customised template is always preserved). Keyed by kind value.
+_LEGACY_CLI_TEMPLATES: dict[str, tuple[str, ...]] = {
+    LLMProviderKind.CLAUDE_SUBSCRIPTION.value: (
+        # Pre-2026-07: --system-prompt REPLACED Claude Code's own system
+        # prompt, stripping its agentic scaffolding.
+        'claude -p {{instruction_q}} --system-prompt {{system_prompt_q}} '
+        '--mcp-config {{mcp_config_path_q}} '
+        '--permission-mode bypassPermissions --output-format stream-json --verbose',
+    ),
+}
+
+
+def effective_cli_template(kind: str | LLMProviderKind, stored: str | None) -> str:
+    """The template a dispatch should actually use: the stored one, unless it
+    is empty or a known legacy seeded default — both resolve to the current
+    catalog default."""
+    kind_value = kind.value if isinstance(kind, LLMProviderKind) else str(kind or "")
+    template = (stored or "").strip()
+    if not template or template in _LEGACY_CLI_TEMPLATES.get(kind_value, ()):
+        return default_cli_template(kind)
+    return template

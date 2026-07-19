@@ -10,7 +10,7 @@ which triplicated:
   `StreamRecorder` — audit #35)
 - JSON envelope extraction and the trailer/envelope platform-tool dispatch
   loop (incl. complete_run harvesting and output_refs extraction)
-- live ceiling enforcement feeding real usage (audit #48)
+- post-run ceiling accounting: warnings only, never a hard stop (audit #48)
 
 Adapters keep only argv/prompt construction and executor-specific bits.
 """
@@ -35,7 +35,7 @@ from domains.llm_providers.services.llm_provider_service import (
 from domains.platform_tools.complete_run import extract_outcome
 from domains.platform_tools.dispatcher import dispatch as dispatch_platform_tool
 from domains.run_policies.models import RunPolicy
-from domains.run_policies.services.ceilings import CeilingExceeded, UsageSnapshot
+from domains.run_policies.services.ceilings import UsageSnapshot
 from domains.run_policies.services.ceilings import check as check_ceilings
 from domains.run_policies.services.system_default import DEFAULT_MAX_WALL_SECONDS
 from infrastructure import artifact_store
@@ -80,21 +80,54 @@ async def resolve_provider(
 def resolve_wall_ceiling(req: DispatchRequest, provider_kind: str) -> int | None:
     """Effective wall ceiling for the run; None disables the guard.
 
-    Ladder: an explicit per-stage override outranks everything (including
-    the local-provider skip); local providers otherwise run unbounded (the
-    user pays with their own electricity, not metered tokens); else the
-    policy ceiling; else the system default.
+    Ladder: explicit per-stage override > local-provider skip > policy value
+    (0 = explicitly unlimited, positive = ceiling, None/unset = fall through)
+    > system default.
     """
     if req.max_wall_seconds_override:
         return int(req.max_wall_seconds_override)
     if is_local_provider_kind(provider_kind):
         return None
-    if req.policy and req.policy.max_wall_seconds:
-        return int(req.policy.max_wall_seconds)
+    if req.policy is not None and req.policy.max_wall_seconds is not None:
+        value = int(req.policy.max_wall_seconds)
+        return value if value > 0 else None
     return DEFAULT_MAX_WALL_SECONDS
 
 
-# ── Ceiling enforcement (audit #48) ──────────────────────────────────────
+def budget_briefing(policy, wall_ceiling: int | None) -> str:
+    """Plain-text budget contract rendered into every instruction, for every
+    harness. Best practice is a budget the agent can SEE and pace against
+    (graceful wind-down) rather than a silent post-hoc verdict."""
+    limits: list[str] = []
+    if wall_ceiling:
+        limits.append(f"~{max(1, int(wall_ceiling // 60))} minutes of wall clock")
+    turns = getattr(policy, "max_tool_turns", None) if policy is not None else None
+    if turns:
+        limits.append(f"~{int(turns)} tool turns")
+    dollars = getattr(policy, "max_dollars", None) if policy is not None else None
+    if dollars:
+        limits.append(f"a ${float(dollars):.2f} spend ceiling (where metered)")
+    warn_pct = int(getattr(policy, "warn_at_pct", 80) or 80) if policy is not None else 80
+    if limits:
+        return (
+            "# Run budget\n\n"
+            f"This run has {', '.join(limits)}. Pace yourself against it:\n"
+            f"- Keep a running coverage checklist of areas done / remaining.\n"
+            f"- At roughly {warn_pct}% of budget, STOP opening new areas: file what\n"
+            "  you have, record what you skipped, and finish with `complete_run`.\n"
+            "- Never end the run without `complete_run` — an unfinished run gets\n"
+            "  resumed and told to continue."
+        )
+    return (
+        "# Run budget\n\n"
+        "This run has no fixed budget — work to full completion of the intent,\n"
+        "however long that takes. Keep a running coverage checklist, file results\n"
+        "as you go, and finish with `complete_run` only when the whole scope is\n"
+        "genuinely covered. Never end the run without `complete_run`."
+    )
+
+
+# ── Ceiling accounting (Task 5) ───────────────────────────────────────────
 
 
 class _EffectivePolicy:
@@ -114,37 +147,17 @@ class _EffectivePolicy:
         return getattr(self._policy, name)
 
 
-def enforce_ceilings(
-    *,
-    policy: RunPolicy | None,
-    usage: UsageSnapshot,
-    wall_ceiling: int | None,
-) -> tuple[list[str], CeilingExceeded | None]:
-    """Live ceiling check. Returns (soft_warnings, exceeded-or-None).
-
-    Hard exceedances are returned (not raised) so adapters can assemble
-    their executor-specific LIMIT_EXCEEDED DispatchResult. `wall_ceiling`
-    must be the same value used for the subprocess timeout (None = the
-    local-provider skip / no wall guard)."""
+def ceiling_warnings(*, policy, usage: UsageSnapshot, wall_ceiling: int | None) -> list[str]:
+    """Post-run ceiling accounting — WARNINGS ONLY. A finished run is never
+    retroactively failed for running hot; LIMIT_EXCEEDED is reserved for runs
+    a limit actually stopped (wall kill / CLI --max-turns stop)."""
     if policy is None:
-        return [], None
-    try:
-        warnings = check_ceilings(
-            policy=_EffectivePolicy(policy, wall_ceiling),
-            usage=usage,
-            raise_on_exceed=True,
-        )
-    except CeilingExceeded as exc:
-        return [], exc
-    return warnings, None
-
-
-def exceeded_usage(exc: CeilingExceeded, **usage: Any) -> dict[str, Any]:
-    """The `usage` payload for a LIMIT_EXCEEDED DispatchResult."""
-    return {
-        **usage,
-        "exceeded": {"field": exc.field, "value": exc.value, "ceiling": exc.ceiling},
-    }
+        return []
+    return check_ceilings(
+        policy=_EffectivePolicy(policy, wall_ceiling),
+        usage=usage,
+        raise_on_exceed=False,
+    )
 
 
 # ── Run input + live stream recording ─────────────────────────────────────
@@ -430,6 +443,13 @@ async def _envelope_target_repository_uid(name: str, args: dict[str, Any]) -> st
     model = models.get(str(args.get("target_type") or "").strip().lower())
     node = await model.nodes.get_or_none(uid=str(args.get("target_uid") or "")) if model else None
     return (node.repository_uid or "") if node else ""
+
+
+async def _completed_via_mcp(run_uid: str) -> bool:
+    """True when the agent already finished deliberately — complete_run stamps
+    completed_at on the Run through the MCP bridge."""
+    run = await Run.nodes.get_or_none(uid=run_uid)
+    return bool(run is not None and run.completed_at)
 
 
 async def execute_envelope_tool_calls(

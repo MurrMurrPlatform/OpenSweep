@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class Executor(StrEnum):
@@ -85,9 +85,25 @@ class RunTrigger(StrEnum):
 
 
 class InvestigationEffort(StrEnum):
-    QUICK = "quick"
+    SHORT = "short"
     NORMAL = "normal"
     DEEP = "deep"
+    UNLIMITED = "unlimited"
+
+
+# Legacy stored/typed values → current tiers ("quick" predates the rename).
+_EFFORT_ALIASES = {"quick": InvestigationEffort.SHORT}
+
+
+def normalize_effort(value: str | None) -> InvestigationEffort:
+    """Tolerant parse for effort values from old rows, old clients, or seeds."""
+    raw = (value or "").strip().lower()
+    if raw in _EFFORT_ALIASES:
+        return _EFFORT_ALIASES[raw]
+    try:
+        return InvestigationEffort(raw)
+    except ValueError:
+        return InvestigationEffort.NORMAL
 
 
 SCHEDULE_MANUAL = ""
@@ -132,6 +148,13 @@ class InvestigationDTO(BaseModel):
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
+    @field_validator("effort", mode="before")
+    @classmethod
+    def _normalize_effort(cls, v):
+        if v is None:
+            return v
+        return normalize_effort(v if isinstance(v, str) else (v.value if v else ""))
+
 
 class CreateInvestigationRequest(BaseModel):
     repository_uid: str
@@ -147,6 +170,13 @@ class CreateInvestigationRequest(BaseModel):
     run_policy_uid: str | None = None
     compute_dial: ComputeDial = ComputeDial.ASK_BEFORE_RUN
 
+    @field_validator("effort", mode="before")
+    @classmethod
+    def _normalize_effort(cls, v):
+        if v is None:
+            return v
+        return normalize_effort(v if isinstance(v, str) else (v.value if v else ""))
+
 
 class UpdateInvestigationRequest(BaseModel):
     """PATCH /investigations/{uid} — None = leave unchanged. Covers the
@@ -159,6 +189,13 @@ class UpdateInvestigationRequest(BaseModel):
     effort: InvestigationEffort | None = None
     schedule: str | None = None
     compute_dial: ComputeDial | None = None
+
+    @field_validator("effort", mode="before")
+    @classmethod
+    def _normalize_effort(cls, v):
+        if v is None:
+            return v
+        return normalize_effort(v if isinstance(v, str) else (v.value if v else ""))
 
 
 class RunDTO(BaseModel):

@@ -65,7 +65,14 @@ _VARIANTS: dict[str, dict] = {
             "style nits at all. Product opportunities you notice along the way MAY be filed\n"
             "as kind=feature-idea (severity low, no code evidence required).\n"
             "\n"
-            "No finding cap — exhaust the passes rather than stopping at a round number."
+            "Also file: dead code, unused exports/dependencies, duplicate logic, and\n"
+            "simplification opportunities you can evidence (kind=improvement) — recall\n"
+            "includes cleanup, not just defects.\n"
+            "\n"
+            "No finding cap — exhaust the passes rather than stopping at a round number.\n"
+            "Do not end the run while unexamined areas remain: an early stop gets resumed\n"
+            "and told to continue. When a pattern proves buggy in one place, grep the\n"
+            "whole repo for its siblings before moving on."
         ),
     },
     "quick-scan": {

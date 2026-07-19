@@ -39,7 +39,7 @@ class LLMProvider(AsyncStructuredNode):
     cli_command_template = StringProperty(default="")
     # cli_command_template — for CLI-backed providers. Available placeholders:
     #   {{system_prompt}}, {{instruction}}, {{model}}.
-    # Eg: 'claude -p "{{instruction}}" --system-prompt "{{system_prompt}}"'
+    # Eg: 'claude -p "{{instruction}}" --append-system-prompt "{{system_prompt}}"'
 
     extra_args = StringProperty(default="")        # appended verbatim to CLI
     enabled = BooleanProperty(default=True)

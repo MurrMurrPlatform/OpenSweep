@@ -9,7 +9,7 @@ export interface AgentPromptDTO {
   body: string
   default_job_type: string
   default_scope: 'repository' | 'paths'
-  default_effort: 'small' | 'normal' | 'large' | 'quick' | 'deep'
+  default_effort: 'short' | 'normal' | 'deep' | 'unlimited' | 'quick' | 'small' | 'large'
   tags: string[]
   source: 'platform' | 'user' | 'imported'
   source_url: string

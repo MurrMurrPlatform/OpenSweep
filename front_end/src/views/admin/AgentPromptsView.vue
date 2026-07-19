@@ -385,9 +385,10 @@ function layerLabel(p: AgentPromptDTO): string {
               <Select v-model="editing.default_effort">
                 <SelectTrigger class="w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="small">small</SelectItem>
+                  <SelectItem value="short">short</SelectItem>
                   <SelectItem value="normal">normal</SelectItem>
-                  <SelectItem value="large">large</SelectItem>
+                  <SelectItem value="deep">deep</SelectItem>
+                  <SelectItem value="unlimited">unlimited</SelectItem>
                 </SelectContent>
               </Select>
             </div>

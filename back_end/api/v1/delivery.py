@@ -8,7 +8,7 @@ waive, defer (→ ticket), blocking-override (not-important / escalate).
 from datetime import UTC
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from api.dependencies import get_current_user, require_role
 from domains.tenancy import org_repo_uids, require_repo_in_org
@@ -37,7 +37,7 @@ from domains.delivery.services.resolution_service import (
     resolution_to_dto,
 )
 from domains.findings.models import Finding
-from domains.investigations.schemas import InvestigationEffort
+from domains.investigations.schemas import InvestigationEffort, normalize_effort
 from domains.users.schemas import UserDTO
 
 router = APIRouter(prefix="/api/v1/delivery", tags=["delivery"])
@@ -140,6 +140,13 @@ class TriggerReviewRequest(BaseModel):
     full: bool = False
     # Numeric budget: caps normal/deep and overrides quick's default of 5.
     max_findings: int | None = Field(default=None, ge=1, le=50)
+
+    @field_validator("depth", mode="before")
+    @classmethod
+    def _normalize_depth(cls, v):
+        if v is None:
+            return v
+        return normalize_effort(v if isinstance(v, str) else (v.value if v else ""))
 
 
 @router.post(

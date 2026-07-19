@@ -39,7 +39,7 @@ export type RunStatus =
 export type RunPlaybook = 'chat' | 'ask' | 'review' | 'fix' | 'implement' | 'verify' | 'document'
 export type RunTrigger = 'manual' | 'event' | 'schedule'
 export type RunSurface = 'runs' | 'comment' | 'chat'
-export type InvestigationEffort = 'quick' | 'normal' | 'deep'
+export type InvestigationEffort = 'short' | 'normal' | 'deep' | 'unlimited' | 'quick'
 
 export type OnExceed = 'abort' | 'pause_for_approval'
 

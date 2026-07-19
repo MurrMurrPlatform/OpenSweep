@@ -59,6 +59,15 @@ def test_quick_depth_caps_findings_and_allows_empty_review():
     assert "empty review is a valid outcome" in intent.lower()
 
 
+def test_short_depth_is_identical_to_quick():
+    """Legacy 'quick' and canonical 'short' must produce the same precision stance."""
+    quick = build_review_intent(_pr(), {"default": "high"}, depth="quick")
+    short = build_review_intent(_pr(), {"default": "high"}, depth="short")
+    assert quick == short
+    assert "at most 5 findings" in short.lower()
+    assert "empty review is a valid outcome" in short.lower()
+
+
 def test_deep_depth_is_exhaustive_with_subagent_lenses():
     intent = build_review_intent(_pr(), {"default": "high"}, depth="deep")
     assert "subagent" in intent.lower()

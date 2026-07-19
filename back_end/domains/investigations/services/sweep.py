@@ -367,12 +367,12 @@ async def run_deep_scan(
     """
     result = DeepScanResult(repository_uid=repository_uid)
 
-    # Deep scans default to the `deep` effort policy (a generous ceiling), but
-    # the repo can override it by pinning a policy on the `analysis` workflow
-    # stage. Precedence: an explicit caller policy wins; else the analysis-stage
-    # pin (applied downstream at dispatch); else this deep default. We only fill
-    # the default when neither of the higher-priority sources is present, so the
-    # per-stage selector keeps its override power.
+    # Deep scans default to the `unlimited` policy — everything defaults to
+    # unlimited for now; the analysis-stage pin or an explicit caller policy
+    # still overrides. Precedence: an explicit caller policy wins; else the
+    # analysis-stage pin (applied downstream at dispatch); else this default.
+    # We only fill the default when neither of the higher-priority sources is
+    # present, so the per-stage selector keeps its override power.
     if not run_policy_uid:
         from domains.investigations.schemas import InvestigationEffort
         from domains.repositories.services.workflow import stage_run_overrides
@@ -382,7 +382,7 @@ async def run_deep_scan(
             await stage_run_overrides(repository_uid, "analysis")
         ).get("run_policy_uid") or ""
         if not stage_pin:
-            deep_policy = await ensure_policy_for_effort(InvestigationEffort.DEEP)
+            deep_policy = await ensure_policy_for_effort(InvestigationEffort.UNLIMITED)
             run_policy_uid = deep_policy.uid
 
     budget_line: Optional[str] = None

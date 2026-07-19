@@ -17,6 +17,7 @@ from domains.investigations.schemas import (
     RunDTO,
     RunTrigger,
     UpdateInvestigationRequest,
+    normalize_effort,
 )
 from domains.investigations.schemas import parse_schedule
 from domains.investigations.services import event_triggers
@@ -41,7 +42,7 @@ def _to_dto(i: Investigation) -> InvestigationDTO:
         intent=i.intent,
         job_type=i.job_type or "audit",
         target=dict(i.target or {}),
-        effort=InvestigationEffort(i.effort or "normal"),
+        effort=normalize_effort(i.effort),
         schedule=i.schedule or "",
         default_executor=i.default_executor or "internal_llm",
         default_mode=i.default_mode or "analyze_only",

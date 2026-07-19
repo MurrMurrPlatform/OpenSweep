@@ -22,6 +22,7 @@ from domains.investigations.schemas import (
     Executor,
     InvestigationEffort,
     RunTrigger,
+    normalize_effort,
 )
 from domains.investigations.services.lifecycle import trigger_run
 from domains.repositories.models import Repository
@@ -35,16 +36,17 @@ from infrastructure.audit import write_audit
 
 
 # Depth → seeded variant guidance (opensweep://library/<slug>). "normal" uses the
-# repo's configured review-stage prompt instead.
-REVIEW_DEPTH_VARIANTS = {"quick": "review-quick-gate", "deep": "review-adversarial"}
+# repo's configured review-stage prompt instead. "short" is the canonical key
+# because normalize_effort maps the legacy "quick" workflow depth to SHORT.
+REVIEW_DEPTH_VARIANTS = {"short": "review-quick-gate", "deep": "review-adversarial"}
 
-_DEPTHS = ("quick", "normal", "deep")
 
 def depth_block(depth: str, max_findings: int | None = None) -> str:
     """The intent's budget/stance paragraph. `max_findings` is the numeric
-    knob: it overrides quick's default cap of 5 and puts a cap on
+    knob: it overrides short's default cap of 5 and puts a cap on
     normal/deep, which are otherwise uncapped."""
-    if depth == "quick":
+    depth = normalize_effort(depth).value
+    if depth == "short":
         cap = max_findings or 5
         return (
             f"Depth: QUICK — precision over recall. File at most {cap} findings, only issues\n"
@@ -96,7 +98,7 @@ def build_review_intent(
     return (
         f"Review pull request #{pr.github_number} (\"{pr.title}\") and finish with a verdict.\n"
         "\n"
-        f"## Depth\n{depth_block(depth if depth in _DEPTHS else 'normal', max_findings)}\n"
+        f"## Depth\n{depth_block(depth, max_findings)}\n"
         "\n"
         "## Setup\n"
         f"1. `git checkout {pr.head_ref}` (branch may already be checked out).\n"
@@ -147,7 +149,7 @@ async def _resolve_depth(
     if depth is not None:
         return depth
     if trigger == RunTrigger.EVENT:
-        return InvestigationEffort(await stage_depth(pr.repository_uid, "review"))
+        return normalize_effort(await stage_depth(pr.repository_uid, "review"))
     return InvestigationEffort.NORMAL
 
 

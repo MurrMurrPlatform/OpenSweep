@@ -32,3 +32,6 @@ back_end/var/
 
 # Claude Code local state (worktrees, settings)
 .claude/
+
+# SDD scratch
+.superpowers/

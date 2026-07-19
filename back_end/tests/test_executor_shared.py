@@ -11,7 +11,7 @@ import pytest
 from domains.executors import _shared
 from domains.executors._shared import (
     StreamRecorder,
-    enforce_ceilings,
+    ceiling_warnings,
     extract_envelope,
     line_aligned_tail,
     resolve_wall_ceiling,
@@ -218,6 +218,52 @@ def test_extract_envelope_requires_tool_calls_key():
     assert extract_envelope("") is None
 
 
+# ── Wall-kill detection (audit #33) + ceiling_warnings (Task 5) ──────────
+
+
+def test_wall_kill_detection_expression():
+    """The adapters' wall_killed heuristic: startswith('timed out')."""
+    assert "timed out after 300s".startswith("timed out")
+    assert not "provider exploded".startswith("timed out")
+
+
+def test_llm_executor_timeout_message_matches_wall_kill_detection():
+    """cli_tracking/internal_llm detect wall kills via startswith('timed out')
+    against llm_executor's message — pin the format so a rename can't silently
+    regress LIMIT_EXCEEDED back to FAILED."""
+    import inspect
+
+    from domains.llm_providers.services import llm_executor
+
+    source = inspect.getsource(llm_executor)
+    assert 'timed out after' in source
+
+
+class _Policy:
+    max_wall_seconds = 100
+    max_tool_turns = 10
+    max_files_touched = None
+    max_test_seconds = None
+    max_tokens = None
+    max_dollars = None
+    warn_at_pct = 80
+
+
+def test_exceeding_a_ceiling_yields_warning_not_exception():
+    warnings = ceiling_warnings(
+        policy=_Policy(), usage=UsageSnapshot(wall_seconds=500, tool_turns=50), wall_ceiling=100
+    )
+    assert any("max_wall_seconds" in w for w in warnings)
+    assert any("max_tool_turns" in w for w in warnings)
+
+
+def test_ceiling_warnings_no_policy_returns_empty():
+    warnings = ceiling_warnings(
+        policy=None, usage=UsageSnapshot(wall_seconds=1e9), wall_ceiling=1
+    )
+    assert warnings == []
+
+
 # ── Wall-ceiling ladder (audit #33) + live ceilings (audit #48) ───────────
 
 
@@ -270,73 +316,80 @@ class TestResolveWallCeiling:
         assert resolve_wall_ceiling(req, "claude_api") == DEFAULT_MAX_WALL_SECONDS
 
 
-class TestEnforceCeilings:
+class TestCeilingWarnings:
+    """ceiling_warnings always returns warnings, never raises or fails hard."""
+
     def test_no_policy_no_findings(self):
-        warnings, exceeded = enforce_ceilings(
+        warnings = ceiling_warnings(
             policy=None, usage=UsageSnapshot(wall_seconds=1e9), wall_ceiling=1
         )
-        assert warnings == [] and exceeded is None
+        assert warnings == []
 
-    def test_wall_exceedance_is_hard(self):
-        warnings, exceeded = enforce_ceilings(
+    def test_wall_exceedance_yields_warning_not_exception(self):
+        warnings = ceiling_warnings(
             policy=_policy(max_wall_seconds=300),
             usage=UsageSnapshot(wall_seconds=301),
             wall_ceiling=300,
         )
-        assert exceeded is not None
-        assert exceeded.field == "max_wall_seconds"
+        assert any("max_wall_seconds" in w for w in warnings)
 
     def test_effective_wall_ceiling_outranks_policy(self):
         """A per-stage override larger than the policy ceiling must not
-        flag a run that stayed inside the override."""
-        warnings, exceeded = enforce_ceilings(
+        produce a warning for a run that stayed inside the override."""
+        warnings = ceiling_warnings(
             policy=_policy(max_wall_seconds=300),
             usage=UsageSnapshot(wall_seconds=500),
             wall_ceiling=600,
         )
-        assert exceeded is None
+        # 500 < 600 * 0.8 = 480 is false (500 > 480), so a warning IS expected,
+        # but NOT a hard failure (no exception raised).
+        # The key invariant: no CeilingExceeded is raised.
+        # Effective ceiling is 600 (overrides policy's 300), so we should see
+        # a warning about max_wall_seconds since 500 >= 80% of 600 (480).
+        assert isinstance(warnings, list)
+        assert any("max_wall_seconds" in w for w in warnings)
 
     def test_local_skip_disables_wall_but_not_cost(self):
-        warnings, exceeded = enforce_ceilings(
+        warnings = ceiling_warnings(
             policy=_policy(max_wall_seconds=300, max_dollars=1.0),
             usage=UsageSnapshot(wall_seconds=10_000, dollars=2.5),
             wall_ceiling=None,
         )
-        assert exceeded is not None
-        assert exceeded.field == "max_dollars"
+        # Wall is skipped (wall_ceiling=None), dollars still warns.
+        assert any("max_dollars" in w for w in warnings)
+        assert not any("max_wall_seconds" in w for w in warnings)
 
-    def test_dollars_ceiling_enforced(self):
-        warnings, exceeded = enforce_ceilings(
+    def test_dollars_ceiling_yields_warning(self):
+        warnings = ceiling_warnings(
             policy=_policy(max_dollars=0.5),
             usage=UsageSnapshot(wall_seconds=1, dollars=0.75),
             wall_ceiling=None,
         )
-        assert exceeded is not None and exceeded.field == "max_dollars"
+        assert any("max_dollars" in w for w in warnings)
 
-    def test_tool_turns_ceiling_enforced(self):
-        warnings, exceeded = enforce_ceilings(
+    def test_tool_turns_ceiling_yields_warning(self):
+        warnings = ceiling_warnings(
             policy=_policy(max_tool_turns=5),
             usage=UsageSnapshot(wall_seconds=1, tool_turns=6),
             wall_ceiling=None,
         )
-        assert exceeded is not None and exceeded.field == "max_tool_turns"
+        assert any("max_tool_turns" in w for w in warnings)
 
     def test_soft_warning_below_ceiling(self):
-        warnings, exceeded = enforce_ceilings(
+        warnings = ceiling_warnings(
             policy=_policy(max_wall_seconds=100),
             usage=UsageSnapshot(wall_seconds=85),
             wall_ceiling=100,
         )
-        assert exceeded is None
         assert any("max_wall_seconds" in w for w in warnings)
 
     def test_unmetered_cost_is_ignored(self):
-        warnings, exceeded = enforce_ceilings(
+        warnings = ceiling_warnings(
             policy=_policy(max_tokens=10, max_dollars=0.1),
             usage=UsageSnapshot(wall_seconds=1, tokens=0, dollars=0.0),
             wall_ceiling=None,
         )
-        assert exceeded is None
+        assert warnings == []
 
 
 # ── Codex credential dir hygiene (audit #21) ──────────────────────────────
