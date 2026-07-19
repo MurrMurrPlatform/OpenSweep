@@ -199,8 +199,8 @@ async function save() {
           <Workflow class="h-4 w-4 text-muted-foreground" /> Workflow
         </CardTitle>
         <div class="text-xs text-muted-foreground mt-0.5">
-          Each stage defaults to its seeded “OpenSweep default” prompt from the prompt library —
-          edit those under Admin → Agent prompts, or swap in another prompt per stage here.
+          Each stage defaults to its seeded “OpenSweep default” guidance agent —
+          edit those in the Agent library, or swap in another agent per stage here.
           Per stage you can also pin an LLM provider, override its model, set a
           wall-clock ceiling, and choose a run policy (its full ceiling bundle);
           empty/0 inherit the platform defaults.

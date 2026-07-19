@@ -7,7 +7,6 @@ from unittest import mock
 from app import app
 from domains.executors.mcp_bridge import claude_env
 from domains.runs.schemas import ExecutionMode
-from domains.runs.services.job_types import get_job_type
 
 
 def _openapi_operation_ids() -> set[str]:
@@ -41,10 +40,13 @@ def test_merge_policy_dto_exposes_path_denylist():
     assert "path_denylist" in props
 
 
-def test_implement_job_type_exists():
-    jt = get_job_type("implement")
-    assert jt is not None
-    assert "Do not push" in jt.intent
+def test_code_changes_map_to_the_implement_playbook():
+    from domains.agents.services.registry import PRODUCES_TO_PLAYBOOK
+    from domains.agents.services.seed_agent_bases import _AGENT_BASES
+
+    assert PRODUCES_TO_PLAYBOOK["code-changes"] == "implement"
+    # The write agent keeps the never-push rule in its seeded instructions.
+    assert "never push" in _AGENT_BASES["implement"]["body"].lower()
 
 
 def test_execution_mode_gains_implement_and_keeps_analyze_only():

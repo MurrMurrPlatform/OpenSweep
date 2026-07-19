@@ -74,7 +74,7 @@ function openDocs() {
           <div class="text-xs text-muted-foreground uppercase font-mono mb-1">Sharp triage</div>
           <div class="font-semibold text-lg">Ask a question</div>
           <div class="text-xs text-muted-foreground mt-1">
-            Create one targeted Investigation. You provide the prompt, the executor digs in.
+            Dispatch one targeted agent run. You provide the prompt, the executor digs in.
           </div>
         </button>
       </section>

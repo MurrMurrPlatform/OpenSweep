@@ -1,8 +1,8 @@
 """Pure-Python tests for the seeded prompt library (defaults + variants).
 
 DB writes are integration territory; here we pin the specs themselves:
-every workflow stage has a default, variants reference real stages and job
-types, source URLs never collide, and bodies stay compact (context is a
+every workflow stage has a default, variants reference real stages and
+produces, source URLs never collide, and bodies stay compact (context is a
 public good — a bloated guidance body crowds out the structural contract
 it is appended to).
 """
@@ -15,7 +15,7 @@ from domains.agents.services.seed_variants import (
     _VARIANTS,
     variant_source_url,
 )
-from domains.runs.services.job_types import get_job_type
+from domains.agents.models import PRODUCES
 from domains.repositories.services.workflow import STAGES
 
 _EFFORTS = {"light", "normal", "deep"}
@@ -35,7 +35,7 @@ def test_default_specs_are_well_formed():
         assert spec["description"], stage
         assert spec["body"].strip(), stage
         assert len(spec["body"]) <= _MAX_BODY_CHARS, f"{stage}: body too long"
-        assert get_job_type(spec["default_job_type"]) is not None, stage
+        assert spec["produces"] in PRODUCES, stage
         assert "opensweep-default" in spec["tags"], stage
 
 
@@ -46,7 +46,7 @@ def test_variant_specs_are_well_formed():
         assert spec["body"].strip(), slug
         assert len(spec["body"]) <= _MAX_BODY_CHARS, f"{slug}: body too long"
         assert spec["stage"] in STAGES, slug
-        assert get_job_type(spec["default_job_type"]) is not None, slug
+        assert spec["produces"] in PRODUCES, slug
         assert spec["default_effort"] in _EFFORTS, slug
         assert "opensweep-variant" in spec["tags"], slug
         # Stage tag lets the UI group variants next to their stage default.

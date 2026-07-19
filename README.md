@@ -86,6 +86,8 @@ All ports bind to `127.0.0.1` — nothing is exposed to your network.
 
 | Concept | What it is |
 |---|---|
+| **Agent** | A reusable, versioned definition: a prompt, what it produces (findings, answers, documentation…), and your org's tuning of the built-in system agents. |
+| **Scheduled agent** | An Agent bound to a repository with a trigger — manual, on push, or cron — and a compute dial that bounds its autonomy. |
 | **Doc** | Agent-written documentation that knows which files it covers and refreshes when they change. Exports to `AGENTS.md` via PR. |
 | **Finding** | Something an agent noticed: a bug, gap, risk, missing test, or stale doc. Triage it: fix now, ticket it, or waive it. |
 | **Ticket** | A unit of plannable work. Backlog → Todo is your approval gate. |

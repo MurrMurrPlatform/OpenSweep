@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from domains.runs.services.schedule_scanner import is_due
+from domains.agents.services.schedule_scanner import is_due
 
 
 def test_is_due_fires_when_previous_cron_tick_is_after_last_run():
