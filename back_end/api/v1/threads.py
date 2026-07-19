@@ -143,6 +143,27 @@ async def continue_without_answers(
 
 
 @router.post(
+    "/{uid}/request-review",
+    response_model=ThreadDTO,
+    operation_id="opensweep_thread_request_review",
+)
+async def request_review(uid: str, user: UserDTO = Depends(require_role("maintainer"))):
+    """Human ready-for-review signal — same flag and same platform reaction
+    as the agent's `submit_for_review` tool, applied immediately (no need to
+    wait for a turn boundary): un-draft the PR, auto-dispatch the review when
+    the repo's workflow has review on auto."""
+    from domains.platform_tools.submit_for_review import submit_for_review
+    from domains.threads.services.hooks import maybe_ready_and_review_for_thread
+
+    svc = ThreadService()
+    t = await svc.get_node(uid)
+    await require_repo_in_org(t.repository_uid, user.org_uid)
+    await submit_for_review(thread_uid=uid, executor=user.uid)
+    await maybe_ready_and_review_for_thread(uid)
+    return thread_to_dto(await svc.get_node(uid))
+
+
+@router.post(
     "/{uid}/abandon", response_model=ThreadDTO, operation_id="opensweep_thread_abandon"
 )
 async def abandon_thread(uid: str, user: UserDTO = Depends(require_role("maintainer"))):

@@ -24,6 +24,7 @@ from domains.platform_tools.news_tools import (
     list_news_items,
 )
 from domains.platform_tools.set_analysis_section import set_analysis_section
+from domains.platform_tools.submit_for_review import submit_for_review
 from domains.platform_tools.submit_thread_plan import submit_thread_plan
 from domains.platform_tools.update_finding import update_finding
 from domains.platform_tools.upsert_analysis import upsert_analysis
@@ -41,6 +42,7 @@ __all__ = [
     "attach_artifact",
     "complete_run",
     "submit_thread_plan",
+    "submit_for_review",
     "ask_user",
     # Deep-scan Analysis authoring
     "upsert_analysis",

@@ -267,7 +267,13 @@ async def maybe_auto_fix_for_pr(pr_uid: str, *, after_run_uid: str = "") -> Run 
     if not pr_uid:
         return None
     pr = await PullRequest.nodes.get_or_none(uid=pr_uid)
-    if pr is None or pr.state != "open" or pr.draft:
+    if pr is None or pr.state != "open":
+        return None
+    # Draft = not in the review→fix loop yet — EXCEPT for thread-owned PRs:
+    # their findings route into the live conversation (a message turn, not a
+    # cold run), and the thread must keep iterating even when the ready
+    # signal's un-draft failed provider-side.
+    if pr.draft and await _thread_conversation_for_pr(pr) is None:
         return None
     if not await stage_auto(pr.repository_uid, "fix"):
         return None

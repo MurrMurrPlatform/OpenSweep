@@ -18,6 +18,7 @@ def _thread(**over):
         plan_text="",
         branch="",
         pr_uid="",
+        ready_for_review=False,
         active_run_uid="",
         run_uids=[],
         events=[],

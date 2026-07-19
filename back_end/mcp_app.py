@@ -116,9 +116,12 @@ OPENSWEEP_PLATFORM_TOOL_OPERATIONS = [
     # approval (which materializes the parent) is human-only, like Gate 1.
     "opensweep_platform_propose_ticket_group",
     # Threads (unified dev flow) — the session agent persists its plan
-    # (drafts only; approval is human-only) and asks the user structured
-    # questions the thread UI renders as answer cards.
+    # (drafts only; approval is human-only), signals ready-for-review, and
+    # asks the user structured questions the thread UI renders as answer
+    # cards. The ready signal sets a flag only; run dispatch stays with the
+    # platform's workflow booleans.
     "opensweep_platform_submit_thread_plan",
+    "opensweep_platform_submit_for_review",
     "opensweep_platform_ask_user",
     # Comments — the human↔agent conversation on any data item. Agents read
     # the thread (also injected into run briefings) and reply in-thread;

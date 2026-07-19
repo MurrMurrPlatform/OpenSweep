@@ -1377,6 +1377,7 @@ export interface ThreadDTO {
   plan_state: PlanState
   branch: string
   pr_uid: string
+  ready_for_review: boolean
   active_run_uid: string
   created_by: string
   created_at: string | null

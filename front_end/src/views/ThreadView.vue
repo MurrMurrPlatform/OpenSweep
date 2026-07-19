@@ -288,6 +288,27 @@ async function onAnswerQuestion(questionUid: string, _questionText: string, answ
   await reload()
 }
 
+const requestingReview = ref(false)
+async function onRequestReview() {
+  if (!thread.value || requestingReview.value) return
+  requestingReview.value = true
+  try {
+    await threads.requestReview(uid.value)
+    toast.success(
+      'Review requested',
+      'The PR is marked ready; the review dispatches if auto-review is on.',
+    )
+  } catch (e) {
+    toast.error(
+      'Couldn’t request review',
+      e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e),
+    )
+  } finally {
+    requestingReview.value = false
+  }
+  await reload()
+}
+
 const fixing = ref(false)
 async function onFix() {
   if (!thread.value?.pr_uid || fixing.value) return
@@ -545,6 +566,15 @@ async function onFix() {
                   @click="onFix"
                 >
                   Run fix
+                </Button>
+                <Button
+                  v-else-if="!thread.ready_for_review && !verdict"
+                  size="sm"
+                  variant="outline"
+                  :loading="requestingReview"
+                  @click="onRequestReview"
+                >
+                  Request review
                 </Button>
               </div>
               <ConvergenceChecklist :convergence="pr.convergence" />

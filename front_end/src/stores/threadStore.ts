@@ -41,6 +41,10 @@ export const useThreadStore = defineStore('threads', () => {
     return apiPost<ThreadDTO>(`/threads/${uid}/abandon`)
   }
 
+  async function requestReview(uid: string): Promise<ThreadDTO> {
+    return apiPost<ThreadDTO>(`/threads/${uid}/request-review`)
+  }
+
   async function continueQuestions(uid: string): Promise<ThreadDetailDTO> {
     return apiPost<ThreadDetailDTO>(`/threads/${uid}/questions/continue`)
   }
@@ -61,6 +65,7 @@ export const useThreadStore = defineStore('threads', () => {
     approvePlan,
     implement,
     abandon,
+    requestReview,
     answerQuestion,
     continueQuestions,
   }

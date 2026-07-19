@@ -94,6 +94,14 @@ async def finalize_thread_run(run) -> None:
         except Exception:  # noqa: BLE001
             pass  # timeline bookkeeping must not break the turn
 
+    # Ready signal follow-through: un-draft the PR + auto-dispatch review
+    # (workflow booleans permitting). After the delivery finalize so it sees
+    # the just-pushed head and the freshly opened/adopted PR; runs on every
+    # turn — its own guards make it a no-op until the thread is flagged.
+    from domains.threads.services.hooks import maybe_ready_and_review_for_thread
+
+    await maybe_ready_and_review_for_thread(thread_uid)
+
 
 def send_message_turn(run_uid: str, text: str) -> None:
     """Deliver a platform-authored message into a run's conversation as a
@@ -174,8 +182,11 @@ def build_go_message(
         f"target_uid `{ticket.uid}`, artifact_type `test_note`): concrete "
         "manual verification steps for a human on this branch.\n"
         "- When done, summarize: commits made (sha + message), test results, "
-        "and anything you deviated on. Then stop — review runs take it from "
-        "here, and their findings will arrive in this conversation.\n"
+        "and anything you deviated on — then call "
+        "`opensweep_platform_submit_for_review` (thread_uid "
+        f"`{ticket.uid}`) to signal the work is ready. The platform then "
+        "marks the PR ready and dispatches the independent review; its "
+        "findings will arrive in this conversation.\n"
         f"{group_block}"
     )
 

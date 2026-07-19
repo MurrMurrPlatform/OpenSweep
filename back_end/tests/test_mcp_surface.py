@@ -135,9 +135,12 @@ def test_platform_tools_are_tracking_safe():
         "opensweep_platform_list_comments",
         "opensweep_platform_add_comment",
         # Threads (unified dev flow) — plan DRAFTS (approval is human-only,
-        # like Gate 1) and structured user questions. Both write OpenSweep
-        # thread STATE only, never the source repository.
+        # like Gate 1), the ready-for-review signal (a Thread flag only; the
+        # platform's workflow booleans decide whether anything dispatches),
+        # and structured user questions. All write OpenSweep thread STATE
+        # only, never the source repository.
         "opensweep_platform_submit_thread_plan",
+        "opensweep_platform_submit_for_review",
         "opensweep_platform_ask_user",
     }
     missing_delivery = delivery - actual

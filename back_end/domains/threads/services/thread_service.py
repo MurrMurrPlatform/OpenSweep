@@ -36,6 +36,7 @@ def thread_to_dto(t) -> ThreadDTO:
         plan_state=t.plan_state,
         branch=t.branch or "",
         pr_uid=t.pr_uid or "",
+        ready_for_review=bool(t.ready_for_review),
         active_run_uid=t.active_run_uid or "",
         created_by=t.created_by or "",
         created_at=t.created_at,

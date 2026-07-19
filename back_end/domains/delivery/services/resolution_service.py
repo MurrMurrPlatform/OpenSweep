@@ -176,6 +176,26 @@ class ResolutionService:
                 "state": state,
             },
         )
+        # Cross-link into the delivery loop's origin: a finding bound to a
+        # ticket-owned PR also lands on the ticket (idempotent), so the
+        # work item shows what its reviews found and future implement runs
+        # inherit it as context. Best-effort — the PR ledger is authoritative.
+        ticket_uid = str(getattr(pr, "ticket_uid", "") or "")
+        if ticket_uid:
+            try:
+                from domains.tickets.services.ticket_service import TicketService
+
+                await TicketService().link_finding(
+                    ticket_uid, finding_uid, actor_uid="system"
+                )
+            except Exception as exc:  # noqa: BLE001
+                from logging_config import logger
+
+                logger.warning(
+                    f"ticket link for finding {finding_uid} → ticket {ticket_uid} "
+                    f"failed: {type(exc).__name__}: {exc}",
+                    extra={"tag": "delivery"},
+                )
         return r
 
     async def list_for_pr(self, pull_request_uid: str) -> list[FindingResolutionDTO]:

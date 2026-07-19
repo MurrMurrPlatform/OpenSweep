@@ -29,6 +29,7 @@ from domains.platform_tools.docs_tools import confirm_doc_current, propose_doc_e
 from domains.platform_tools.memory_tools import write_memory
 from domains.platform_tools.news_tools import create_news_item
 from domains.platform_tools.set_analysis_section import set_analysis_section
+from domains.platform_tools.submit_for_review import submit_for_review
 from domains.platform_tools.submit_thread_plan import submit_thread_plan
 from domains.platform_tools.update_finding import update_finding
 from domains.platform_tools.upsert_analysis import upsert_analysis
@@ -414,6 +415,36 @@ async def http_submit_thread_plan(
         submit_thread_plan,
         thread_uid=thread.uid,
         plan_markdown=req.plan_markdown,
+        executor=executor,
+    )
+
+
+@router.post(
+    "/submit-for-review/{thread_uid}",
+    operation_id="opensweep_platform_submit_for_review",
+)
+async def http_submit_for_review(
+    thread_uid: str,
+    request: Request,
+    user: UserDTO = Depends(get_current_user),
+):
+    """Thread agent signal: the work is complete and ready for review. Sets
+    the thread's ready flag only — the platform un-drafts the PR and (when
+    workflow.review.auto) dispatches the review at the turn boundary."""
+    from domains.threads.services.thread_service import (
+        THREAD_NOT_FOUND_DETAIL,
+        resolve_thread,
+    )
+
+    executor = request.headers.get("x-opensweep-run-uid") or "manual"
+    thread = await resolve_thread(thread_uid, run_uid=executor)
+    if thread is None:
+        raise HTTPException(status_code=404, detail=THREAD_NOT_FOUND_DETAIL)
+    await require_tool_repo_access(request, user, thread.repository_uid)
+    return await _invoke_platform_tool(
+        "submit_for_review",
+        submit_for_review,
+        thread_uid=thread.uid,
         executor=executor,
     )
 

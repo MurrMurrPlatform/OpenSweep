@@ -13,6 +13,7 @@ class ThreadDTO(BaseModel):
     plan_state: str
     branch: str = ""
     pr_uid: str = ""
+    ready_for_review: bool = False
     active_run_uid: str = ""
     created_by: str = ""
     created_at: datetime | None = None

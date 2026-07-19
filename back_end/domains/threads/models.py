@@ -10,6 +10,7 @@ legality-checked and audited.
 
 from neomodel import (
     AsyncStructuredNode,
+    BooleanProperty,
     DateTimeProperty,
     JSONProperty,
     StringProperty,
@@ -34,6 +35,12 @@ class Thread(AsyncStructuredNode):
     # Delivery links, filled as the flow progresses.
     branch = StringProperty(default="")
     pr_uid = StringProperty(default="", index=True)
+
+    # Ready signal (agent tool submit_for_review, or the human endpoint):
+    # the work is believed complete. The platform reacts deterministically —
+    # un-draft the PR, auto-dispatch review when workflow.review.auto — the
+    # flag itself never dispatches anything.
+    ready_for_review = BooleanProperty(default=False)
 
     # Conversation: ordered run uids + the run currently accepting messages.
     run_uids = JSONProperty(default=[])
