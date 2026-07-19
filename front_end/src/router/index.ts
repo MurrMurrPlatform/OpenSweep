@@ -65,7 +65,9 @@ const router = createRouter({
               meta: { title: 'Health', eyebrow: 'Health', section: 'main', repoScoped: true } },
             { path: 'runs', name: 'runs', component: () => import('@/views/RunsView.vue'),
               meta: { title: 'Runs', eyebrow: 'Live', section: 'main', repoScoped: true } },
-            { path: 'investigations', name: 'investigations', redirect: (to) => ({ name: 'runs', params: { repoSlug: to.params.repoSlug } }) },
+            { path: 'agents', name: 'repo-agents', component: () => import('@/views/agents/ScheduledAgentsView.vue'),
+              meta: { title: 'Agents', eyebrow: 'Operate', section: 'main', repoScoped: true } },
+            { path: 'investigations', name: 'investigations', redirect: (to) => ({ name: 'repo-agents', params: { repoSlug: to.params.repoSlug } }) },
             { path: 'ask', name: 'ask', component: () => import('@/views/AskView.vue'),
               meta: { title: 'Ask a question', eyebrow: 'Plan', section: 'main', repoScoped: true } },
           ],
@@ -90,8 +92,16 @@ const router = createRouter({
           meta: { title: 'Analysis', eyebrow: 'Health', section: 'main' } },
         { path: 'runs/:uid', name: 'run-detail', component: () => import('@/views/RunDetailView.vue'),
           meta: { title: 'Run', eyebrow: 'Live', section: 'main' } },
-        { path: 'investigations/:uid', name: 'investigation-detail', component: () => import('@/views/InvestigationDetailView.vue'),
-          meta: { title: 'Investigation', eyebrow: 'Plan', section: 'main' } },
+        { path: 'scheduled-agents/:uid', name: 'scheduled-agent-detail', component: () => import('@/views/agents/ScheduledAgentDetailView.vue'),
+          meta: { title: 'Scheduled agent', eyebrow: 'Operate', section: 'main' } },
+        { path: 'agents', name: 'agent-library', component: () => import('@/views/agents/AgentLibraryView.vue'),
+          meta: { title: 'Agent library', eyebrow: 'Settings', section: 'settings' } },
+        { path: 'agents/new', name: 'agent-create', component: () => import('@/views/agents/AgentDetailView.vue'),
+          meta: { title: 'New agent', eyebrow: 'Settings', section: 'settings' } },
+        { path: 'agents/:uid', name: 'agent-detail', component: () => import('@/views/agents/AgentDetailView.vue'),
+          meta: { title: 'Agent', eyebrow: 'Settings', section: 'settings' } },
+        // Old investigation deep links: migrated ScheduledAgents keep their uids.
+        { path: 'investigations/:uid', redirect: (to) => ({ name: 'scheduled-agent-detail', params: { uid: to.params.uid } }) },
 
         // ── Legacy redirects ────────────────────────────────────────────────
         // Old flat scoped paths → /r/:current/... if a workspace is remembered,
@@ -123,9 +133,8 @@ const router = createRouter({
         // exactly this URL with ?slack=connected|denied|error.
         { path: 'settings/slack', name: 'slack-settings', component: () => import('@/views/settings/SlackSettingsView.vue'),
           meta: { title: 'Slack', eyebrow: 'Settings', section: 'settings' } },
-        // Org agent overlays — any org member tunes per-playbook agent guidance.
-        { path: 'settings/agents', name: 'agent-overlays-settings', component: () => import('@/views/settings/AgentOverlaysView.vue'),
-          meta: { title: 'Agents', eyebrow: 'Settings', section: 'settings' } },
+        // The old overlays page is absorbed by the Agent library.
+        { path: 'settings/agents', redirect: { name: 'agent-library' } },
 
         // ── Admin ───────────────────────────────────────────────────────────
         // Path is /settings/github (not /admin/…) because the GitHub App
@@ -134,8 +143,7 @@ const router = createRouter({
           meta: { title: 'GitHub', eyebrow: 'Admin', section: 'admin' } },
         { path: 'admin/run-policies', name: 'admin-run-policies', component: () => import('@/views/RunPoliciesView.vue'),
           meta: { title: 'Run policies', eyebrow: 'Admin', section: 'admin' } },
-        { path: 'admin/agent-prompts', name: 'admin-agent-prompts', component: () => import('@/views/admin/AgentPromptsView.vue'),
-          meta: { title: 'Agent prompts', eyebrow: 'Admin', section: 'admin' } },
+        { path: 'admin/agent-prompts', redirect: { name: 'agent-library' } },
         { path: 'admin/platform-config', name: 'admin-platform-config', component: () => import('@/views/PlatformConfigView.vue'),
           meta: { title: 'Platform config', eyebrow: 'Admin', section: 'admin' } },
         { path: 'admin/llm-providers', name: 'admin-llm-providers', component: () => import('@/views/LLMProvidersView.vue'),

@@ -4,7 +4,7 @@ import { RouterLink } from 'vue-router'
 import { Activity, CalendarClock, Radar, Search } from 'lucide-vue-next'
 import { useDocStore } from '@/stores/docStore'
 import { useAnalysisStore, type AnalysisDTO } from '@/stores/analysisStore'
-import { useInvestigationStore } from '@/stores/investigationStore'
+import { useScheduledAgentStore } from '@/stores/scheduledAgentStore'
 import { useCurrentRepo } from '@/composables/useCurrentRepo'
 import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
@@ -35,11 +35,11 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { AnimatedNumber } from '@/components/ui/animated-number'
 import { EmptyState } from '@/components/ui/empty-state'
 import { ErrorState } from '@/components/ui/error-state'
-import type { ComputeDial, DocDTO, InvestigationDTO, ScopeFreshnessDTO } from '@/types/api'
+import type { ComputeDial, DocDTO, ScheduledAgentDTO, ScopeFreshnessDTO } from '@/types/api'
 
 const docs = useDocStore()
 const analyses = useAnalysisStore()
-const invs = useInvestigationStore()
+const scheduledAgents = useScheduledAgentStore()
 const latestAnalysis = ref<AnalysisDTO | null>(null)
 const toast = useToast()
 const { uid: repoUid, slug: repoSlug } = useCurrentRepo()
@@ -135,11 +135,11 @@ async function dispatchDeepScan() {
 }
 
 // ── Scheduled audits — edits the repo's seeded "Audit stale code" config ────
-// (a saved Investigation under the hood; the UI never says that word)
+// (the seeded audit-stale ScheduledAgent binding)
 const scheduleOpen = ref(false)
 const scheduleLoading = ref(false)
 const savingSchedule = ref(false)
-const auditScheduleInv = ref<InvestigationDTO | null>(null)
+const auditScheduleBinding = ref<ScheduledAgentDTO | null>(null)
 
 type ScheduleMode = 'manual' | 'cron'
 const scheduleMode = ref<ScheduleMode>('manual')
@@ -166,10 +166,10 @@ const CRON_PRESETS = [
 ]
 
 const scheduleSummary = computed(() => {
-  const inv = auditScheduleInv.value
-  if (!inv || !inv.schedule.startsWith('cron:')) return null
-  if (inv.compute_dial === 'disabled') return 'scheduled · disabled'
-  return `cron ${inv.schedule.slice('cron:'.length)}`
+  const sa = auditScheduleBinding.value
+  if (!sa || !sa.trigger.startsWith('cron:')) return null
+  if (sa.compute_dial === 'disabled') return 'scheduled · disabled'
+  return `cron ${sa.trigger.slice('cron:'.length)}`
 })
 
 async function openSchedule() {
@@ -177,18 +177,18 @@ async function openSchedule() {
   scheduleOpen.value = true
   scheduleLoading.value = true
   try {
-    const all = await invs.fetchAll(repoUid.value)
-    const inv = all.find((i) => i.job_type === 'audit-stale') ?? null
-    auditScheduleInv.value = inv
-    if (inv?.schedule.startsWith('cron:')) {
+    const all = await scheduledAgents.fetchAll(repoUid.value)
+    const sa = all.find((s) => s.agent_key === 'audit-stale') ?? null
+    auditScheduleBinding.value = sa
+    if (sa?.trigger.startsWith('cron:')) {
       scheduleMode.value = 'cron'
-      cronExpr.value = inv.schedule.slice('cron:'.length)
+      cronExpr.value = sa.trigger.slice('cron:'.length)
     } else {
       scheduleMode.value = 'manual'
       cronExpr.value = ''
     }
-    dial.value = inv?.compute_dial ?? 'ask-before-run'
-    const rawLimit = inv?.target?.limit
+    dial.value = sa?.compute_dial ?? 'ask-before-run'
+    const rawLimit = sa?.target?.limit
     schedulePagesPerTick.value = String(
       typeof rawLimit === 'number' && rawLimit > 0 ? rawLimit : 3,
     )
@@ -210,20 +210,19 @@ async function saveSchedule() {
   try {
     const limit = Number.parseInt(schedulePagesPerTick.value, 10)
     const payload = {
-      schedule: scheduleMode.value === 'cron' ? `cron:${cronExpr.value.trim()}` : '',
+      trigger: scheduleMode.value === 'cron' ? `cron:${cronExpr.value.trim()}` : '',
       compute_dial: dial.value,
       target: { limit: Number.isFinite(limit) && limit > 0 ? limit : 3 },
     }
-    // Repos registered before the seeder existed have no saved config yet —
-    // create it on first save instead of failing.
-    auditScheduleInv.value = auditScheduleInv.value
-      ? await invs.update(auditScheduleInv.value.uid, payload)
-      : await invs.create({
-          repository_uid: repoUid.value,
-          job_type: 'audit-stale',
-          title: 'Audit stale code',
-          ...payload,
-        })
+    if (!auditScheduleBinding.value) {
+      // The seeded binding is created on repo registration; if it is missing
+      // the backend seeding hasn't run — surface that instead of guessing.
+      throw new Error('Seeded "Audit stale code" binding not found for this repository')
+    }
+    auditScheduleBinding.value = await scheduledAgents.update(
+      auditScheduleBinding.value.uid,
+      payload,
+    )
     scheduleOpen.value = false
     toast.success(
       scheduleMode.value === 'cron' ? 'Scheduled audits on' : 'Scheduled audits off',
@@ -253,10 +252,10 @@ async function reload() {
     latestAnalysis.value = latest
     // Best-effort: the header chip showing the current audit schedule.
     try {
-      const all = await invs.fetchAll(repoUid.value)
-      auditScheduleInv.value = all.find((i) => i.job_type === 'audit-stale') ?? null
+      const all = await scheduledAgents.fetchAll(repoUid.value)
+      auditScheduleBinding.value = all.find((s) => s.agent_key === 'audit-stale') ?? null
     } catch {
-      auditScheduleInv.value = null
+      auditScheduleBinding.value = null
     }
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e)

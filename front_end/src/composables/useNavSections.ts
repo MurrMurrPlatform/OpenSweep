@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import {
   LayoutGrid, GitPullRequest, ClipboardList, BookOpen,
   Activity, Search, MessageCircleQuestion, ShieldAlert, FolderArchive, Settings2, Sparkles,
-  FileText, SquareKanban, Github, Building2, User, Radar, Lightbulb, Newspaper, Slack, Bot,
+  SquareKanban, Github, Building2, User, Radar, Lightbulb, Newspaper, Slack, Bot,
 } from 'lucide-vue-next'
 import { useUiStore } from '@/stores/uiStore'
 import { useCurrentUserStore } from '@/stores/currentUserStore'
@@ -39,6 +39,7 @@ export function useNavSections(): { sections: ComputedRef<NavSection[]> } {
         label: 'Operate',
         items: [
           { to: `${r}/ask`, label: 'Ask', icon: MessageCircleQuestion, scoped: true },
+          { to: `${r}/agents`, label: 'Agents', icon: Bot, scoped: true },
           { to: `${r}/analyses`, label: 'Analyses', icon: Radar, scoped: true },
           { to: `${r}/health`, label: 'Health', icon: Search, scoped: true },
           { to: `${r}/runs`, label: 'Runs', icon: Activity, scoped: true },
@@ -56,7 +57,7 @@ export function useNavSections(): { sections: ComputedRef<NavSection[]> } {
         label: 'Settings',
         items: [
           { to: '/settings/organization', label: 'Organization', icon: Building2 },
-          { to: '/settings/agents', label: 'Agents', icon: Bot },
+          { to: '/agents', label: 'Agent library', icon: Bot },
           { to: '/settings/slack', label: 'Slack', icon: Slack },
           { to: '/admin/llm-providers', label: 'LLM providers', icon: Sparkles },
           { to: '/settings/account', label: 'Account', icon: User },
@@ -69,7 +70,6 @@ export function useNavSections(): { sections: ComputedRef<NavSection[]> } {
           { to: '/settings/github', label: 'GitHub', icon: Github },
           { to: '/admin/platform-config', label: 'Platform config', icon: ShieldAlert },
           { to: '/admin/run-policies', label: 'Run policies', icon: Settings2 },
-          { to: '/admin/agent-prompts', label: 'Agent prompts', icon: FileText },
           { to: '/admin/sandboxes', label: 'Sandboxes', icon: FolderArchive },
         ],
       }] : []),

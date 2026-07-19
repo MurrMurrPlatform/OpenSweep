@@ -26,17 +26,19 @@ export const MENTION_TYPES: { type: MentionTargetType; label: string }[] = [
   { type: 'news_item', label: 'News item' },
   { type: 'doc', label: 'Doc' },
   { type: 'run', label: 'Run' },
-  { type: 'investigation', label: 'Investigation' },
+  { type: 'scheduled_agent', label: 'Scheduled agent' },
   { type: 'group', label: 'Ticket group' },
 ]
 
 /** Detail-route name per mentionable type; undefined = render without a link. */
-export const MENTION_ROUTES: Partial<Record<MentionTargetType, string>> = {
+export const MENTION_ROUTES: Partial<Record<MentionTargetType | 'investigation', string>> = {
   ticket: 'ticket-detail',
   finding: 'finding-detail',
   pull_request: 'pull-request-detail',
   run: 'run-detail',
-  investigation: 'investigation-detail',
+  scheduled_agent: 'scheduled-agent-detail',
+  // Pre-migration mention tokens in old comment bodies keep resolving.
+  investigation: 'scheduled-agent-detail',
 }
 
 export function mentionToken(type: MentionTargetType, uid: string, label: string): string {

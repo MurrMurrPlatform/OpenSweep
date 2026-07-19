@@ -275,7 +275,7 @@ async function dispatchFix() {
     )
     noteDispatched({
       run_uid: runUid || undefined,
-      investigation_uid: typeof dispatch.investigation_uid === 'string' ? dispatch.investigation_uid : undefined,
+      scheduled_agent_uid: typeof dispatch.scheduled_agent_uid === 'string' ? dispatch.scheduled_agent_uid : undefined,
       title: `Fix PR #${pr.value.github_number}`,
       playbook: 'fix',
     })
@@ -384,7 +384,7 @@ async function requestReview() {
     )
     noteDispatched({
       run_uid: dispatch.run_uid,
-      investigation_uid: dispatch.investigation_uid,
+      scheduled_agent_uid: dispatch.scheduled_agent_uid,
       title: `Review PR #${pr.value.github_number}`,
       playbook: 'review',
     })

@@ -50,7 +50,6 @@ export interface AnalysisDTO {
   uid: string
   repository_uid: string
   source_run_uid: string
-  investigation_uid: string
   revision: string
   title: string
   status: AnalysisStatus

@@ -47,7 +47,7 @@ async function destroy(uid: string) {
           <EmptyState
             :icon="Boxes"
             title="No active sandboxes"
-            description="Sandboxes are created on demand when an investigation runs."
+            description="Sandboxes are created on demand when an agent run needs a repo clone."
             class="border-0"
           />
         </div>

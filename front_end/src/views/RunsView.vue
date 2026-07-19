@@ -7,6 +7,7 @@ import { useCurrentUserStore } from '@/stores/currentUserStore'
 import { useCurrentRepo } from '@/composables/useCurrentRepo'
 import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
+import { PLAYBOOK_TO_PRODUCES, producesLabel } from '@/lib/produces'
 import { runStatusLabel, runStatusVariant } from '@/lib/runStatus'
 import { formatRelativeTime } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/page-header'
@@ -14,6 +15,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Badge, type BadgeVariants } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
+import ProducesBadge from '@/components/agents/ProducesBadge.vue'
 import { ErrorState } from '@/components/ui/error-state'
 import { Button } from '@/components/ui/button'
 import {
@@ -27,7 +29,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import type { RunDTO, RunPlaybook } from '@/types/api'
+import type { ProducesKind, RunDTO } from '@/types/api'
 
 /** runStatusVariant predates the shadcn Badge tones (danger/default gone). */
 function statusBadgeVariant(run: RunDTO): BadgeVariants['variant'] {
@@ -37,7 +39,9 @@ function statusBadgeVariant(run: RunDTO): BadgeVariants['variant'] {
   return v
 }
 
-const PLAYBOOKS: RunPlaybook[] = ['chat', 'ask', 'review', 'fix', 'implement', 'verify', 'document']
+// Produces chips filter client-side via the playbook→produces display map —
+// playbook stays internal machinery.
+const PRODUCES_CHIPS: ProducesKind[] = ['findings', 'answer', 'review-verdict', 'code-changes', 'verification', 'documentation']
 
 const router = useRouter()
 const runs = useRunStore()
@@ -47,7 +51,7 @@ const { uid: repoUid } = useCurrentRepo()
 const items = ref<RunDTO[]>([])
 const loading = ref(true)
 const error = ref<string | null>(null)
-const playbookFilter = ref<RunPlaybook | ''>('')
+const producesFilter = ref<ProducesKind | ''>('')
 /** Platform admins only: also list @opensweep comment replies + chat sessions. */
 const showAgentActivity = ref(false)
 
@@ -58,7 +62,6 @@ async function reload() {
   try {
     items.value = await runs.fetchAll({
       repository_uid: repoUid.value,
-      playbook: playbookFilter.value || undefined,
       surface: showAgentActivity.value && currentUser.isPlatformAdmin ? 'all' : undefined,
     })
   } catch (e: unknown) {
@@ -70,7 +73,6 @@ async function reload() {
 
 onMounted(reload)
 watch(repoUid, reload)
-watch(playbookFilter, reload)
 watch(showAgentActivity, reload)
 
 function surfaceLabel(r: RunDTO): string {
@@ -80,11 +82,15 @@ function surfaceLabel(r: RunDTO): string {
 }
 
 const sorted = computed(() =>
-  [...items.value].sort((a, b) => {
-    const ta = a.last_activity_at || a.updated_at || a.created_at || ''
-    const tb = b.last_activity_at || b.updated_at || b.created_at || ''
-    return tb.localeCompare(ta)
-  }),
+  [...items.value]
+    .filter(
+      (r) => !producesFilter.value || PLAYBOOK_TO_PRODUCES[r.playbook] === producesFilter.value,
+    )
+    .sort((a, b) => {
+      const ta = a.last_activity_at || a.updated_at || a.created_at || ''
+      const tb = b.last_activity_at || b.updated_at || b.created_at || ''
+      return tb.localeCompare(ta)
+    }),
 )
 
 // ── New chat dialog ──────────────────────────────────────────────────────────
@@ -139,22 +145,22 @@ async function startChat() {
     <!-- Playbook filter chips -->
     <div class="flex flex-wrap items-center gap-1.5">
       <Button
-        :variant="playbookFilter === '' ? 'default' : 'outline'"
+        :variant="producesFilter === '' ? 'default' : 'outline'"
         size="sm"
         class="rounded-full"
-        @click="playbookFilter = ''"
+        @click="producesFilter = ''"
       >
         All
       </Button>
       <Button
-        v-for="p in PLAYBOOKS"
+        v-for="p in PRODUCES_CHIPS"
         :key="p"
-        :variant="playbookFilter === p ? 'default' : 'outline'"
+        :variant="producesFilter === p ? 'default' : 'outline'"
         size="sm"
         class="rounded-full capitalize"
-        @click="playbookFilter = p"
+        @click="producesFilter = p"
       >
-        {{ p }}
+        {{ producesLabel(p) }}
       </Button>
       <Button
         v-if="currentUser.isPlatformAdmin"
@@ -225,7 +231,7 @@ async function startChat() {
                   </RouterLink>
                 </td>
                 <td class="px-4 py-2">
-                  <Badge variant="outline" class="uppercase">{{ r.playbook }}</Badge>
+                  <ProducesBadge :produces="PLAYBOOK_TO_PRODUCES[r.playbook] ?? 'findings'" />
                   <Badge v-if="surfaceLabel(r)" variant="secondary" class="ml-1">
                     {{ surfaceLabel(r) }}
                   </Badge>

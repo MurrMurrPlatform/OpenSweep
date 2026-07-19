@@ -12,7 +12,9 @@ const DETAIL_ROUTES: Record<string, string> = {
   Finding: 'finding-detail',
   PullRequest: 'pull-request-detail',
   Analysis: 'analysis-detail',
-  Investigation: 'investigation-detail',
+  ScheduledAgent: 'scheduled-agent-detail',
+  // Pre-migration notification rows keep resolving.
+  Investigation: 'scheduled-agent-detail',
 }
 
 /** comment_subject_type (payload) → flat detail route name for the thread. */
@@ -21,7 +23,8 @@ const COMMENT_SUBJECT_ROUTES: Record<string, string> = {
   ticket: 'ticket-detail',
   pull_request: 'pull-request-detail',
   run: 'run-detail',
-  investigation: 'investigation-detail',
+  scheduled_agent: 'scheduled-agent-detail',
+  investigation: 'scheduled-agent-detail',
 }
 
 /**

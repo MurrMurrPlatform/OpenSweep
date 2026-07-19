@@ -13,7 +13,6 @@ import type {
 /** Response of POST /repositories/{uid}/sweep/generate-docs. */
 export interface GenerateDocsResult {
   repository_uid: string
-  investigation_uid: string
   run_uid: string
   errors: string[]
   summary: string
@@ -33,7 +32,6 @@ export interface DocsExportResult {
 export interface DocAuditResult {
   repository_uid: string
   doc_count: number
-  investigations_created: string[]
   runs_dispatched: string[]
   skipped_docs: string[]
   errors: string[]
@@ -45,7 +43,6 @@ export interface DocAuditResult {
 /** Response of POST /repositories/{uid}/sweep/deep-scan. */
 export interface DeepScanResult {
   repository_uid: string
-  investigation_uid: string
   run_uid: string
   errors: string[]
   summary: string
@@ -115,9 +112,9 @@ export const useDocStore = defineStore('docs', () => {
   }
 
   /** One LLM run that proposes doc pages for the repository (409 when already running). */
-  async function generate(repoUid: string, agent_prompt_uid?: string): Promise<GenerateDocsResult> {
+  async function generate(repoUid: string, agent_uid?: string): Promise<GenerateDocsResult> {
     return apiPost<GenerateDocsResult>(`/repositories/${repoUid}/sweep/generate-docs`, {
-      agent_prompt_uid,
+      agent_uid,
     })
   }
 
@@ -133,17 +130,17 @@ export const useDocStore = defineStore('docs', () => {
     repoUid: string,
     docUids: string[],
     options: {
-      agent_prompt_uid?: string
+      agent_uid?: string
       custom_intent?: string
       auto_select?: boolean
       limit?: number
       max_findings?: number
-      effort?: 'small' | 'normal' | 'large'
+      effort?: 'quick' | 'normal' | 'deep'
     } = {},
   ): Promise<DocAuditResult> {
     return apiPost<DocAuditResult>(`/repositories/${repoUid}/sweep/audit`, {
       doc_uids: docUids,
-      agent_prompt_uid: options.agent_prompt_uid,
+      agent_uid: options.agent_uid,
       custom_intent: options.custom_intent,
       auto_select: options.auto_select ?? false,
       limit: options.limit ?? 3,
@@ -157,14 +154,14 @@ export const useDocStore = defineStore('docs', () => {
   async function deepScan(
     repoUid: string,
     options: {
-      agent_prompt_uid?: string
+      agent_uid?: string
       custom_intent?: string
       max_findings?: number
       effort?: 'quick' | 'normal' | 'deep'
     } = {},
   ): Promise<DeepScanResult> {
     return apiPost<DeepScanResult>(`/repositories/${repoUid}/sweep/deep-scan`, {
-      agent_prompt_uid: options.agent_prompt_uid,
+      agent_uid: options.agent_uid,
       custom_intent: options.custom_intent,
       max_findings: options.max_findings,
       effort: options.effort ?? 'deep',

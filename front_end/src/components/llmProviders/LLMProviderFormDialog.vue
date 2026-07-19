@@ -141,7 +141,7 @@ function onSubmit() {
         <div class="flex items-center justify-between border rounded-md px-3 py-2 text-sm">
           <div>
             <div>Active provider</div>
-            <div class="text-xs text-muted-foreground">Normal investigations use this provider automatically.</div>
+            <div class="text-xs text-muted-foreground">Normal agent runs use this provider automatically.</div>
           </div>
           <Switch v-model="form.active" />
         </div>

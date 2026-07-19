@@ -39,7 +39,7 @@ export class ApiError extends Error {
   traceId: string | null
   /** Raw `detail` payload as returned by the backend. Usually a string, but
    *  dispatch endpoints return an object (e.g. {message, run_uid,
-   *  investigation_uid}) on same-target 409 conflicts — keep it so callers
+   *  scheduled_agent_uid}) on same-target 409 conflicts — keep it so callers
    *  can link to the blocking run. */
   detailBody: unknown
 

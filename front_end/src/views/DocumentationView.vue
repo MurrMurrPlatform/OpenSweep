@@ -21,14 +21,9 @@ import {
   Wand2,
   X,
 } from 'lucide-vue-next'
-import {
-  useAgentPromptStore,
-  isAgentBasePrompt,
-  isStageDefaultPrompt,
-  type AgentPromptDTO,
-} from '@/stores/agentPromptStore'
+import { useAgentStore } from '@/stores/agentStore'
 import { useDocStore } from '@/stores/docStore'
-import { useInvestigationStore } from '@/stores/investigationStore'
+import type { AgentDTO } from '@/types/api'
 import { useMemoryStore } from '@/stores/memoryStore'
 import { useCurrentRepo } from '@/composables/useCurrentRepo'
 import { useToast } from '@/composables/useToast'
@@ -74,8 +69,7 @@ import type { DocDTO, DocEditDTO, MemoryDTO } from '@/types/api'
 
 const docs = useDocStore()
 const memories = useMemoryStore()
-const investigations = useInvestigationStore()
-const agentPrompts = useAgentPromptStore()
+const agents = useAgentStore()
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
@@ -397,7 +391,7 @@ async function saveEdit() {
 
 const updateDocsOpen = ref(false)
 const dispatchingDocs = ref(false)
-const docPrompts = ref<AgentPromptDTO[]>([])
+const docPrompts = ref<AgentDTO[]>([])
 const selectedDocPromptUid = ref('')
 
 // reka Select disallows empty-string item values; use a sentinel for the
@@ -414,33 +408,35 @@ async function openUpdateDocs() {
   updateDocsOpen.value = true
   selectedDocPromptUid.value = ''
   try {
-    const all = await agentPrompts.fetchAll({ enabled_only: true })
-    // Alternative strategies only. The seeded internal layers (agent base,
-    // document stage default) are what the default option already runs —
-    // listing them here showed the same run under three different names.
+    const all = await agents.fetchAll({ enabled_only: true })
+    // Alternative strategies only. System agents (the document base and
+    // stage guidance) are what the default option already runs — listing
+    // them here showed the same run under three different names.
     docPrompts.value = all.filter(
-      (p) =>
-        p.default_job_type === 'document' && !isAgentBasePrompt(p) && !isStageDefaultPrompt(p),
+      (a) => a.produces === 'documentation' && a.provenance !== 'system',
     )
   } catch {
     docPrompts.value = []
   }
 }
 
+async function documentAgentUid(): Promise<string> {
+  const all = await agents.fetchAll({ provenance: 'system', produces: 'documentation' })
+  const doc = all.find((a) => a.key === 'document')
+  if (!doc) throw new Error('document system agent not found')
+  return doc.uid
+}
+
 async function dispatchDocumentRun() {
   if (!repoUid.value || dispatchingDocs.value) return
   dispatchingDocs.value = true
   try {
-    const prompt = docPrompts.value.find((p) => p.uid === selectedDocPromptUid.value) || null
-    // job_type=document supplies the canned playbook intent when none is given;
-    // a library prompt overrides it for repo-specific documentation policy.
-    const inv = await investigations.create({
-      repository_uid: repoUid.value,
-      job_type: 'document',
-      title: prompt ? `Update docs — ${prompt.title}` : 'Update documentation',
-      intent: prompt?.body || undefined,
-    })
-    const run = await investigations.trigger(inv.uid)
+    const picked = docPrompts.value.find((a) => a.uid === selectedDocPromptUid.value) || null
+    // The system document agent supplies the canned instructions when no
+    // library agent is picked; a picked agent overrides it for
+    // repo-specific documentation policy.
+    const agentUid = picked?.uid || (await documentAgentUid())
+    const run = await agents.dispatch(agentUid, { repository_uid: repoUid.value })
     updateDocsOpen.value = false
     toast.success('Document run dispatched', `run ${run.uid.slice(0, 8)}`)
     router.push({ name: 'run-detail', params: { uid: run.uid } })

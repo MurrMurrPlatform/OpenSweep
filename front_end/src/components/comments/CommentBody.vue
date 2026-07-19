@@ -20,7 +20,8 @@ const MENTION_PATHS: Record<string, string> = {
   finding: '/findings',
   pull_request: '/pull-requests',
   run: '/runs',
-  investigation: '/investigations',
+  scheduled_agent: '/scheduled-agents',
+  investigation: '/scheduled-agents',
 }
 
 const markdown = computed(() =>

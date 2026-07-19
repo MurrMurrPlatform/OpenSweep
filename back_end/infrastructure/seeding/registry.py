@@ -60,11 +60,11 @@ async def _seed_system_run_policy(mode: SeedMode) -> SeedResult:
 async def _seed_ecc_prompts(mode: SeedMode) -> SeedResult:
     """Bootstrap the prompt library from ECC — only when it is empty. Network-
     and git-dependent, so failures are recorded, never raised."""
-    from domains.agents.models import AgentPrompt
+    from domains.agents.models import Agent
     from domains.agents.services.ecc_import import import_ecc
 
     res = SeedResult(name="ecc_prompts")
-    if await AgentPrompt.nodes.all():
+    if await Agent.nodes.filter(provenance="imported"):
         res.note = "library not empty — skipped"
         return res
     try:

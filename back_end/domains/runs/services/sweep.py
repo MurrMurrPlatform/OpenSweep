@@ -159,7 +159,7 @@ async def run_audit(
     # directly, no per-page fan out. This is the normal
     # path before the first Generate docs has populated the tree.
     if not doc_uids:
-        prompt_body = await load_agent_prompt_body(agent_prompt_uid)
+        prompt_body = await load_agent_prompt_body(agent_uid)
         if prompt_body is None:
             prompt_body = await _workflow_prompt(repository_uid, "ask")
         # Org-agent-overlays composition: the chosen prompt (or the ask

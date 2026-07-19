@@ -45,7 +45,7 @@ class Repository(AsyncStructuredNode):
 
     metadata = JSONProperty(default={})
 
-    # Per-repo workflow config: pipeline stage → {agent_prompt_uid, auto}.
+    # Per-repo workflow config: pipeline stage → {agent_uid, auto}.
     # Stages mirror the run playbooks (ask/discover/review/fix/implement/
     # verify/document). See domains/repositories/services/workflow.py.
     workflow = JSONProperty(default={})

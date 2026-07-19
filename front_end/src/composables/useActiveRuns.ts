@@ -60,7 +60,7 @@ export function useActiveRuns(filters: MaybeRefOrGetter<ActiveRunFilters | null 
    *  in-flight state immediately; the next poll replaces it with the truth. */
   function noteDispatched(partial: {
     run_uid?: string
-    investigation_uid?: string
+    scheduled_agent_uid?: string
     title?: string
     playbook?: string
   }): void {
@@ -69,7 +69,7 @@ export function useActiveRuns(filters: MaybeRefOrGetter<ActiveRunFilters | null 
       activeRuns.value = [
         {
           run_uid: partial.run_uid,
-          investigation_uid: partial.investigation_uid || '',
+          scheduled_agent_uid: partial.scheduled_agent_uid || '',
           title: partial.title || '',
           playbook: partial.playbook || f.playbook || '',
           status: 'queued',
@@ -100,7 +100,7 @@ export function useActiveRuns(filters: MaybeRefOrGetter<ActiveRunFilters | null 
 }
 
 /**
- * Pulls the structured 409 detail ({message, run_uid, investigation_uid})
+ * Pulls the structured 409 detail ({message, run_uid, scheduled_agent_uid})
  * out of a dispatch error. Returns null for plain-string 409s and every other
  * error shape — callers fall back to the generic message toast.
  */
@@ -113,6 +113,6 @@ export function extractDispatchConflict(e: unknown): DispatchConflictDetail | nu
   return {
     message: rec.message,
     run_uid: rec.run_uid,
-    investigation_uid: typeof rec.investigation_uid === 'string' ? rec.investigation_uid : '',
+    scheduled_agent_uid: typeof rec.scheduled_agent_uid === 'string' ? rec.scheduled_agent_uid : '',
   }
 }

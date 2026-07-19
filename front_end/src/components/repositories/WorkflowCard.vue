@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { Workflow } from 'lucide-vue-next'
 import { useWorkflowStore } from '@/stores/workflowStore'
-import { useAgentPromptStore, isAgentBasePrompt } from '@/stores/agentPromptStore'
+import { useAgentStore } from '@/stores/agentStore'
 import { useLLMProviderStore } from '@/stores/llmProviderStore'
 import { useRunPolicyStore } from '@/stores/runPolicyStore'
 import { useToast } from '@/composables/useToast'
@@ -31,7 +31,7 @@ interface Props {
 const props = defineProps<Props>()
 
 const workflow = useWorkflowStore()
-const agentPrompts = useAgentPromptStore()
+const agents = useAgentStore()
 const llmProviders = useLLMProviderStore()
 const runPolicies = useRunPolicyStore()
 const toast = useToast()
@@ -78,7 +78,7 @@ function hydrate(c: WorkflowConfig) {
   for (const stage of STAGE_ORDER) {
     const s = c.stages[stage]
     next[stage] = {
-      agent_prompt_uid: s?.agent_prompt_uid ?? '',
+      agent_uid: s?.agent_uid ?? '',
       auto: s?.auto ?? false,
       depth: (s?.depth ?? 'normal') as ReviewDepth,
       provider_uid: s?.provider_uid ?? '',
@@ -96,7 +96,7 @@ async function load() {
   try {
     const [c] = await Promise.all([
       workflow.fetchForRepo(props.repositoryUid),
-      agentPrompts.fetchAll({ enabled_only: true }),
+      agents.fetchAll({ enabled_only: true }),
       llmProviders.fetchAll(),
       runPolicies.fetchAll(),
     ])
@@ -113,11 +113,12 @@ watch(() => props.repositoryUid, () => void load())
 
 const promptOptions = computed(() => [
   { label: 'No guidance (structural intent only)', value: NONE },
-  // Agent bases (opensweep://agent/<playbook>) are the instructions layer of
-  // every run already — assigning one as stage guidance would duplicate it.
-  ...agentPrompts.prompts
-    .filter((p) => p.enabled && !isAgentBasePrompt(p))
-    .map((p) => ({ label: p.title, value: p.uid })),
+  // Playbook base agents (opensweep://agent/<key>) are the instructions
+  // layer of every run already — assigning one as stage guidance would
+  // duplicate it.
+  ...agents.list
+    .filter((a) => a.enabled && !a.source_url.startsWith('opensweep://agent/'))
+    .map((a) => ({ label: a.title, value: a.uid })),
 ])
 
 function isKnownPrompt(uid: string): boolean {
@@ -148,7 +149,7 @@ const dirty = computed(() => {
     const local = form.value[stage]
     if (!server || !local) return false
     return (
-      local.agent_prompt_uid !== server.agent_prompt_uid ||
+      local.agent_uid !== server.agent_uid ||
       local.auto !== server.auto ||
       local.depth !== server.depth ||
       local.provider_uid !== (server.provider_uid ?? '') ||
@@ -170,7 +171,7 @@ async function save() {
     const stages = {} as Record<WorkflowStage, WorkflowStageConfig>
     for (const stage of STAGE_ORDER) {
       stages[stage] = {
-        agent_prompt_uid: form.value[stage].agent_prompt_uid,
+        agent_uid: form.value[stage].agent_uid,
         auto: form.value[stage].auto,
         depth: form.value[stage].depth,
         provider_uid: form.value[stage].provider_uid,
@@ -234,12 +235,12 @@ async function save() {
           <div class="space-y-2 min-w-0">
             <div class="flex flex-wrap items-center gap-2">
               <Select
-                :model-value="toSelect(form[stage].agent_prompt_uid)"
-                @update:model-value="form[stage].agent_prompt_uid = fromSelect($event)"
+                :model-value="toSelect(form[stage].agent_uid)"
+                @update:model-value="form[stage].agent_uid = fromSelect($event)"
               >
                 <SelectTrigger class="flex-1 min-w-40">
                   <SelectValue
-                    :placeholder="isKnownPrompt(form[stage].agent_prompt_uid) ? undefined : 'No guidance (structural intent only)'"
+                    :placeholder="isKnownPrompt(form[stage].agent_uid) ? undefined : 'No guidance (structural intent only)'"
                   />
                 </SelectTrigger>
                 <SelectContent>
@@ -301,7 +302,7 @@ async function save() {
               >
                 <SelectTrigger
                   class="flex-1"
-                  title="Run policy for this stage — its full ceiling bundle (dollars, wall time, tool turns, files). Default follows the investigation's effort, then the system default. An explicit wall seconds above still overrides this policy's wall ceiling."
+                  title="Run policy for this stage — its full ceiling bundle (dollars, wall time, tool turns, files). Default follows the agent's effort, then the system default. An explicit wall seconds above still overrides this policy's wall ceiling."
                 >
                   <SelectValue />
                 </SelectTrigger>

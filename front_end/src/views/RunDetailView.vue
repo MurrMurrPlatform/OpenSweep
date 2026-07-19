@@ -10,6 +10,7 @@ import {
   GitPullRequest,
   OctagonX,
   RefreshCw,
+  Save,
   SendHorizontal,
   SquareKanban,
   Wifi,
@@ -27,7 +28,9 @@ import RunTranscript from '@/components/runs/RunTranscript.vue'
 import RunFilesPanel from '@/components/runs/RunFilesPanel.vue'
 import CommentThread from '@/components/comments/CommentThread.vue'
 import { useFindingStore } from '@/stores/findingStore'
-import { useInvestigationStore } from '@/stores/investigationStore'
+import { useAgentStore } from '@/stores/agentStore'
+import { useScheduledAgentStore } from '@/stores/scheduledAgentStore'
+import SaveAsAgentDialog from '@/components/agents/SaveAsAgentDialog.vue'
 import { useRunPolicyStore } from '@/stores/runPolicyStore'
 import { useRunStore } from '@/stores/runStore'
 import { useRunSocket, type RunSocketState } from '@/composables/useRunSocket'
@@ -35,24 +38,28 @@ import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
 import { acceptsFollowUp, isLiveRunStatus, runStatusLabel, runStatusVariant } from '@/lib/runStatus'
 import type {
+  AgentDTO,
   FindingDTO,
-  InvestigationDTO,
   RunDTO,
   RunPolicyDTO,
   RunStatus,
   RunTranscriptEvent,
+  ScheduledAgentDTO,
 } from '@/types/api'
 
 const route = useRoute()
 const runs = useRunStore()
-const investigations = useInvestigationStore()
+const agents = useAgentStore()
+const scheduledAgents = useScheduledAgentStore()
 const findings = useFindingStore()
 const runPolicies = useRunPolicyStore()
 const toast = useToast()
 
 const uid = computed(() => String(route.params.uid))
 const run = ref<RunDTO | null>(null)
-const investigation = ref<InvestigationDTO | null>(null)
+const scheduledAgent = ref<ScheduledAgentDTO | null>(null)
+const agent = ref<AgentDTO | null>(null)
+const saveAgentOpen = ref(false)
 const runFindings = ref<FindingDTO[]>([])
 const runPolicy = ref<RunPolicyDTO | null>(null)
 const loading = ref(true)
@@ -200,7 +207,7 @@ async function load() {
   error.value = null
   try {
     run.value = await runs.get(uid.value)
-    await loadInvestigation()
+    await loadAgentContext()
     await loadRunFindings()
     await loadArtifact()
     await loadRunPolicy()
@@ -219,16 +226,33 @@ async function refetchTranscriptFull() {
   lastSeq.value = chunk.last_seq
 }
 
-async function loadInvestigation() {
-  if (!run.value?.investigation_uid) {
-    investigation.value = null
-    return
+function saveAgentPrefill() {
+  const usage = asRecord(run.value?.usage)
+  const input = asRecord(usage.input)
+  const promptText = firstString(input.intent, agent.value?.prompt)
+  return {
+    title: run.value?.title || '',
+    prompt: promptText || '',
+    produces: 'findings' as const,
   }
-  if (investigation.value?.uid === run.value.investigation_uid) return
-  try {
-    investigation.value = await investigations.get(run.value.investigation_uid)
-  } catch {
-    investigation.value = null
+}
+
+async function loadAgentContext() {
+  if (run.value?.scheduled_agent_uid) {
+    if (scheduledAgent.value?.uid !== run.value.scheduled_agent_uid) {
+      scheduledAgent.value = await scheduledAgents
+        .get(run.value.scheduled_agent_uid)
+        .catch(() => null)
+    }
+  } else {
+    scheduledAgent.value = null
+  }
+  if (run.value?.agent_uid) {
+    if (agent.value?.uid !== run.value.agent_uid) {
+      agent.value = await agents.get(run.value.agent_uid).catch(() => null)
+    }
+  } else {
+    agent.value = null
   }
 }
 
@@ -483,10 +507,10 @@ const inputText = computed(() => {
   )
   const capturedSystem = firstString(usage.rendered_system_prompt, usage.system_prompt)
   const input = asRecord(usage.input)
-  const intent = firstString(input.intent, investigation.value?.intent)
+  const intent = firstString(input.intent, agent.value?.prompt)
   const target = Object.keys(run.value.target || {}).length
     ? run.value.target
-    : investigation.value?.target
+    : scheduledAgent.value?.target
 
   const lines = [
     `run_uid: ${run.value.uid}`,
@@ -635,6 +659,14 @@ function firstString(...values: unknown[]): string {
         <div class="flex flex-wrap items-center gap-2">
           <Badge :variant="statusBadgeVariant" class="font-mono uppercase">{{ statusLabel }}</Badge>
           <Button
+            v-if="!isLiveRun && !run.agent_uid"
+            variant="outline"
+            size="sm"
+            @click="saveAgentOpen = true"
+          >
+            <Save /> Save as agent
+          </Button>
+          <Button
             v-if="run.status === 'running'"
             variant="outline"
             size="sm"
@@ -675,7 +707,20 @@ function firstString(...values: unknown[]): string {
 
       <p class="text-muted-foreground text-sm">
         Trigger: {{ run.trigger }} · Triggered by: {{ run.triggered_by || '—' }}
-        <template v-if="run.investigation_uid"> · Investigation: {{ run.investigation_uid }}</template>
+        <template v-if="agent">
+          · Agent:
+          <router-link
+            :to="{ name: 'agent-detail', params: { uid: agent.uid } }"
+            class="text-primary hover:underline"
+          >{{ agent.title }}</router-link>
+        </template>
+        <template v-if="scheduledAgent">
+          · Schedule:
+          <router-link
+            :to="{ name: 'scheduled-agent-detail', params: { uid: scheduledAgent.uid } }"
+            class="text-primary hover:underline"
+          >{{ scheduledAgent.title || scheduledAgent.agent_title }}</router-link>
+        </template>
       </p>
 
       <section class="space-y-3">
@@ -729,7 +774,7 @@ function firstString(...values: unknown[]): string {
         <div v-if="activeTab === 'input'" class="terminal-shell">
           <div class="terminal-topbar">
             <span>run input</span>
-            <span>{{ run.title || investigation?.title || run.playbook }}</span>
+            <span>{{ run.title || scheduledAgent?.title || agent?.title || run.playbook }}</span>
           </div>
           <pre class="terminal-output">{{ inputText }}</pre>
         </div>
@@ -856,6 +901,7 @@ function firstString(...values: unknown[]): string {
         :repository-uid="run.repository_uid"
         title="Discussion"
       />
+      <SaveAsAgentDialog v-model:open="saveAgentOpen" :prefill="saveAgentPrefill()" />
     </template>
   </div>
 </template>

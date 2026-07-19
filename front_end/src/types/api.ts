@@ -1,5 +1,5 @@
 // Generated against PLATFORM.md backend (v0.3.0).
-// Core primitives: Investigation, Finding, Doc/Memory — plus RunPolicy and the
+// Core primitives: Agent/ScheduledAgent, Finding, Doc/Memory — plus RunPolicy and the
 // platform tool surface.
 
 // ── Enums ───────────────────────────────────────────────────────────────────
@@ -24,7 +24,7 @@ export type ParseStatus = 'ok' | 'degraded'
 export type Executor = 'internal_llm' | 'claude_code' | 'codex' | 'opencode' | 'manual'
 export type ExecutionMode = 'analyze_only' | 'implement'
 export type ComputeDial = 'disabled' | 'suggest' | 'ask-before-run' | 'auto-run-cheap' | 'auto-run-any'
-export type InvestigationProvenance = 'human-asked' | 'llm-proposed' | 'template'
+export type AgentProvenance = 'system' | 'user' | 'imported'
 /** V3 run states (PLATFORM_V3_DESIGN.md §2). 'awaiting_input' = turn done,
  *  follow-ups accepted; 'ended' = workspace destroyed (a follow-up reopens). */
 export type RunStatus =
@@ -36,10 +36,10 @@ export type RunStatus =
   | 'cancelled'
   | 'limit_exceeded'
   | 'paused_quota'
-export type RunPlaybook = 'chat' | 'ask' | 'review' | 'fix' | 'implement' | 'verify' | 'document'
+export type RunPlaybook = 'chat' | 'ask' | 'review' | 'fix' | 'implement' | 'verify' | 'document' | 'refine'
 export type RunTrigger = 'manual' | 'event' | 'schedule'
 export type RunSurface = 'runs' | 'comment' | 'chat'
-export type InvestigationEffort = 'quick' | 'normal' | 'deep'
+export type AgentEffort = 'quick' | 'normal' | 'deep'
 
 export type OnExceed = 'abort' | 'pause_for_approval'
 
@@ -279,52 +279,132 @@ export interface InterestDTO {
   updated_at?: string | null
 }
 
-// ── Investigation + Run ─────────────────────────────────────────────────────
+// ── Agents + Scheduled agents + Runs ────────────────────────────────────────
 
-export interface InvestigationDTO {
+/** What an Agent produces — the user-facing replacement for playbooks. */
+export type ProducesKind =
+  | 'findings'
+  | 'answer'
+  | 'documentation'
+  | 'doc-tree'
+  | 'analysis'
+  | 'review-verdict'
+  | 'verification'
+  | 'code-changes'
+
+/** An org-scoped, versioned agent definition (system rows are shared). */
+export interface AgentDTO {
   uid: string
-  repository_uid: string
   title: string
   description: string
-  intent: string
-  job_type: string
-  target: Record<string, unknown>
-  effort: InvestigationEffort
-  schedule: string
-  default_executor: Executor
-  default_mode: ExecutionMode
-  run_policy_uid?: string | null
-  provenance: InvestigationProvenance
-  compute_dial: ComputeDial
+  prompt: string
+  produces: ProducesKind
+  default_effort: AgentEffort
+  default_executor: string
+  tags: string[]
+  provenance: AgentProvenance
+  /** Stable slug for system rows ("ask", "audit-stale", …); "" for user rows. */
+  key: string
+  source_url: string
+  source_commit: string
+  rev: number
+  /** True when the caller's org has an active override of this system agent. */
+  has_org_override: boolean
+  enabled: boolean
   created_at?: string | null
   updated_at?: string | null
 }
 
-export interface CreateInvestigationRequest {
-  repository_uid: string
-  title?: string
+export interface CreateAgentRequest {
+  title: string
   description?: string
-  intent?: string
-  job_type?: string
-  target?: Record<string, unknown>
-  effort?: InvestigationEffort
-  schedule?: string
-  default_executor?: Executor
-  default_mode?: ExecutionMode
-  run_policy_uid?: string | null
-  compute_dial?: ComputeDial
+  prompt?: string
+  produces?: ProducesKind
+  default_effort?: AgentEffort
+  default_executor?: string
+  tags?: string[]
+  enabled?: boolean
 }
 
-/** PATCH /investigations/{uid} — omitted fields stay unchanged. */
-export interface UpdateInvestigationRequest {
+export interface UpdateAgentRequest {
   title?: string
   description?: string
-  intent?: string
+  prompt?: string
+  produces?: ProducesKind
+  default_effort?: AgentEffort
+  default_executor?: string
+  tags?: string[]
+  enabled?: boolean
+}
+
+export interface AgentRevisionDTO {
+  uid: string
+  agent_uid: string
+  org_uid: string
+  rev: number
+  mode: 'append' | 'replace'
+  body: string
+  enabled: boolean
+  author_uid: string
+  created_at?: string | null
+}
+
+export interface SaveOverrideRequest {
+  mode: 'append' | 'replace'
+  body: string
+  enabled?: boolean
+}
+
+export interface AgentDispatchRequest {
+  repository_uid: string
+  effort?: AgentEffort
   target?: Record<string, unknown>
-  effort?: InvestigationEffort
+}
+
+/** An Agent bound to a repository with a trigger — replaces Investigation. */
+export interface ScheduledAgentDTO {
+  uid: string
+  agent_uid: string
+  repository_uid: string
+  title: string
   /** "" = manual only, "on-event" = fire on push, "cron:<expr>" = scheduled. */
-  schedule?: string
+  trigger: string
+  target: Record<string, unknown>
+  /** "" = inherit the agent's default effort. */
+  effort: AgentEffort | ''
+  run_policy_uid?: string | null
+  compute_dial: ComputeDial
+  enabled: boolean
+  provenance: 'system' | 'user'
+  last_scheduled_at?: string | null
+  agent_title: string
+  agent_produces: ProducesKind
+  agent_key: string
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface CreateScheduledAgentRequest {
+  agent_uid: string
+  repository_uid: string
+  title?: string
+  trigger?: string
+  target?: Record<string, unknown>
+  effort?: AgentEffort | ''
+  run_policy_uid?: string | null
   compute_dial?: ComputeDial
+  enabled?: boolean
+}
+
+/** PATCH /scheduled-agents/{uid} — omitted fields stay unchanged. */
+export interface UpdateScheduledAgentRequest {
+  title?: string
+  trigger?: string
+  target?: Record<string, unknown>
+  effort?: AgentEffort | ''
+  run_policy_uid?: string | null
+  compute_dial?: ComputeDial
+  enabled?: boolean
 }
 
 /** End-of-run outcome the agent left via complete_run. */
@@ -343,7 +423,10 @@ export interface RunDTO {
   repository_uid: string
   playbook: RunPlaybook
   title: string
-  investigation_uid: string
+  scheduled_agent_uid: string
+  /** Agent that supplied the instructions layer at dispatch ("" = code fallbacks). */
+  agent_uid: string
+  agent_rev: number
   executor: Executor
   execution_mode: ExecutionMode
   run_policy_uid?: string | null
@@ -420,7 +503,7 @@ export type ActiveRunStatus = 'queued' | 'running' | 'paused_quota'
 /** Row of GET /runs/active — one per in-flight run on a subject. */
 export interface ActiveRunDTO {
   run_uid: string
-  investigation_uid: string
+  scheduled_agent_uid: string
   title: string
   playbook: string
   status: ActiveRunStatus
@@ -509,7 +592,7 @@ export interface RunChangesDTO {
 export interface DispatchConflictDetail {
   message: string
   run_uid: string
-  investigation_uid: string
+  scheduled_agent_uid: string
 }
 
 /** Shape of `usage.quota` on runs paused by a provider quota/rate limit. */
@@ -523,12 +606,6 @@ export interface RunQuotaUsage {
   [key: string]: unknown
 }
 
-export interface InvestigationJobTypeDTO {
-  job_type: string
-  title: string
-  description: string
-  intent: string
-}
 
 // ── Docs (curated markdown pages; agents propose edits as DocEdits) ─────────
 
@@ -1025,7 +1102,7 @@ export type WorkflowStage = 'ask' | 'analysis' | 'discover' | 'review' | 'fix' |
 
 export interface WorkflowStageConfig {
   /** Empty string → the built-in intent for this stage (no extra prompt). */
-  agent_prompt_uid: string
+  agent_uid: string
   /** Only honored for stages listed in WorkflowConfig.auto_stages. */
   auto: boolean
   /** Recall/precision dial applied by stage triggers (auto reviews read review.depth). */
@@ -1037,7 +1114,7 @@ export interface WorkflowStageConfig {
   /** Wall-clock ceiling for this stage's runs. 0 → the run policy's ceiling. */
   max_wall_seconds: number
   /** Full run-policy override for this stage (dollars/wall/turns/files). Empty
-   * → the investigation pin, then the system default. */
+   * → the system default. */
   run_policy_uid: string
 }
 
@@ -1090,7 +1167,7 @@ export interface TriggerReviewRequest {
 /** Response of POST /delivery/pull-requests/{uid}/review. */
 export interface ReviewRunDispatch {
   run_uid: string
-  investigation_uid: string
+  scheduled_agent_uid: string
   head_sha: string
   depth?: string
   /** Non-empty = incremental review scoped from this prior-verdict sha. */
@@ -1098,12 +1175,12 @@ export interface ReviewRunDispatch {
 }
 
 /** Response of POST /tickets/{uid}/implement — inspect loosely. */
-export type ImplementRunDispatch = { run_uid?: string; investigation_uid?: string } & Record<string, unknown>
+export type ImplementRunDispatch = { run_uid?: string; scheduled_agent_uid?: string } & Record<string, unknown>
 
 /** Response of POST /delivery/pull-requests/{uid}/fix — inspect loosely. */
 export type FixRunDispatch = {
   run_uid?: string
-  investigation_uid?: string
+  scheduled_agent_uid?: string
   fix_round?: number
 } & Record<string, unknown>
 
@@ -1230,7 +1307,7 @@ export interface GroupTicketsRequest {
 /** Response of POST /tickets/propose-groups — inspect loosely. */
 export type ProposeGroupsDispatch = {
   run_uid?: string
-  investigation_uid?: string
+  scheduled_agent_uid?: string
   candidate_count?: number
 } & Record<string, unknown>
 
@@ -1242,7 +1319,7 @@ export type CommentSubjectType =
   | 'pull_request'
   | 'news_item'
   | 'run'
-  | 'investigation'
+  | 'scheduled_agent'
   | 'doc'
 
 export type CommentAuthorKind = 'user' | 'opensweep'

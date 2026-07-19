@@ -1,6 +1,6 @@
 """Per-repo workflow config API.
 
-GET/PUT the stage → {agent_prompt_uid, auto} mapping every domain trigger
+GET/PUT the stage → {agent_uid, auto} mapping every domain trigger
 reads (domains/repositories/services/workflow.py).
 """
 
@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api/v1/repositories", tags=["workflow"])
 
 
 class WorkflowStageDTO(BaseModel):
-    agent_prompt_uid: str = ""
+    agent_uid: str = ""
     auto: bool = False
     # quick | normal | deep — recall/precision dial applied by stage triggers.
     depth: str = "normal"
@@ -29,7 +29,7 @@ class WorkflowStageDTO(BaseModel):
     model: str = ""
     max_wall_seconds: int = 0
     # Full run-policy override for this stage (dollars/wall/turns/files).
-    # Empty = inherit the investigation pin, then the system default.
+    # Empty = inherit the system default.
     run_policy_uid: str = ""
 
 

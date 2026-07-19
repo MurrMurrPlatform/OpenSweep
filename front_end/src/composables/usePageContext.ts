@@ -16,7 +16,7 @@ const DETAIL_ROUTES: Record<string, { type: CommentSubjectType; label: string }>
   'finding-detail': { type: 'finding', label: 'this finding' },
   'pull-request-detail': { type: 'pull_request', label: 'this pull request' },
   'run-detail': { type: 'run', label: 'this run' },
-  'investigation-detail': { type: 'investigation', label: 'this investigation' },
+  'scheduled-agent-detail': { type: 'scheduled_agent', label: 'this scheduled agent' },
 }
 
 /**

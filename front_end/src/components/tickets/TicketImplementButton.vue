@@ -54,7 +54,7 @@ async function dispatch() {
     )
     noteDispatched({
       run_uid: runUid || undefined,
-      investigation_uid: typeof run.investigation_uid === 'string' ? run.investigation_uid : undefined,
+      scheduled_agent_uid: typeof run.scheduled_agent_uid === 'string' ? run.scheduled_agent_uid : undefined,
       title: `Implement: ${props.ticket.title || props.ticket.uid.slice(0, 8)}`,
       playbook: 'implement',
     })
