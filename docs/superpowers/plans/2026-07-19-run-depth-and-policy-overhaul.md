@@ -1098,7 +1098,9 @@ Add the import: `from domains.investigations.services.turn_cli import extract_cl
 
 - [ ] **Step 8: Commit** — `git add back_end/domains/executors/claude_code.py back_end/tests/test_claude_continuation.py && git commit -m "feat(executors): continuation + wind-down loop for claude runs; persist session id for UI continue"`
 
----### Task 7: Codex continuation fallback (transcript tail, one pass)
+---
+
+### Task 7: Codex continuation fallback (transcript tail, one pass)
 
 Codex `exec` has no `--resume`; the platform already solves this for threads with a capped transcript-tail re-prompt (`turn_cli.build_codex_prompt`). Give the codex tracking adapter ONE continuation pass using the same technique, gated on the same `_completed_via_mcp` signal. OpenCode: no change (works as before; document why in a comment).
 
