@@ -44,6 +44,13 @@ class GitProviderClient(Protocol):
         self, owner: str, repo: str, state: str = "open"
     ) -> list[dict[str, Any]]: ...
 
+    async def list_pull_request_files(
+        self, owner: str, repo: str, number: int
+    ) -> list[dict[str, Any]]:
+        """Changed files of a PR incl. per-file unified patches (the PR
+        Files panel)."""
+        ...
+
     async def list_check_runs(
         self, owner: str, repo: str, ref: str = "HEAD"
     ) -> list[dict[str, Any]]:
@@ -62,6 +69,10 @@ class GitProviderClient(Protocol):
         body: str,
         draft: bool = False,
     ) -> dict[str, Any]: ...
+
+    async def mark_pull_request_ready(self, owner: str, repo: str, number: int) -> None:
+        """Flip a draft PR to ready-for-review; no-op when already ready."""
+        ...
 
     async def create_commit_status(
         self,

@@ -10,6 +10,7 @@ import type {
   PRState,
   PullRequestDTO,
   ReviewRunDispatch,
+  RunChangesDTO,
   SubmitVerdictRequest,
   TriggerReviewRequest,
   UpdateMergePolicyRequest,
@@ -43,6 +44,12 @@ export const useDeliveryStore = defineStore('delivery', () => {
 
   async function getPullRequest(uid: string): Promise<PullRequestDTO> {
     return apiGet<PullRequestDTO>(`/delivery/pull-requests/${uid}`)
+  }
+
+  /** The PR's changed files + per-file diffs, in the run-changes shape so
+   *  the shared FileChangesPanel renders it. */
+  async function getPullRequestFiles(uid: string): Promise<RunChangesDTO> {
+    return apiGet<RunChangesDTO>(`/delivery/pull-requests/${uid}/files`)
   }
 
   /** Manual head-driven resync — same path the webhook takes. */
@@ -172,6 +179,7 @@ export const useDeliveryStore = defineStore('delivery', () => {
     pullRequests,
     fetchPullRequests,
     getPullRequest,
+    getPullRequestFiles,
     syncPullRequest,
     syncRepository,
     recompute,

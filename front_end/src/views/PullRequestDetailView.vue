@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   ClipboardList,
   ExternalLink,
+  FileDiff,
   Gavel,
   Link2,
   ListChecks,
@@ -62,6 +63,7 @@ import VerdictCard from '@/components/delivery/VerdictCard.vue'
 import LinkTicketDialog from '@/components/tickets/LinkTicketDialog.vue'
 import ActiveRunChip from '@/components/runs/ActiveRunChip.vue'
 import DiscussionChip from '@/components/runs/DiscussionChip.vue'
+import { FileChangesPanel } from '@/components/diff'
 import CommentThread from '@/components/comments/CommentThread.vue'
 import type {
   FindingResolutionDTO,
@@ -127,6 +129,13 @@ const DEPTH_HELP: Record<ReviewDepth, string> = {
 // Embeddable in WorkItemView: an explicit uid prop wins over the route param.
 const props = defineProps<{ uid?: string }>()
 const uid = computed(() => props.uid || String(route.params.uid))
+
+// ── Files panel (the diff viewer runs have) ─────────────────────────────────
+// Bumps refetch the GitHub diff in place; a uid change resets the panel.
+const filesRefreshKey = ref(0)
+function fetchPrFiles() {
+  return delivery.getPullRequestFiles(uid.value)
+}
 
 // In-flight runs targeting this PR — surface a "view run" chip and gate the
 // dispatch buttons per the overlap rules: a review is blocked only by another
@@ -328,6 +337,7 @@ async function resync() {
     ])
     verdict.value = v
     resolutions.value = rs
+    filesRefreshKey.value += 1 // head may have moved — refresh the diff panel
     toast.success('PR re-synced', `head @${pr.value.head_sha.slice(0, 10)}`)
   } catch (e) {
     const msg = e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e)
@@ -860,6 +870,21 @@ async function onResolutionUpdated(updated: FindingResolutionDTO) {
           </Card>
         </div>
       </div>
+
+      <!-- Files changed — the same diff viewer runs have, fed by GitHub's
+           per-file patches for this PR. -->
+      <section class="space-y-2">
+        <h2 class="flex items-center gap-2 text-base font-semibold">
+          <FileDiff class="h-4 w-4 text-muted-foreground" />
+          Files changed
+        </h2>
+        <FileChangesPanel
+          :fetch="fetchPrFiles"
+          :refresh-key="filesRefreshKey"
+          :reset-key="pr.uid"
+          empty-message="No changed files on this pull request."
+        />
+      </section>
 
       <!-- Discussion -->
       <CommentThread subject-type="pull_request" :subject-uid="pr.uid" :repository-uid="pr.repository_uid" title="Discussion" />

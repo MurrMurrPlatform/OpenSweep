@@ -23,6 +23,10 @@ _GITHUB_API = "https://api.github.com"
 # large is pathological and we only need enough to compute red/pending/green.
 MAX_CHECK_RUNS = 500
 
+# Defensive upper bound when paginating a PR's changed files (GitHub itself
+# stops listing at 3000) — enough for any reviewable diff.
+MAX_PR_FILES = 1000
+
 
 class TokenSource(Protocol):
     """Per-request credential resolver (e.g. an App installation token)."""
@@ -100,6 +104,23 @@ class GitHubClient:
     async def list_pull_requests(self, owner: str, repo: str, state: str = "open") -> list[dict[str, Any]]:
         return await self._get(f"/repos/{owner}/{repo}/pulls?state={state}&per_page=50")
 
+    async def list_pull_request_files(self, owner: str, repo: str, number: int) -> list[dict[str, Any]]:
+        """Changed files of a PR with per-file unified patches — paginated
+        (per_page=100, Link rel="next"), capped at MAX_PR_FILES. GitHub omits
+        `patch` for binary and oversized diffs."""
+        if not self.is_active:
+            raise RuntimeError("GitHubClient is not active (GITHUB_TOKEN unset)")
+        headers = await self._request_headers()
+        url: str | None = f"/repos/{owner}/{repo}/pulls/{number}/files?per_page=100"
+        files: list[dict[str, Any]] = []
+        while url and len(files) < MAX_PR_FILES:
+            r = await self._client.get(url, headers=headers)
+            r.raise_for_status()
+            body = r.json()
+            files.extend(body if isinstance(body, list) else [])
+            url = (r.links.get("next") or {}).get("url")
+        return files[:MAX_PR_FILES]
+
     async def get_file_contents(self, owner: str, repo: str, path: str, ref: str | None = None) -> dict[str, Any]:
         # Reject path traversal and percent-encode both the path and ref so a
         # crafted value (e.g. "../../other-owner/other-repo/contents/x") can't
@@ -145,6 +166,30 @@ class GitHubClient:
             f"/repos/{owner}/{repo}/pulls",
             json={"head": head, "base": base, "title": title, "body": body, "draft": draft},
         )
+
+    async def mark_pull_request_ready(self, owner: str, repo: str, number: int) -> None:
+        """Flip a draft PR to ready-for-review. Draft state is GraphQL-only
+        on GitHub (REST cannot un-draft), so: REST fetch for the node_id,
+        then the markPullRequestReadyForReview mutation. No-op when the PR
+        is already ready."""
+        pr = await self.get_pull_request(owner, repo, number)
+        if not pr.get("draft"):
+            return
+        node_id = str(pr.get("node_id") or "")
+        if not node_id:
+            raise RuntimeError(f"PR {owner}/{repo}#{number} payload has no node_id")
+        mutation = (
+            "mutation($id: ID!) {"
+            " markPullRequestReadyForReview(input: {pullRequestId: $id})"
+            " { pullRequest { isDraft } } }"
+        )
+        data = await self._post("/graphql", json={"query": mutation, "variables": {"id": node_id}})
+        errors = data.get("errors") or []
+        if errors:
+            raise RuntimeError(
+                f"markPullRequestReadyForReview failed for {owner}/{repo}#{number}: "
+                f"{errors[0].get('message', 'unknown GraphQL error')}"
+            )
 
     async def create_commit_status(
         self,

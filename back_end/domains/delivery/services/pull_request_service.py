@@ -156,6 +156,67 @@ async def latest_verdict_for(pr_uid: str, head_sha: str = "") -> Verdict | None:
     return pick_latest_verdict(list(nodes), head_sha=head_sha)
 
 
+# Mirrors the per-file patch budget of run changes (run_changes.PATCH_MAX_CHARS)
+# — GitHub already omits `patch` for huge diffs, this is a defensive backstop.
+PR_PATCH_MAX_CHARS = 200_000
+
+# GitHub file statuses → the run-changes vocabulary the diff panel renders.
+_PR_FILE_STATUS = {
+    "added": "added",
+    "removed": "deleted",
+    "modified": "modified",
+    "renamed": "renamed",
+    "copied": "added",
+    "changed": "modified",
+}
+
+
+def github_files_to_changes(pr: PullRequest, payloads: list[dict]) -> dict:
+    """Map `GET /pulls/{n}/files` payloads to the `/runs/{uid}/changes` shape.
+
+    GitHub omits `patch` for binary files and oversized diffs; additions or
+    deletions being counted tells the two apart (binary numstats are zero)."""
+    files = []
+    for f in payloads:
+        path = str(f.get("filename") or "")
+        if not path:
+            continue
+        status = _PR_FILE_STATUS.get(str(f.get("status") or ""), "modified")
+        patch = str(f.get("patch") or "")
+        additions = int(f.get("additions") or 0)
+        deletions = int(f.get("deletions") or 0)
+        too_large = False
+        binary = False
+        if not patch:
+            if additions or deletions:
+                too_large = True
+            elif status != "renamed":  # a pure rename legitimately has no patch
+                binary = True
+        elif len(patch) > PR_PATCH_MAX_CHARS:
+            patch = ""
+            too_large = True
+        files.append(
+            {
+                "path": path,
+                "old_path": str(f.get("previous_filename") or ""),
+                "status": status,
+                "additions": additions,
+                "deletions": deletions,
+                "patch": patch,
+                "binary": binary,
+                "too_large": too_large,
+            }
+        )
+    files.sort(key=lambda f: f["path"])
+    return {
+        "source": "live",
+        "base": pr.base_ref or "",
+        "captured_at": None,
+        "files": files,
+        "tree": [],
+    }
+
+
 class PullRequestService:
     async def get_node(self, uid: str) -> PullRequest:
         pr = await PullRequest.nodes.get_or_none(uid=uid)
@@ -226,6 +287,15 @@ class PullRequestService:
         repo, client = await self._repo_and_client(repository_uid)
         payload = await client.get_pull_request(repo.github_owner, repo.github_repo, github_number)
         return await self.apply_github_payload(repo, client, payload)
+
+    async def files(self, pr: PullRequest) -> dict:
+        """The PR's changed files with per-file unified patches, in the same
+        shape as `/runs/{uid}/changes` so the frontend diff panel is shared."""
+        repo, client = await self._repo_and_client(pr.repository_uid)
+        payloads = await client.list_pull_request_files(
+            repo.github_owner, repo.github_repo, int(pr.github_number)
+        )
+        return github_files_to_changes(pr, payloads)
 
     async def sync_repository(self, repository_uid: str) -> dict:
         """Full 2-way reconcile with GitHub — the queue's source of truth.
