@@ -383,6 +383,18 @@ export interface RunDTO {
   updated_at?: string | null
 }
 
+/** Terminal takeover payload for POST /runs/{uid}/handoff. */
+export interface RunHandoffDTO {
+  /** resume — paste resumes the actual claude session; seeded — paste starts a
+   *  fresh claude seeded by the OPENSWEEP_HANDOFF.md brief; unavailable — no
+   *  live workspace, `reason` says how to recover. */
+  mode: 'resume' | 'seeded' | 'unavailable'
+  command: string
+  sandbox_host_path: string
+  cli_session_id: string
+  reason: string
+}
+
 /** POST /runs — creates chat/ask runs; other playbooks have domain triggers. */
 export interface CreateRunRequest {
   repository_uid: string

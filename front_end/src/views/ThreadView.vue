@@ -20,6 +20,7 @@ import ThreadChat from '@/components/threads/ThreadChat.vue'
 import ThreadTimeline from '@/components/threads/ThreadTimeline.vue'
 import ConvergenceChecklist from '@/components/delivery/ConvergenceChecklist.vue'
 import TestLocallyButton from '@/components/delivery/TestLocallyButton.vue'
+import ContinueInTerminalButton from '@/components/runs/ContinueInTerminalButton.vue'
 import VerdictCard from '@/components/delivery/VerdictCard.vue'
 import RunFilesPanel from '@/components/runs/RunFilesPanel.vue'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
@@ -323,6 +324,10 @@ async function onFix() {
         v-if="thread.branch || pr"
         :branch="pr?.head_ref || thread.branch"
         :pr-number="pr?.github_number ?? null"
+      />
+      <ContinueInTerminalButton
+        v-if="thread.active_run_uid"
+        :run-uid="thread.active_run_uid"
       />
       <Button v-if="active" size="sm" variant="ghost" @click="onAbandon">
         <XCircle /> Abandon

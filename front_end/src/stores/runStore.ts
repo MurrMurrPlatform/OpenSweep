@@ -8,6 +8,7 @@ import type {
   CreateRunRequest,
   RunChangesDTO,
   RunDTO,
+  RunHandoffDTO,
   RunMessageResult,
   RunTranscriptDTO,
 } from '@/types/api'
@@ -66,6 +67,12 @@ export const useRunStore = defineStore('runs', () => {
     return apiPost<RunDTO>(`/runs/${uid}/interrupt`)
   }
 
+  /** Prepare a terminal takeover: writes the handoff brief into the workspace
+   *  and returns the one-paste command for the user's shell. */
+  async function handoff(uid: string): Promise<RunHandoffDTO> {
+    return apiPost<RunHandoffDTO>(`/runs/${uid}/handoff`)
+  }
+
   /** Close the run: destroys the workspace, keeps the transcript. A later
    *  follow-up message reopens the conversation. */
   async function end(uid: string): Promise<RunDTO> {
@@ -117,6 +124,7 @@ export const useRunStore = defineStore('runs', () => {
     createRun,
     sendMessage,
     interrupt,
+    handoff,
     end,
     cancel,
     recreateWorkspace,
