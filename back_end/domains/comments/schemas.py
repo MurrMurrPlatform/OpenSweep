@@ -12,7 +12,7 @@ class CommentSubjectType(StrEnum):
     PULL_REQUEST = "pull_request"
     NEWS_ITEM = "news_item"
     RUN = "run"
-    INVESTIGATION = "investigation"
+    SCHEDULED_AGENT = "scheduled_agent"
     DOC = "doc"
 
 

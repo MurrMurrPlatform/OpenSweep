@@ -65,7 +65,7 @@ async def create_run(req: CreateRunRequest, user: UserDTO = Depends(require_role
     - playbook=ask: dispatches through the executor adapter (findings machinery).
     - playbook=chat: a conversation-only run — a discovery workspace is
       cloned in the background; the first message (req.prompt, optional) runs
-      as turn one. No Investigation is created (V3 §8).
+      as turn one (V3 §8).
     """
     if req.surface not in {"runs", "chat"}:
         raise HTTPException(status_code=422, detail=f"unknown surface {req.surface!r}")
@@ -85,11 +85,11 @@ async def create_run(req: CreateRunRequest, user: UserDTO = Depends(require_role
     if req.playbook == Playbook.ASK:
         # Org-agent-overlays composition: the user's prompt (custom_intent)
         # or the platform ask instructions, with the org overlay applied.
-        from domains.agent_overlays.services.composition import compose_playbook_intent
+        from domains.agents.services.composition import compose_agent_intent
 
-        composed = await compose_playbook_intent(
+        composed = await compose_agent_intent(
             repository_uid=req.repository_uid,
-            playbook="ask",
+            agent_key="ask",
             stage="ask",
             repo_guidance="",
             custom_intent=(req.prompt or "").strip() or None,
@@ -180,10 +180,10 @@ async def _create_chat_run(req: CreateRunRequest, *, actor_uid: str, org_uid: st
         target.setdefault("subject_type", context.get("subject_type", ""))
         target.setdefault("subject_uid", context.get("subject_uid", ""))
 
-    # Org agent overlay provenance (chat runs bypass trigger_run).
-    from domains.agent_overlays.services.overlay_service import active_overlay_provenance
+    # Agent provenance (chat runs bypass trigger_run).
+    from domains.agents.services.agent_service import active_agent_provenance
 
-    overlay_uid, overlay_rev = await active_overlay_provenance(org_uid, "chat")
+    agent_uid, agent_rev = await active_agent_provenance(org_uid, "chat")
 
     now = datetime.now(UTC)
     run = Run(
@@ -194,8 +194,8 @@ async def _create_chat_run(req: CreateRunRequest, *, actor_uid: str, org_uid: st
         executor=executor.value,
         execution_mode="analyze_only",
         provider_uid=(provider.uid or "").strip(),
-        overlay_uid=overlay_uid,
-        overlay_rev=overlay_rev,
+        agent_uid=agent_uid,
+        agent_rev=agent_rev,
         status=RunStatus.QUEUED.value,
         linked_pr_uid=req.linked_pr_uid or "",
         linked_ticket_uid=req.linked_ticket_uid or "",
@@ -344,7 +344,7 @@ class ActiveRunDTO(BaseModel):
     show "already running" and deep-link the run."""
 
     run_uid: str
-    investigation_uid: str = ""
+    scheduled_agent_uid: str = ""
     title: str = ""
     playbook: str = ""
     status: str
@@ -381,7 +381,7 @@ async def list_active_runs(
     out = [
         ActiveRunDTO(
             run_uid=r.uid,
-            investigation_uid=r.investigation_uid or "",
+            scheduled_agent_uid=r.scheduled_agent_uid or "",
             title=r.title or "",
             playbook=r.playbook or "",
             status=r.status or "",

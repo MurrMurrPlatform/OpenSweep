@@ -1,7 +1,7 @@
 """Stable dedupe-key generation for Findings.
 
 A Finding's dedupe_key collapses repeat reports of the same issue across
-multiple Investigation Runs. The key is derived from:
+multiple audit Runs. The key is derived from:
   repository_uid + normalised title + top affected path
 
 Title normalisation strips numbers, file:line excerpts, and whitespace so

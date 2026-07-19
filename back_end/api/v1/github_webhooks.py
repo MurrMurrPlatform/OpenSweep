@@ -544,7 +544,7 @@ async def _delivery_follow_through(
         for commit in payload.get("commits") or []:
             for key in ("added", "modified", "removed"):
                 changed_paths.extend(str(p) for p in (commit.get(key) or []))
-        from domains.runs.services.event_triggers import refresh_docs_for_change
+        from domains.agents.services.event_triggers import refresh_docs_for_change
 
         await refresh_docs_for_change(
             repository_uid=repo.uid, changed_paths=changed_paths, source="webhook"

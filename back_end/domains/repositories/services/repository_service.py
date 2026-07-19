@@ -64,14 +64,14 @@ class RepositoryService:
         # page so agents always have a propose_doc_edit target, plus the
         # on-event "Keep docs current" Investigation (§9).
         from domains.docs.services.doc_service import seed_conventions_doc
-        from domains.runs.services.seeding import (
-            seed_audit_stale_investigation,
-            seed_keep_docs_current_investigation,
+        from domains.agents.services.scheduled_agent_service import (
+            seed_audit_stale,
+            seed_keep_docs_current,
         )
 
         await seed_conventions_doc(r.uid)
-        await seed_keep_docs_current_investigation(r.uid)
-        await seed_audit_stale_investigation(r.uid)
+        await seed_keep_docs_current(r.uid)
+        await seed_audit_stale(r.uid)
         return _to_dto(r)
 
     async def update(
@@ -101,7 +101,7 @@ class RepositoryService:
         "Ticket",
         "Finding",
         "Run",
-        "Investigation",
+        "ScheduledAgent",
     )
 
     async def delete(self, uid: str, org_uid: str) -> None:

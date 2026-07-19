@@ -30,7 +30,7 @@ async def build_chat_preamble(context: dict[str, str] | None, *, org_uid: str = 
     like the context snapshot)."""
     parts = [_CHAT_CONTRACT]
     try:
-        from domains.agent_overlays.services.composition import chat_instruction_layers
+        from domains.agents.services.composition import chat_instruction_layers
 
         layers = await chat_instruction_layers(org_uid)
         if layers:

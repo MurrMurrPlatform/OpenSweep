@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from domains.agents.models import AgentPrompt
+from domains.agents.models import Agent
 
 OPENSWEEP_FRAMING_HEADER = """# Role
 
@@ -74,14 +74,14 @@ exact code.
 
 
 async def load_agent_prompt_body(uid: Optional[str]) -> Optional[str]:
-    """Resolve an AgentPrompt uid to its body. Returns None if uid not given
+    """Resolve an Agent uid to its prompt body. Returns None if uid not given
     or row not found / not enabled."""
     if not uid:
         return None
-    p = await AgentPrompt.nodes.get_or_none(uid=uid)
+    p = await Agent.nodes.get_or_none(uid=uid)
     if p is None or not p.enabled:
         return None
-    return p.body or ""
+    return p.prompt or ""
 
 
 def build_intent(
@@ -116,7 +116,7 @@ def build_intent(
                                    include_footer=False)
 
     Pure and sync — callers resolve the async layers (see
-    domains/agent_overlays/services/composition.py) and pass plain strings.
+    domains/agents/services/composition.py) and pass plain strings.
     A replace overlay only ever substitutes the instructions layer: repo
     guidance, scope, header, and footer always stack around it.
     """

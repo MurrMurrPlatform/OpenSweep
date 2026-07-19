@@ -48,7 +48,7 @@ async def dispatch_refine_run(
 ):
     """Trigger the read-only refine run for a ticket. Raises HTTPException 409
     when the lifecycle refuses the dispatch."""
-    from domains.agent_overlays.services.composition import compose_playbook_intent
+    from domains.agents.services.composition import compose_agent_intent
     from domains.runs.schemas import Effort, RunTrigger
     from domains.runs.services.lifecycle import LifecycleError, trigger_run
     from domains.repositories.services.workflow import stage_prompt_body
@@ -58,9 +58,9 @@ async def dispatch_refine_run(
     if extra_context:
         structural = f"{structural}\n\n{extra_context}"
     guidance = await stage_prompt_body(ticket.repository_uid, "refine")
-    composed = await compose_playbook_intent(
+    composed = await compose_agent_intent(
         repository_uid=ticket.repository_uid,
-        playbook="refine",
+        agent_key="refine",
         stage="refine",
         repo_guidance=guidance or "",
         structural=structural,

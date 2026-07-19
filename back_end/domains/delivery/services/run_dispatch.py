@@ -203,11 +203,11 @@ async def finalize_write_run(
 
     # Tie THIS run's changed paths to doc upkeep the moment it pushes
     # (KNOWLEDGE_V3_DOCUMENTATION.md §9): mark watching pages stale and
-    # auto-run any on-event doc Investigations the dial permits — without
+    # auto-run any on-event doc bindings the dial permits — without
     # waiting for GitHub to redeliver the push webhook. Same machinery the
     # webhook uses, so gating/dedup stay consistent; best-effort, never
     # blocks the finalize.
-    from domains.runs.services.event_triggers import refresh_docs_for_change
+    from domains.agents.services.event_triggers import refresh_docs_for_change
 
     await refresh_docs_for_change(
         repository_uid=repository_uid,

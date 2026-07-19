@@ -1,7 +1,7 @@
 """Celery app for OpenSweep -- broker on Redis DB 0.
 
-PLATFORM.md §Principles: automatic LLM Runs are opt-in per Investigation. The
-schedule tick only dispatches Investigations whose user-set cron schedule is
+PLATFORM.md §Principles: automatic LLM Runs are opt-in per ScheduledAgent. The
+schedule tick only dispatches ScheduledAgents whose user-set cron trigger is
 due; Doc freshness is driven by GitHub push webhooks, not a beat tick.
 """
 

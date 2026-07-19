@@ -25,7 +25,7 @@ MENTIONABLE_TYPES = {
     "pull_request",
     "news_item",
     "run",
-    "investigation",
+    "scheduled_agent",
     "doc",
     "group",
     "user",

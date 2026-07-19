@@ -171,7 +171,7 @@ _TARGET_SUBJECT_KEYS: list[tuple[str, CommentSubjectType]] = [
     ("ticket_uid", CommentSubjectType.TICKET),
     ("pull_request_uid", CommentSubjectType.PULL_REQUEST),
     ("news_item_uid", CommentSubjectType.NEWS_ITEM),
-    ("investigation_uid", CommentSubjectType.INVESTIGATION),
+    ("scheduled_agent_uid", CommentSubjectType.SCHEDULED_AGENT),
     ("doc_uid", CommentSubjectType.DOC),
 ]
 

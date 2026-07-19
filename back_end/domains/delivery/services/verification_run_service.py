@@ -167,11 +167,11 @@ async def trigger_verification_run(
         # Org-agent-overlays composition: header + platform verify
         # instructions (org overlay applied) + repo verify guidance stack
         # around the structural skeptic contract.
-        from domains.agent_overlays.services.composition import compose_playbook_intent
+        from domains.agents.services.composition import compose_agent_intent
 
-        composed = await compose_playbook_intent(
+        composed = await compose_agent_intent(
             repository_uid=pr.repository_uid,
-            playbook="verify",
+            agent_key="verify",
             stage="verify",
             repo_guidance=guidance or "",
             structural=build_verification_intent(pr, verdict, findings),

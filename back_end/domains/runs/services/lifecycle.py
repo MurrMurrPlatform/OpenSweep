@@ -7,7 +7,8 @@ turn_service. It handles policy resolution, ceiling enforcement, adapter
 selection, raw-artifact retention, and per-turn playbook hooks.
 
 One-off runs (review/fix/implement/verify/ask/chat) pass their intent
-directly; only saved/recurring configs pass investigation_uid (V3 §8).
+directly; agent-driven dispatch (domains/agents/services/dispatch.py)
+composes the intent and passes scheduled_agent_uid/agent_uid provenance.
 Workspaces are NOT destroyed when a turn finishes — they live under the
 sliding retention window so follow-up turns can continue (V3 §7).
 """
@@ -31,7 +32,7 @@ from domains.executors import cli_tracking as _adapter_cli_tracking  # noqa: F40
 from domains.executors import internal_llm as _adapter_internal_llm  # noqa: F401
 from domains.executors import manual as _adapter_manual  # noqa: F401
 from domains.executors.base import AdapterRegistry, DispatchRequest
-from domains.runs.models import RUN_SURFACES, Investigation, Run
+from domains.runs.models import RUN_SURFACES, Run
 from domains.runs.schemas import (
     ExecutionMode,
     Executor,
@@ -103,7 +104,10 @@ async def trigger_run(
     linked_pr_uid: str = "",
     linked_ticket_uid: str = "",
     linked_finding_uid: str = "",
-    investigation_uid: str = "",
+    scheduled_agent_uid: str = "",
+    agent_uid: str = "",
+    agent_rev: int = 0,
+    stage: str = "",
     executor: Executor | None = None,
     execution_mode: ExecutionMode | None = None,
     run_policy_uid: str | None = None,
@@ -116,9 +120,10 @@ async def trigger_run(
 ) -> Run:
     """Create a Run and dispatch its first turn.
 
-    Two entry shapes (V3 §8):
-    - direct: repository_uid + intent (+ playbook/target/links) — one-off runs
-    - saved:  investigation_uid — the Investigation supplies intent/target/etc
+    Callers pass repository_uid + intent (+ playbook/target/links).
+    Agent-driven dispatch also passes scheduled_agent_uid / agent_uid /
+    agent_rev provenance and an explicit workflow `stage` when the agent key
+    carries a sharper signal than the playbook (generate-docs → discover).
 
     Returns the persisted Run immediately by default (status `queued`) while
     sandbox prep + the adapter continue in the background. Write runs pass a
@@ -127,20 +132,10 @@ async def trigger_run(
     prep failure marks the run failed with usage["prep_failed"]=True so the
     hooks can tell "agent never ran" from a real run failure.
     """
-    inv: Investigation | None = None
-    if investigation_uid:
-        inv = await Investigation.nodes.get_or_none(uid=investigation_uid)
-        if inv is None:
-            raise LifecycleError(f"Investigation {investigation_uid} not found")
-        repository_uid = repository_uid or inv.repository_uid
-        intent = intent or inv.intent
-        title = title or inv.title or ""
-        target = target if target is not None else dict(inv.target or {})
-        playbook = playbook or playbook_registry.playbook_for_job_type(inv.job_type)
     if not repository_uid:
-        raise LifecycleError("trigger_run needs repository_uid (or investigation_uid)")
+        raise LifecycleError("trigger_run needs repository_uid")
     if not intent:
-        raise LifecycleError("trigger_run needs an intent (or investigation_uid)")
+        raise LifecycleError("trigger_run needs an intent")
     playbook = playbook or "ask"
     if playbook not in playbook_registry.PLAYBOOKS:
         raise LifecycleError(f"unknown playbook {playbook!r}")
@@ -160,29 +155,29 @@ async def trigger_run(
 
     run_org_uid = await repository_org_uid(repository_uid)
 
-    # Org agent overlay provenance (spec: org-agent-overlays): record which
-    # overlay + revision was active for this org+playbook at dispatch.
+    # Agent provenance: which Agent (and org override revision) supplied the
+    # instructions layer at dispatch. Callers that composed the intent
+    # themselves (agents.dispatch, sweep) pass agent_uid/agent_rev
+    # explicitly; otherwise resolve the playbook's system agent.
     # Best-effort — provenance must never block a run.
-    overlay_uid, overlay_rev = "", 0
-    try:
-        from domains.agent_overlays.services.overlay_service import (
-            active_overlay_provenance,
-        )
+    if not agent_uid:
+        try:
+            from domains.agents.services.agent_service import active_agent_provenance
 
-        overlay_uid, overlay_rev = await active_overlay_provenance(
-            run_org_uid or "", playbook
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            f"overlay provenance lookup failed ({run_org_uid}/{playbook}): {exc}",
-            extra={"tag": "lifecycle"},
-        )
+            agent_uid, agent_rev = await active_agent_provenance(
+                run_org_uid or "", playbook
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                f"agent provenance lookup failed ({run_org_uid}/{playbook}): {exc}",
+                extra={"tag": "lifecycle"},
+            )
 
     # Per-stage workflow overrides (repo dashboard → Workflow card): a stage
     # may pin its own provider, model, and wall ceiling. Empty/0 = inherit.
     from domains.repositories.services import workflow as workflow_service
 
-    stage = workflow_service.stage_for_run(inv.job_type if inv else "", playbook)
+    stage = stage or workflow_service.stage_for_run("", playbook)
     overrides = (
         await workflow_service.stage_run_overrides(repository_uid, stage)
         if stage
@@ -231,16 +226,13 @@ async def trigger_run(
         )
 
     try:
-        # Policy precedence: the explicit per-run run_policy_uid wins, then the
-        # saved Investigation's pinned policy, then the per-stage Workflow-card
-        # policy override, then the system default (resolved downstream). A
-        # stage can thus pin a full ceiling bundle (dollars/wall/turns/files)
-        # for its runs, not just the raw wall seconds.
-        default_policy_uid = (
-            (inv.run_policy_uid if inv else "")
-            or overrides.get("run_policy_uid")
-            or None
-        )
+        # Policy precedence: the explicit per-run run_policy_uid wins (agent
+        # dispatch resolves the binding's pin / effort there), then the
+        # per-stage Workflow-card policy override, then the system default
+        # (resolved downstream). A stage can thus pin a full ceiling bundle
+        # (dollars/wall/turns/files) for its runs, not just the raw wall
+        # seconds.
+        default_policy_uid = overrides.get("run_policy_uid") or None
         resolved = await resolve_policy(
             repository_uid=repository_uid,
             executor=chosen_executor,
@@ -280,13 +272,13 @@ async def trigger_run(
         repository_uid=repository_uid,
         playbook=playbook,
         title=title or f"{playbook} run",
-        investigation_uid=investigation_uid or "",
+        scheduled_agent_uid=scheduled_agent_uid or "",
         executor=chosen_executor.value,
         execution_mode=chosen_mode.value,
         run_policy_uid=resolved.policy.uid,
         provider_uid=(active_provider.uid or "").strip(),
-        overlay_uid=overlay_uid,
-        overlay_rev=overlay_rev,
+        agent_uid=agent_uid,
+        agent_rev=agent_rev,
         status=RunStatus.QUEUED.value,
         linked_pr_uid=linked_pr_uid or str(target.get("pull_request_uid") or ""),
         linked_ticket_uid=linked_ticket_uid or str(target.get("ticket_uid") or ""),
@@ -341,7 +333,7 @@ async def trigger_run(
         actor_uid=triggered_by or chosen_executor.value,
         payload={
             "playbook": playbook,
-            "investigation_uid": investigation_uid or "",
+            "scheduled_agent_uid": scheduled_agent_uid or "",
             "executor": chosen_executor.value,
             "mode": chosen_mode.value,
             "policy_uid": resolved.policy.uid,
@@ -483,7 +475,7 @@ async def _prepare_dispatch_and_finalize(
 
     req = DispatchRequest(
         run_uid=run_uid,
-        investigation_uid=run.investigation_uid or "",
+        scheduled_agent_uid=run.scheduled_agent_uid or "",
         repository_uid=repository_uid,
         repository_local_path=local_path,
         intent=intent,
@@ -862,9 +854,12 @@ async def redispatch_run(
     input_blob = dict(usage.get("input") or {})
     target = dict(input_blob.get("target") or run.target or {})
     intent = str(input_blob.get("intent") or "")
-    if not intent and run.investigation_uid:
-        inv = await Investigation.nodes.get_or_none(uid=run.investigation_uid)
-        intent = (inv.intent if inv else "") or ""
+    if not intent and run.scheduled_agent_uid:
+        from domains.agents.models import Agent, ScheduledAgent
+
+        sa = await ScheduledAgent.nodes.get_or_none(uid=run.scheduled_agent_uid)
+        agent = await Agent.nodes.get_or_none(uid=sa.agent_uid) if sa else None
+        intent = (agent.prompt if agent else "") or ""
     if not intent:
         raise LifecycleError(f"run {run.uid} has no recorded intent to retry")
     context = await _load_briefing(
@@ -930,7 +925,7 @@ async def redispatch_run(
     adapter = AdapterRegistry.get(chosen_executor)
     req = DispatchRequest(
         run_uid=run.uid,
-        investigation_uid=run.investigation_uid or "",
+        scheduled_agent_uid=run.scheduled_agent_uid or "",
         repository_uid=run.repository_uid,
         repository_local_path=local_path,
         intent=intent,

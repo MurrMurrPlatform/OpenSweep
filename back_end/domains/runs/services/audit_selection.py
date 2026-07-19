@@ -3,7 +3,7 @@ sweep.run_audit.
 
 Whole-repo review coverage as an emergent property: rank Doc pages by how
 badly they need a look (never checked > code changed since the last check),
-take the top N, and let run_audit fan out one scoped Investigation per page.
+take the top N, and let run_audit fan out one scoped audit run per page.
 Selection is pure path/timestamp math — no LLM involved.
 """
 

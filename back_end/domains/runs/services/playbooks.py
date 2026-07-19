@@ -166,13 +166,3 @@ async def _continue_review_chain(review_run: Run) -> None:
                 extra={"tag": "playbooks"},
             )
     await maybe_auto_fix_for_pr(pr_uid, after_run_uid=review_run.uid)
-
-
-def playbook_for_job_type(job_type: str) -> str:
-    """Map a saved Investigation's job_type onto a playbook for its runs."""
-    jt = (job_type or "").strip()
-    if jt == "implement":
-        return "implement"
-    if jt == "document":
-        return "document"
-    return "ask"

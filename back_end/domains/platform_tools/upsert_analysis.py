@@ -35,7 +35,6 @@ async def upsert_analysis(
     confidence: Optional[str] = None,
     limitations: Optional[str] = None,
     stats: Optional[dict[str, Any]] = None,
-    investigation_uid: str = "",
     executor: str = "",
 ) -> dict[str, Any]:
     if status is not None and status not in ANALYSIS_STATUSES:
@@ -59,7 +58,6 @@ async def upsert_analysis(
         repository_uid=repository_uid,
         source_run_uid=source_run_uid,
         executor=executor,
-        investigation_uid=investigation_uid,
         revision=revision or "",
     )
 

@@ -165,7 +165,7 @@ async def trigger_implement_run(
     trigger: RunTrigger = RunTrigger.MANUAL,
     intent_addendum: str = "",
 ) -> Run:
-    """Create the implement Investigation + write sandbox and dispatch the run."""
+    """Create the write sandbox and dispatch the implement run."""
     if (ticket.status or "") not in IMPLEMENTABLE_TICKET_STATUSES:
         raise HTTPException(
             status_code=409,
@@ -300,15 +300,15 @@ async def _dispatch_implement(
     # Org-agent-overlays composition: header + platform implement
     # instructions (org overlay applied) + repo implement guidance stack
     # around the structural implement contract (ticket, criteria, denylist).
-    from domains.agent_overlays.services.composition import compose_playbook_intent
+    from domains.agents.services.composition import compose_agent_intent
 
     guidance = await stage_prompt_body(repo.uid, "implement")
     # Pre-load the pages documenting the code this ticket's findings touch, so
     # the briefing inlines them verbatim rather than making the agent fetch.
     target_doc_uids = await _docs_for_ticket(ticket)
-    composed = await compose_playbook_intent(
+    composed = await compose_agent_intent(
         repository_uid=repo.uid,
-        playbook="implement",
+        agent_key="implement",
         stage="implement",
         repo_guidance=guidance or "",
         structural=build_implement_intent(

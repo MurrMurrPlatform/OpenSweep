@@ -10,8 +10,8 @@ module holds the two repository-level entry points:
 
   run_audit()         - explicit, user-driven. User passes the doc uids
                         to audit (and optionally a custom intent to focus
-                        the run). One Investigation per page, scoped to
-                        its watch_paths.
+                        the run). One Run per page, scoped to its
+                        watch_paths via Run.target.
 
 Triggered Runs use the active LLM provider and the system-default
 RunPolicy.
@@ -21,15 +21,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Optional
-from uuid import uuid4
-
 from domains.docs.models import Doc
-from domains.runs.models import Investigation
-from domains.runs.schemas import (
-    ExecutionMode,
-    InvestigationProvenance,
-    RunTrigger,
-)
+from domains.runs.schemas import RunTrigger
 from domains.runs.services._intent_helpers import (
     build_intent,
     load_agent_prompt_body,
@@ -52,7 +45,6 @@ async def _workflow_prompt(repository_uid: str, stage: str) -> str | None:
 @dataclass
 class GenerateDocsResult:
     repository_uid: str
-    investigation_uid: str = ""
     run_uid: str = ""
     errors: list[str] = field(default_factory=list)
     summary: str = ""
@@ -62,7 +54,6 @@ class GenerateDocsResult:
 class AuditResult:
     repository_uid: str
     doc_count: int
-    investigations_created: list[str] = field(default_factory=list)
     runs_dispatched: list[str] = field(default_factory=list)
     skipped_docs: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -76,7 +67,7 @@ async def run_generate_docs(
     *,
     repository_uid: str,
     triggered_by: str = "",
-    agent_prompt_uid: Optional[str] = None,
+    agent_uid: Optional[str] = None,
 ) -> GenerateDocsResult:
     """Dispatch one generate-docs LLM run (KNOWLEDGE_V3_DOCUMENTATION §10).
 
@@ -88,17 +79,22 @@ async def run_generate_docs(
 
     try:
         existing_pages = await _existing_pages_listing(repository_uid)
-        prompt_body = await load_agent_prompt_body(agent_prompt_uid)
+        prompt_body = await load_agent_prompt_body(agent_uid)
         if prompt_body is None:
             prompt_body = await _workflow_prompt(repository_uid, "discover")
-        inv = await _create_generate_docs_investigation(
+        composed = await _generate_docs_intent(
             repository_uid=repository_uid,
             existing_pages_listing=existing_pages,
             prompt_body=prompt_body,
         )
-        result.investigation_uid = inv.uid
         run = await trigger_run(
-            investigation_uid=inv.uid,
+            repository_uid=repository_uid,
+            intent=composed.text,
+            playbook="ask",
+            title="Generate documentation",
+            stage="discover",
+            agent_uid=composed.agent_uid,
+            agent_rev=composed.agent_rev,
             trigger=RunTrigger.MANUAL,
             triggered_by=triggered_by or "generate-docs",
         )
@@ -135,12 +131,12 @@ async def run_audit(
     repository_uid: str,
     doc_uids: list[str],
     triggered_by: str = "",
-    agent_prompt_uid: Optional[str] = None,
+    agent_uid: Optional[str] = None,
     custom_intent: Optional[str] = None,
     max_findings: Optional[int] = None,
     run_policy_uid: Optional[str] = None,
 ) -> AuditResult:
-    """Dispatch one audit Investigation per selected doc page.
+    """Dispatch one scoped audit Run per selected doc page.
 
     Focus lives in the intent text (custom_intent), not a taxonomy: pass
     "focus on security of the auth flows" instead of picking categories.
@@ -160,7 +156,7 @@ async def run_audit(
     )
 
     # No docs = whole-repository scope (V3 §8): ONE ask run dispatched
-    # directly, no Investigation and no per-page fan out. This is the normal
+    # directly, no per-page fan out. This is the normal
     # path before the first Generate docs has populated the tree.
     if not doc_uids:
         prompt_body = await load_agent_prompt_body(agent_prompt_uid)
@@ -169,11 +165,11 @@ async def run_audit(
         # Org-agent-overlays composition: the chosen prompt (or the ask
         # stage's configured prompt) stays the instructions layer; the org
         # overlay applies on top; a custom_intent still wins outright.
-        from domains.agent_overlays.services.composition import compose_playbook_intent
+        from domains.agents.services.composition import compose_agent_intent
 
-        composed = await compose_playbook_intent(
+        composed = await compose_agent_intent(
             repository_uid=repository_uid,
-            playbook="ask",
+            agent_key="ask",
             stage="ask",
             repo_guidance="",
             custom_intent=custom_intent,
@@ -224,20 +220,20 @@ async def run_audit(
         result.skipped_docs.append(missing)
         result.errors.append(f"doc={missing}: not found in repository")
 
-    prompt_body = await load_agent_prompt_body(agent_prompt_uid)
+    prompt_body = await load_agent_prompt_body(agent_uid)
     if prompt_body is None:
         prompt_body = await _workflow_prompt(repository_uid, "ask")
     for doc in docs:
         try:
-            inv = await _create_audit_investigation(
-                doc=doc,
-                repository_uid=repository_uid,
-                prompt_body=prompt_body,
-                custom_intent=custom_intent,
-            )
-            result.investigations_created.append(inv.uid)
             run = await trigger_run(
-                investigation_uid=inv.uid,
+                repository_uid=repository_uid,
+                intent=_audit_intent(
+                    doc=doc, prompt_body=prompt_body, custom_intent=custom_intent
+                ),
+                playbook="ask",
+                title=f"Audit — {doc.title or doc.slug}",
+                target={"doc_uids": [doc.uid], "paths": list(doc.watch_paths or [])},
+                run_policy_uid=run_policy_uid,
                 trigger=RunTrigger.MANUAL,
                 triggered_by=triggered_by or "audit",
             )
@@ -278,7 +274,7 @@ async def run_auto_audit(
     repository_uid: str,
     limit: int = 3,
     triggered_by: str = "",
-    agent_prompt_uid: Optional[str] = None,
+    agent_uid: Optional[str] = None,
     custom_intent: Optional[str] = None,
     max_findings: Optional[int] = None,
     run_policy_uid: Optional[str] = None,
@@ -311,7 +307,7 @@ async def run_auto_audit(
         repository_uid=repository_uid,
         doc_uids=[t.doc_uid for t in targets],
         triggered_by=triggered_by or "auto-audit",
-        agent_prompt_uid=agent_prompt_uid,
+        agent_uid=agent_uid,
         custom_intent=custom_intent,
         max_findings=max_findings,
         run_policy_uid=run_policy_uid,
@@ -337,7 +333,6 @@ async def run_auto_audit(
 @dataclass
 class DeepScanResult:
     repository_uid: str
-    investigation_uid: str = ""
     run_uid: str = ""
     errors: list[str] = field(default_factory=list)
     summary: str = ""
@@ -347,7 +342,7 @@ async def run_deep_scan(
     *,
     repository_uid: str,
     triggered_by: str = "",
-    agent_prompt_uid: Optional[str] = None,
+    agent_uid: Optional[str] = None,
     custom_intent: Optional[str] = None,
     max_findings: Optional[int] = None,
     run_policy_uid: Optional[str] = None,
@@ -362,7 +357,7 @@ async def run_deep_scan(
     read tools), gets analyzer candidates (ask playbook, §E), and should be
     dispatched under a `deep` effort policy for a generous wall ceiling.
 
-    An Investigation (job_type="deep-scan") backs the run so it can be
+    A single long-running run backs the scan; its agent provenance lets it be
     in-flight guarded and re-dispatched like the other sweep flows.
     """
     result = DeepScanResult(repository_uid=repository_uid)
@@ -399,19 +394,23 @@ async def run_deep_scan(
         # here. There is no seeded default for the analysis stage, so by
         # default this stays None and the seeded "deep-scan" agent base (org
         # overlay applied) — the point of this flow — stands.
-        prompt_body = await load_agent_prompt_body(agent_prompt_uid)
+        prompt_body = await load_agent_prompt_body(agent_uid)
         if prompt_body is None:
             prompt_body = await _workflow_prompt(repository_uid, "analysis")
-        inv = await _create_deep_scan_investigation(
+        composed = await _deep_scan_intent(
             repository_uid=repository_uid,
             prompt_body=prompt_body,
             focus=custom_intent,
             budget_line=budget_line,
-            run_policy_uid=run_policy_uid,
         )
-        result.investigation_uid = inv.uid
         run = await trigger_run(
-            investigation_uid=inv.uid,
+            repository_uid=repository_uid,
+            intent=composed.text,
+            playbook="ask",
+            title="Deep scan — whole repository",
+            stage="analysis",
+            agent_uid=composed.agent_uid,
+            agent_rev=composed.agent_rev,
             run_policy_uid=run_policy_uid,
             trigger=RunTrigger.MANUAL,
             triggered_by=triggered_by or "deep-scan",
@@ -452,7 +451,7 @@ async def _deep_scan_intent(
     prompt_body: Optional[str] = None,
     focus: Optional[str] = None,
     budget_line: Optional[str] = None,
-) -> str:
+):
     """Compose the deep-scan intent through the org-agent-overlays layers.
 
     The instructions layer is the seeded "deep-scan" agent base (org overlay
@@ -462,7 +461,7 @@ async def _deep_scan_intent(
     override or overlay can displace them — never routed through
     custom_intent, which would REPLACE the instructions outright.
     """
-    from domains.agent_overlays.services.composition import compose_playbook_intent
+    from domains.agents.services.composition import compose_agent_intent
 
     scope_parts = ["The whole repository (no doc-page scoping)."]
     if focus and focus.strip():
@@ -470,44 +469,12 @@ async def _deep_scan_intent(
     if budget_line:
         scope_parts.append(budget_line)
     scope_parts.append(_DEEP_SCAN_ANALYSIS_CONTRACT)
-    composed = await compose_playbook_intent(
+    return await compose_agent_intent(
         repository_uid=repository_uid,
-        playbook="deep-scan",
+        agent_key="deep-scan",
         prompt_body=prompt_body,
         structural="\n\n".join(scope_parts),
     )
-    return composed.text
-
-
-async def _create_deep_scan_investigation(
-    *,
-    repository_uid: str,
-    prompt_body: Optional[str] = None,
-    focus: Optional[str] = None,
-    budget_line: Optional[str] = None,
-    run_policy_uid: Optional[str] = None,
-) -> Investigation:
-    intent = await _deep_scan_intent(
-        repository_uid=repository_uid,
-        prompt_body=prompt_body,
-        focus=focus,
-        budget_line=budget_line,
-    )
-    inv = Investigation(
-        uid=uuid4().hex,
-        repository_uid=repository_uid,
-        intent=intent,
-        job_type="deep-scan",
-        target={},
-        effort="deep",
-        default_mode=ExecutionMode.ANALYZE_ONLY.value,
-        provenance=InvestigationProvenance.TEMPLATE.value,
-        compute_dial="ask-before-run",
-        run_policy_uid=run_policy_uid or "",
-        title="Deep scan — whole repository",
-    )
-    await inv.save()
-    return inv
 
 
 async def _existing_pages_listing(repository_uid: str) -> str:
@@ -526,50 +493,33 @@ async def _existing_pages_listing(repository_uid: str) -> str:
     return "\n".join(lines)
 
 
-async def _create_generate_docs_investigation(
+async def _generate_docs_intent(
     *,
     repository_uid: str,
     existing_pages_listing: str,
     prompt_body: Optional[str] = None,
-) -> Investigation:
-    # Org-agent-overlays composition: the seeded "generate-docs" agent base is
-    # the instructions layer (org overlay applied; an explicit prompt or the
-    # repo's "discover" stage pin replaces it via prompt_body). The
-    # propose_doc_edit tooling contract rides in the structural slot so no
-    # overlay can displace it.
-    from domains.agent_overlays.services.composition import compose_playbook_intent
+):
+    # The seeded "generate-docs" agent base is the instructions layer (org
+    # override applied; an explicit prompt or the repo's "discover" stage pin
+    # replaces it via prompt_body). The propose_doc_edit tooling contract
+    # rides in the structural slot so no override can displace it.
+    from domains.agents.services.composition import compose_agent_intent
 
-    composed = await compose_playbook_intent(
+    return await compose_agent_intent(
         repository_uid=repository_uid,
-        playbook="generate-docs",
+        agent_key="generate-docs",
         prompt_body=prompt_body,
         structural=_GENERATE_DOCS_TOOLING_CONTRACT,
         existing_state_listing=existing_pages_listing,
     )
-    intent = composed.text
-    inv = Investigation(
-        uid=uuid4().hex,
-        repository_uid=repository_uid,
-        intent=intent,
-        job_type="generate-docs",
-        target={},
-        effort="normal",
-        default_mode=ExecutionMode.ANALYZE_ONLY.value,
-        provenance=InvestigationProvenance.TEMPLATE.value,
-        compute_dial="ask-before-run",
-        title="Generate documentation",
-    )
-    await inv.save()
-    return inv
 
 
-async def _create_audit_investigation(
+def _audit_intent(
     *,
     doc: Doc,
-    repository_uid: str,
     prompt_body: Optional[str] = None,
     custom_intent: Optional[str] = None,
-) -> Investigation:
+) -> str:
     watch = ", ".join(doc.watch_paths or []) or "(no watch paths — use the page body to find the code)"
     default_intent = _AUDIT_INTENT_TEMPLATE.format(
         doc_title=doc.title or doc.slug,
@@ -581,26 +531,12 @@ async def _create_audit_investigation(
         f"doc_slug={doc.slug}\ntitle={doc.title or doc.slug}\n"
         f"watch_paths={watch}"
     )
-    intent = build_intent(
+    return build_intent(
         prompt_body=prompt_body,
         custom_intent=custom_intent,
         default_intent=default_intent,
         scope_summary=scope_summary,
     )
-    inv = Investigation(
-        uid=uuid4().hex,
-        repository_uid=repository_uid,
-        intent=intent,
-        job_type="sweep",
-        target={"doc_uids": [doc.uid], "paths": list(doc.watch_paths or [])},
-        effort="normal",
-        default_mode=ExecutionMode.ANALYZE_ONLY.value,
-        provenance=InvestigationProvenance.TEMPLATE.value,
-        compute_dial="ask-before-run",
-        title=f"Audit — {doc.title or doc.slug}",
-    )
-    await inv.save()
-    return inv
 
 
 # Code-owned tooling contract for generate-docs runs — lands in the

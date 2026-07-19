@@ -1,9 +1,11 @@
-"""Investigation + Run nodes (PLATFORM_V3_DESIGN.md §2, §8).
+"""Run node (PLATFORM_V3_DESIGN.md §2, §8).
 
 A Run is a conversation with an agent in a workspace. Playbooks (chat / ask /
 review / fix / implement / verify) determine the first prompt, mode, guards,
-and per-turn completion hooks. An Investigation survives only as a saved /
-recurring Run configuration — one-off runs don't create one.
+and per-turn completion hooks — internal machinery only; the user-facing
+configuration concept is the Agent (domains/agents). Recurring/saved
+configuration lives on ScheduledAgent; runs it spawns link back via
+`scheduled_agent_uid`.
 """
 
 from neomodel import (
@@ -13,50 +15,6 @@ from neomodel import (
     JSONProperty,
     StringProperty,
 )
-
-
-class Investigation(AsyncStructuredNode):
-    uid = StringProperty(unique_index=True, required=True)
-    repository_uid = StringProperty(required=True, index=True)
-
-    # Free-form prompt plus job_type (what shape of output the agent produces).
-    intent = StringProperty(required=True)
-    job_type = StringProperty(default="audit", index=True)
-
-    # Target: doc_uids and/or path prefixes ({"doc_uids": [...], "paths": [...]}).
-    target = JSONProperty(default={})
-
-    # quick | normal | deep. Creation maps this to a concrete RunPolicy.
-    effort = StringProperty(default="normal")
-
-    # "" (manual) | "on-event" | "cron:<expression>"
-    # Cron is a 5-field crontab expression; the beat scanner runs due Investigations.
-    schedule = StringProperty(default="")
-
-    # Last time the scheduler dispatched a Run for this Investigation (UTC).
-    last_scheduled_at = DateTimeProperty()
-
-    # Suggested executor (overridable per Run)
-    default_executor = StringProperty(default="internal_llm")
-    # internal_llm | claude_code | codex | opencode | manual
-
-    # tracking-only v1: analyze_only
-    default_mode = StringProperty(default="analyze_only")
-
-    run_policy_uid = StringProperty(index=True)
-
-    # human-asked | llm-proposed | template
-    provenance = StringProperty(default="human-asked", index=True)
-
-    # Compute-permission dial (per Investigation):
-    #   disabled | suggest | ask-before-run | auto-run-cheap | auto-run-any
-    compute_dial = StringProperty(default="ask-before-run")
-
-    title = StringProperty(default="")
-    description = StringProperty(default="")
-
-    created_at = DateTimeProperty(default_now=True)
-    updated_at = DateTimeProperty(default_now=True)
 
 
 class Run(AsyncStructuredNode):
@@ -81,19 +39,20 @@ class Run(AsyncStructuredNode):
     # chat    — opensweep chat-bubble conversations, surfaced only in the widget
     surface = StringProperty(default="runs", index=True)
 
-    # Set only when a schedule/event/saved Investigation spawned the run.
-    investigation_uid = StringProperty(default="", index=True)
+    # Set only when a ScheduledAgent binding spawned the run.
+    scheduled_agent_uid = StringProperty(default="", index=True)
 
     executor = StringProperty(required=True, index=True)
     execution_mode = StringProperty(default="analyze_only")
     run_policy_uid = StringProperty(index=True)
     provider_uid = StringProperty(default="", index=True)
 
-    # Org agent overlay provenance — which overlay (and revision) was active
-    # for this run's org + playbook at dispatch. ""/0 = none applied, so
-    # "why did the agent behave differently on this run" stays answerable.
-    overlay_uid = StringProperty(default="")
-    overlay_rev = IntegerProperty(default=0)
+    # Agent provenance — which Agent supplied this run's instructions layer,
+    # and the org override revision active at dispatch (0 = platform body
+    # as-is), so "why did the agent behave differently on this run" stays
+    # answerable.
+    agent_uid = StringProperty(default="", index=True)
+    agent_rev = IntegerProperty(default=0)
 
     # queued | running | awaiting_input | ended | failed | cancelled |
     # limit_exceeded | paused_quota (provider limit — resumed by the beat task)
@@ -142,7 +101,7 @@ class Run(AsyncStructuredNode):
 
     # manual | event | schedule
     trigger = StringProperty(default="manual", index=True)
-    triggered_by = StringProperty(default="")  # user_uid | event_uid | schedule_uid
+    triggered_by = StringProperty(default="")  # user_uid | event_uid | cron:<expr>
 
     error = StringProperty(default="")
     started_at = DateTimeProperty()
@@ -173,11 +132,3 @@ RUN_SURFACES = {"runs", "comment", "chat", "slack"}
 EXECUTORS = {"internal_llm", "claude_code", "codex", "opencode", "manual"}
 
 EXECUTION_MODES = {"analyze_only"}
-
-COMPUTE_DIALS = {
-    "disabled",
-    "suggest",
-    "ask-before-run",
-    "auto-run-cheap",
-    "auto-run-any",
-}

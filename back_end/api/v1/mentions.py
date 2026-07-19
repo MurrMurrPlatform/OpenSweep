@@ -25,7 +25,7 @@ _TYPE_QUERIES: dict[str, tuple[str, str]] = {
     "pull_request": ("PullRequest", "'#' + toString(n.github_number)"),
     "news_item": ("NewsItem", "n.category"),
     "run": ("Run", "n.playbook"),
-    "investigation": ("Investigation", "n.job_type"),
+    "scheduled_agent": ("ScheduledAgent", "n.title"),
     "doc": ("Doc", "n.slug"),
     "group": ("TicketGroupProposal", "n.status"),
 }

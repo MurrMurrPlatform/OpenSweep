@@ -34,10 +34,10 @@ def _model_for(subject_type: CommentSubjectType) -> Any:
         from domains.runs.models import Run
 
         return Run
-    if subject_type == CommentSubjectType.INVESTIGATION:
-        from domains.runs.models import Investigation
+    if subject_type == CommentSubjectType.SCHEDULED_AGENT:
+        from domains.agents.models import ScheduledAgent
 
-        return Investigation
+        return ScheduledAgent
     from domains.docs.models import Doc
 
     return Doc
@@ -96,8 +96,8 @@ def subject_snapshot(subject_type: CommentSubjectType, subject: Any) -> str:
             f"Playbook: {subject.playbook}",
             f"Status: {subject.status}",
         ]
-    elif subject_type == CommentSubjectType.INVESTIGATION:
-        lines += [f"Intent: {getattr(subject, 'intent', '')}"]
+    elif subject_type == CommentSubjectType.SCHEDULED_AGENT:
+        lines += [f"Trigger: {getattr(subject, 'trigger', '')}"]
     elif subject_type == CommentSubjectType.DOC:
         lines += [
             f"Slug: {subject.slug}",

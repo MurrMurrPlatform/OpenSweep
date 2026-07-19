@@ -184,12 +184,12 @@ async def trigger_fix_run(
         # Org-agent-overlays composition: header + platform fix instructions
         # (org overlay applied) + repo fix guidance stack around the
         # structural fix contract (findings, denylist, write-gate rules).
-        from domains.agent_overlays.services.composition import compose_playbook_intent
+        from domains.agents.services.composition import compose_agent_intent
 
         guidance = await stage_prompt_body(pr.repository_uid, "fix")
-        composed = await compose_playbook_intent(
+        composed = await compose_agent_intent(
             repository_uid=pr.repository_uid,
-            playbook="fix",
+            agent_key="fix",
             stage="fix",
             repo_guidance=guidance or "",
             structural=build_fix_intent(pr, findings, denylist),

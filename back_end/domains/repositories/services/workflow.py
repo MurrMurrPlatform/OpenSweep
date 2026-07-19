@@ -59,9 +59,9 @@ MAX_WALL_SECONDS_MIN = 60
 MAX_WALL_SECONDS_MAX = 6 * 3600
 
 _DEFAULTS: dict[str, dict[str, Any]] = {
-    "review": {"agent_prompt_uid": "", "auto": True, "depth": "quick"},
-    "fix": {"agent_prompt_uid": "", "auto": False},
-    "verify": {"agent_prompt_uid": "", "auto": False},
+    "review": {"agent_uid": "", "auto": True, "depth": "quick"},
+    "fix": {"agent_uid": "", "auto": False},
+    "verify": {"agent_uid": "", "auto": False},
 }
 
 
@@ -77,7 +77,7 @@ def _normalize(raw: dict | None) -> dict[str, dict[str, Any]]:
         except (TypeError, ValueError):
             max_wall = 0
         out[stage] = {
-            "agent_prompt_uid": str(entry.get("agent_prompt_uid") or ""),
+            "agent_uid": str(entry.get("agent_uid") or ""),
             "auto": bool(entry.get("auto", defaults.get("auto", False))),
             "depth": depth if depth in DEPTHS else str(defaults.get("depth", "normal")),
             "provider_uid": str(entry.get("provider_uid") or ""),
@@ -98,8 +98,8 @@ async def get_workflow(repository_uid: str) -> dict[str, dict[str, Any]]:
     repo = await Repository.nodes.get_or_none(uid=repository_uid)
     config = _normalize(repo.workflow if repo else None)
     for stage, entry in config.items():
-        if not entry["agent_prompt_uid"]:
-            entry["agent_prompt_uid"] = await default_prompt_uid_for_stage(stage)
+        if not entry["agent_uid"]:
+            entry["agent_uid"] = await default_prompt_uid_for_stage(stage)
     return config
 
 
@@ -142,17 +142,17 @@ async def set_workflow(
     normalized = _normalize(config)
     # Referenced prompts must exist and be enabled — a silent dangling uid
     # would quietly fall back to hardcoded intents.
-    from domains.agents.models import AgentPrompt
+    from domains.agents.models import Agent
 
     for stage, entry in normalized.items():
-        uid = entry["agent_prompt_uid"]
+        uid = entry["agent_uid"]
         if not uid:
             continue
-        p = await AgentPrompt.nodes.get_or_none(uid=uid)
+        p = await Agent.nodes.get_or_none(uid=uid)
         if p is None or not p.enabled:
             raise HTTPException(
                 status_code=422,
-                detail=f"workflow.{stage}: agent prompt {uid} not found or disabled",
+                detail=f"workflow.{stage}: agent {uid} not found or disabled",
             )
     # Same dangling-reference rule for providers: a stage's provider override
     # must point at an existing, enabled provider or dispatch would silently
@@ -194,7 +194,7 @@ async def stage_prompt_body(repository_uid: str, stage: str) -> str | None:
     from domains.runs.services._intent_helpers import load_agent_prompt_body
 
     config = await get_workflow(repository_uid)
-    uid = (config.get(stage) or {}).get("agent_prompt_uid") or ""
+    uid = (config.get(stage) or {}).get("agent_uid") or ""
     if not uid:
         return None
     return await load_agent_prompt_body(uid)

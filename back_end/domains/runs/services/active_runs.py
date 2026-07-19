@@ -112,5 +112,5 @@ def conflict_detail(message: str, run: Any) -> dict[str, str]:
     return {
         "message": message,
         "run_uid": getattr(run, "uid", "") or "",
-        "investigation_uid": getattr(run, "investigation_uid", "") or "",
+        "scheduled_agent_uid": getattr(run, "scheduled_agent_uid", "") or "",
     }

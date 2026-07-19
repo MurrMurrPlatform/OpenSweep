@@ -31,7 +31,6 @@ async def get_or_create_analysis(
     repository_uid: str,
     source_run_uid: str,
     executor: str = "",
-    investigation_uid: str = "",
     revision: str = "",
 ) -> Analysis:
     """Fetch the single Analysis for a run, creating it on first authoring call.
@@ -48,7 +47,6 @@ async def get_or_create_analysis(
         repository_uid=repository_uid,
         source_run_uid=source_run_uid,
         executor=executor or "",
-        investigation_uid=investigation_uid or "",
         revision=revision or "",
         status="in_progress",
     )
@@ -85,7 +83,6 @@ def analysis_to_dto(a: Analysis) -> AnalysisDTO:
         uid=a.uid,
         repository_uid=a.repository_uid,
         source_run_uid=a.source_run_uid,
-        investigation_uid=a.investigation_uid or "",
         revision=a.revision or "",
         title=a.title or "",
         status=AnalysisStatus(a.status or "in_progress"),
@@ -238,7 +235,7 @@ class AnalysisService:
             "recommendations:\n\n" + qa
         )
 
-        # Lazy imports: sweep/effort pull in the investigations stack.
+        # Lazy imports: sweep/effort pull in the run-dispatch stack.
         from domains.runs.schemas import Effort
         from domains.runs.services.sweep import run_deep_scan
         from domains.run_policies.services.effort import ensure_policy_for_effort
@@ -261,7 +258,6 @@ class AnalysisService:
         new = await get_or_create_analysis(
             repository_uid=old.repository_uid,
             source_run_uid=result.run_uid,
-            investigation_uid=result.investigation_uid,
         )
         new.supersedes = old.uid
         new.title = old.title or "Deep scan — whole repository"

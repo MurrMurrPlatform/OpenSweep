@@ -68,7 +68,6 @@ class AnalysisDTO(BaseModel):
     uid: str
     repository_uid: str
     source_run_uid: str
-    investigation_uid: str = ""
     revision: str = ""
 
     title: str = ""

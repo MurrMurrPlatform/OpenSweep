@@ -135,11 +135,11 @@ async def trigger_opensweep_reply(
         # Specialized refine run: the comment-reply template IS the
         # instructions (custom_intent), so a replace overlay never displaces
         # its reply contract; org append guidance still stacks.
-        from domains.agent_overlays.services.composition import compose_playbook_intent
+        from domains.agents.services.composition import compose_agent_intent
 
-        composed = await compose_playbook_intent(
+        composed = await compose_agent_intent(
             repository_uid=subject.repository_uid,
-            playbook="refine",
+            agent_key="refine",
             stage="refine",
             repo_guidance="",
             custom_intent=build_opensweep_comment_intent(

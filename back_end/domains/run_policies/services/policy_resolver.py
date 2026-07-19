@@ -56,7 +56,7 @@ async def resolve(
 ) -> ResolvedPolicy:
     """Resolve the effective RunPolicy, then validate routing + budgets.
 
-    Priority: explicit per-run override > Investigation default > system default.
+    Priority: explicit per-run override > per-stage workflow pin > system default.
     """
     chosen_uid = run_policy_uid or default_policy_uid
     if chosen_uid:

@@ -1,7 +1,7 @@
 """System-default RunPolicy -- the policy used when nothing else is set.
 
 PLATFORM.md §Run policies, rule 1: "No Run starts without a resolved
-RunPolicy." Without a system-default, every brand-new Investigation
+RunPolicy." Without a system-default, every brand-new agent run
 created through the UI is unrunnable until the user discovers the
 Admin panel. That's a terrible v1 UX. This module supplies a sensible
 v1 default and an idempotent upsert.

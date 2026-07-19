@@ -3,7 +3,7 @@ install has. THE canonical reset path: the admin API endpoint
 (POST /api/v1/platform-config/dev-reset), scripts/reseed.py, and any UI
 tooling must all go through `dev_reset()` so seeding can never be skipped.
 
-Wipes: Doc, DocEdit, Memory, Checked, Finding, Run, Investigation, plus
+Wipes: Doc, DocEdit, Memory, Checked, Finding, Run, ScheduledAgent, plus
 delivery ledger state bound to them (PullRequest, FindingResolution,
 Verdict, MergePolicy? — no: MergePolicy is config, kept) and orphaned
 legacy Knowledge/CoverageRecord/MapNode/MapEdge nodes via Cypher.
@@ -17,7 +17,7 @@ the local org (tenancy cutover).
 Seeds: system default RunPolicy, ECC prompt library (only when the library
 is empty), the "OpenSweep default — <Stage>" workflow prompts, and — per
 repository — one pinned empty conventions Doc page plus the on-event
-"Keep docs current" Investigation.
+"Keep docs current" ScheduledAgent binding.
 """
 
 from __future__ import annotations
@@ -36,7 +36,8 @@ async def dev_reset() -> dict[str, Any]:
     from domains.delivery.models import FindingResolution, PullRequest, Verdict
     from domains.docs.models import Doc, DocEdit
     from domains.findings.models import Finding
-    from domains.runs.models import Investigation, Run
+    from domains.agents.models import ScheduledAgent
+    from domains.runs.models import Run
     from domains.memory.models import Memory
     from domains.tickets.models import Ticket
 
@@ -61,7 +62,7 @@ async def dev_reset() -> dict[str, Any]:
         Ticket,
         Finding,
         Run,
-        Investigation,
+        ScheduledAgent,
     ):
         await wipe(cls)
 

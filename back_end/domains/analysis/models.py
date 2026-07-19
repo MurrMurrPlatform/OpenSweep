@@ -21,7 +21,6 @@ class Analysis(AsyncStructuredNode):
     repository_uid = StringProperty(required=True, index=True)
     # Exactly one Analysis per deep-scan Run — the join key for its Findings.
     source_run_uid = StringProperty(unique_index=True, required=True)
-    investigation_uid = StringProperty(default="", index=True)
     # Commit sha the scan inspected (best-effort; empty when unknown).
     revision = StringProperty(default="")
 

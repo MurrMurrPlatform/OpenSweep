@@ -2,7 +2,7 @@
 
 Comments are the conversation layer of the platform: maintainers leave
 instructions ("waive this one", "fix the root cause, not the symptom") on
-findings, tickets, pull requests, news items, runs, investigations, and docs.
+findings, tickets, pull requests, news items, runs, scheduled agents, and docs.
 Agents read the thread (it is injected into run briefings and available via
 `opensweep_platform_list_comments`) and — when summoned with an `@opensweep` mention —
 reply in-thread through `opensweep_platform_add_comment`.
@@ -25,7 +25,7 @@ from neomodel import (
 class Comment(AsyncStructuredNode):
     uid = StringProperty(unique_index=True, required=True)
     subject_type = StringProperty(required=True, index=True)
-    # finding | ticket | pull_request | news_item | run | investigation | doc
+    # finding | ticket | pull_request | news_item | run | scheduled_agent | doc
     subject_uid = StringProperty(required=True, index=True)
 
     author_uid = StringProperty(required=True)
@@ -52,6 +52,6 @@ COMMENT_SUBJECT_TYPES = {
     "pull_request",
     "news_item",
     "run",
-    "investigation",
+    "scheduled_agent",
     "doc",
 }

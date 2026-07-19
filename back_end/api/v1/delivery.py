@@ -173,7 +173,7 @@ async def trigger_review(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {
         "run_uid": run.uid,
-        "investigation_uid": run.investigation_uid,
+        "scheduled_agent_uid": run.scheduled_agent_uid,
         "head_sha": pr.head_sha,
         "depth": (run.target or {}).get("depth", ""),
         "incremental_from": (run.target or {}).get("prior_verdict_sha", ""),
@@ -213,7 +213,7 @@ async def trigger_fix(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {
         "run_uid": run.uid,
-        "investigation_uid": run.investigation_uid,
+        "scheduled_agent_uid": run.scheduled_agent_uid,
         "fix_round": int(pr.fix_rounds or 0),
         "head_ref": pr.head_ref,
     }

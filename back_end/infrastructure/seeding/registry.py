@@ -97,12 +97,13 @@ async def _seed_agent_base_prompts(mode: SeedMode) -> SeedResult:
 
 async def _seed_per_repo(mode: SeedMode) -> SeedResult:
     """Per repository: one pinned conventions Doc page and the on-event
-    "keep docs current" / "audit stale" Investigations. All idempotent."""
-    from domains.docs.services.doc_service import seed_conventions_doc
-    from domains.runs.services.seeding import (
-        seed_audit_stale_investigation,
-        seed_keep_docs_current_investigation,
+    "keep docs current" / "audit stale" ScheduledAgent bindings. All
+    idempotent."""
+    from domains.agents.services.scheduled_agent_service import (
+        seed_audit_stale,
+        seed_keep_docs_current,
     )
+    from domains.docs.services.doc_service import seed_conventions_doc
     from domains.repositories.models import Repository
 
     res = SeedResult(name="per_repo")
@@ -110,9 +111,9 @@ async def _seed_per_repo(mode: SeedMode) -> SeedResult:
     for repo in await Repository.nodes.all():
         if await seed_conventions_doc(repo.uid) is not None:
             conventions += 1
-        if await seed_keep_docs_current_investigation(repo.uid) is not None:
+        if await seed_keep_docs_current(repo.uid) is not None:
             keep_docs += 1
-        if await seed_audit_stale_investigation(repo.uid) is not None:
+        if await seed_audit_stale(repo.uid) is not None:
             audit_stale += 1
     res.created = conventions + keep_docs + audit_stale
     res.note = (

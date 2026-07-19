@@ -174,7 +174,7 @@ async def trigger_review_run(
     max_findings: int | None = None,
 ):
     """Dispatch a review run for the PR (playbook=review, V3 §3 — no
-    throwaway Investigation)."""
+    config object)."""
 
     async def _dispatch() -> Run:
         repo = await Repository.nodes.get_or_none(uid=pr.repository_uid)
@@ -206,11 +206,11 @@ async def trigger_review_run(
         # instructions (org overlay applied) + repo review guidance stack
         # AROUND the structural review contract (which lands in the scope
         # slot and can never be displaced by an overlay).
-        from domains.agent_overlays.services.composition import compose_playbook_intent
+        from domains.agents.services.composition import compose_agent_intent
 
-        composed = await compose_playbook_intent(
+        composed = await compose_agent_intent(
             repository_uid=pr.repository_uid,
-            playbook="review",
+            agent_key="review",
             stage="review",
             repo_guidance=guidance or "",
             structural=build_review_intent(

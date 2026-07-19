@@ -2,7 +2,7 @@
 
 The seeders (infrastructure/seeding/registry.py) install the rows a fresh
 OpenSweep needs: the system RunPolicy, the prompt library, per-repo docs and
-Investigations. Every seeder is idempotent; what differs is how it treats a
+ScheduledAgent bindings. Every seeder is idempotent; what differs is how it treats a
 row that already exists, and that is the SeedMode.
 """
 

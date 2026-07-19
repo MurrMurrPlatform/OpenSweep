@@ -36,10 +36,12 @@ OPENSWEEP_MCP_OPERATIONS = [
     "opensweep_mark_fixed_finding",
     # Freshness (Checked stamps)
     "opensweep_repository_freshness",
-    # Investigations
-    "opensweep_list_investigations",
-    "opensweep_get_investigation",
-    "opensweep_create_investigation",
+    # Agents + scheduled agents
+    "opensweep_list_agents",
+    "opensweep_get_agent",
+    "opensweep_list_scheduled_agents",
+    "opensweep_get_scheduled_agent",
+    "opensweep_create_scheduled_agent",
     # Docs + memories
     "opensweep_list_docs",
     "opensweep_get_doc",

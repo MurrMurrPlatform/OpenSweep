@@ -7,7 +7,7 @@ replace mode, substitutes). They were extracted from the per-playbook
 default-intent code constants; everything structural (checkout steps, ledger
 calls, verdict rules, write-gate rules, framing header, look-before-write
 footer) stays in code and composes around them (see
-domains/agent_overlays/services/composition.py).
+domains/agents/services/composition.py).
 
 Same seeding contract as the workflow stage defaults (seed_defaults.py):
 idempotent, `seed_checksum` roll-forward — untouched rows get shipped

@@ -163,11 +163,11 @@ async def trigger_news_scan(
     await require_repo_in_org(req.repository_uid, user.org_uid)
     # Specialized ask run: the news-scout template IS the instructions
     # (custom_intent) — org append guidance and framing still stack.
-    from domains.agent_overlays.services.composition import compose_playbook_intent
+    from domains.agents.services.composition import compose_agent_intent
 
-    composed = await compose_playbook_intent(
+    composed = await compose_agent_intent(
         repository_uid=req.repository_uid,
-        playbook="ask",
+        agent_key="ask",
         stage="ask",
         repo_guidance="",
         custom_intent=await _build_news_scan_intent(req.repository_uid),
@@ -212,11 +212,11 @@ async def trigger_news_doc_proposal(
     await require_repo_in_org(req.repository_uid, user.org_uid)
     # Specialized document run: the doc-proposal template IS the
     # instructions (custom_intent) — org append guidance still stacks.
-    from domains.agent_overlays.services.composition import compose_playbook_intent
+    from domains.agents.services.composition import compose_agent_intent
 
-    composed = await compose_playbook_intent(
+    composed = await compose_agent_intent(
         repository_uid=req.repository_uid,
-        playbook="document",
+        agent_key="document",
         stage="document",
         repo_guidance="",
         custom_intent=_DOC_PROPOSAL_INTENT,

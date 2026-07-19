@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from domains.checked.models import Checked
 from domains.findings.models import Finding
-from domains.runs.models import Investigation, Run
+from domains.runs.models import Run
 from domains.repositories.models import Repository
 from infrastructure.audit import write_audit
 from infrastructure.git_providers import get_provider_client
@@ -32,26 +32,24 @@ def _outcome_for_run(*, status: str, findings_count: int) -> str:
 
 
 async def record_for_run(*, run_uid: str) -> list[Checked]:
-    """Stamp every scope the run touched: the investigation's target docs
-    plus any docs whose watch_paths its findings landed on; the repository
-    itself when no doc was involved."""
+    """Stamp every scope the run touched: the run's target docs plus any
+    docs whose watch_paths its findings landed on; the repository itself
+    when no doc was involved."""
     run = await Run.nodes.get_or_none(uid=run_uid)
     if run is None:
         return []
-    inv = await Investigation.nodes.get_or_none(uid=run.investigation_uid)
     repo = await Repository.nodes.get_or_none(uid=run.repository_uid)
 
     findings = [f for f in await Finding.nodes.all() if (f.source_run_uid or "") == run.uid]
 
     scopes: list[str] = []
-    if inv is not None:
-        target = dict(inv.target or {})
-        raw = target.get("doc_uids") or target.get("doc_uid") or []
-        if isinstance(raw, str):
-            raw = [raw]
-        for uid in raw:
-            if uid and uid not in scopes:
-                scopes.append(str(uid))
+    target = dict(run.target or {})
+    raw = target.get("doc_uids") or target.get("doc_uid") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    for uid in raw:
+        if uid and uid not in scopes:
+            scopes.append(str(uid))
     affected: list[str] = []
     for f in findings:
         affected.extend(str(p) for p in (f.affected_paths or []) if p)

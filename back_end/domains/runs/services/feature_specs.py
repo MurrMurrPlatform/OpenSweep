@@ -20,12 +20,8 @@ from typing import Optional
 from uuid import uuid4
 
 from domains.docs.models import Doc
-from domains.runs.models import Investigation, Run
-from domains.runs.schemas import (
-    ExecutionMode,
-    InvestigationProvenance,
-    RunTrigger,
-)
+from domains.runs.models import Run
+from domains.runs.schemas import RunTrigger
 from domains.runs.services.lifecycle import LifecycleError, trigger_run
 
 
@@ -51,7 +47,7 @@ async def _get_doc(doc_uid: str) -> Doc:
 async def draft_doc_page(
     *,
     doc_uid: str,
-    agent_prompt_uid: Optional[str] = None,
+    agent_uid: Optional[str] = None,
     triggered_by: str = "",
 ) -> Run:
     doc = await _get_doc(doc_uid)
@@ -70,22 +66,12 @@ async def draft_doc_page(
         existing_note=existing_note,
     )
 
-    inv = Investigation(
-        uid=uuid4().hex,
+    return await trigger_run(
         repository_uid=doc.repository_uid,
         intent=intent,
-        job_type="document",
-        target={"doc_uids": [doc.uid], "paths": list(doc.watch_paths or [])},
-        effort="normal",
-        default_mode=ExecutionMode.ANALYZE_ONLY.value,
-        provenance=InvestigationProvenance.TEMPLATE.value,
-        compute_dial="ask-before-run",
+        playbook="document",
         title=f"Draft page — {doc.title or doc.slug}",
-    )
-    await inv.save()
-
-    return await trigger_run(
-        investigation_uid=inv.uid,
+        target={"doc_uids": [doc.uid], "paths": list(doc.watch_paths or [])},
         trigger=RunTrigger.MANUAL,
         triggered_by=triggered_by or "draft-page",
     )
@@ -94,7 +80,7 @@ async def draft_doc_page(
 async def verify_doc_page(
     *,
     doc_uid: str,
-    agent_prompt_uid: Optional[str] = None,
+    agent_uid: Optional[str] = None,
     triggered_by: str = "",
 ) -> Run:
     doc = await _get_doc(doc_uid)
@@ -113,22 +99,12 @@ async def verify_doc_page(
         doc_body=body,
     )
 
-    inv = Investigation(
-        uid=uuid4().hex,
+    return await trigger_run(
         repository_uid=doc.repository_uid,
         intent=intent,
-        job_type="audit",
-        target={"doc_uids": [doc.uid], "paths": list(doc.watch_paths or [])},
-        effort="normal",
-        default_mode=ExecutionMode.ANALYZE_ONLY.value,
-        provenance=InvestigationProvenance.TEMPLATE.value,
-        compute_dial="ask-before-run",
+        playbook="ask",
         title=f"Verify — {doc.title or doc.slug}",
-    )
-    await inv.save()
-
-    return await trigger_run(
-        investigation_uid=inv.uid,
+        target={"doc_uids": [doc.uid], "paths": list(doc.watch_paths or [])},
         trigger=RunTrigger.MANUAL,
         triggered_by=triggered_by or "verify-page",
     )
