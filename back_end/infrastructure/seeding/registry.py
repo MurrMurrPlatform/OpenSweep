@@ -100,6 +100,7 @@ async def _seed_per_repo(mode: SeedMode) -> SeedResult:
     "keep docs current" / "audit stale" ScheduledAgent bindings. All
     idempotent."""
     from domains.agents.services.scheduled_agent_service import (
+        seed_audit_agents,
         seed_audit_stale,
         seed_keep_docs_current,
     )
@@ -107,7 +108,7 @@ async def _seed_per_repo(mode: SeedMode) -> SeedResult:
     from domains.repositories.models import Repository
 
     res = SeedResult(name="per_repo")
-    conventions = keep_docs = audit_stale = 0
+    conventions = keep_docs = audit_stale = audit_agents = 0
     for repo in await Repository.nodes.all():
         if await seed_conventions_doc(repo.uid) is not None:
             conventions += 1
@@ -115,9 +116,11 @@ async def _seed_per_repo(mode: SeedMode) -> SeedResult:
             keep_docs += 1
         if await seed_audit_stale(repo.uid) is not None:
             audit_stale += 1
-    res.created = conventions + keep_docs + audit_stale
+        audit_agents += len(await seed_audit_agents(repo.uid))
+    res.created = conventions + keep_docs + audit_stale + audit_agents
     res.note = (
-        f"conventions={conventions} keep_docs={keep_docs} audit_stale={audit_stale}"
+        f"conventions={conventions} keep_docs={keep_docs} "
+        f"audit_stale={audit_stale} audit_agents={audit_agents}"
     )
     return res
 

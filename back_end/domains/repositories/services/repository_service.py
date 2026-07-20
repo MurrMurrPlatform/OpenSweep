@@ -65,6 +65,7 @@ class RepositoryService:
         # on-event "Keep docs current" Investigation (§9).
         from domains.docs.services.doc_service import seed_conventions_doc
         from domains.agents.services.scheduled_agent_service import (
+            seed_audit_agents,
             seed_audit_stale,
             seed_keep_docs_current,
         )
@@ -72,6 +73,7 @@ class RepositoryService:
         await seed_conventions_doc(r.uid)
         await seed_keep_docs_current(r.uid)
         await seed_audit_stale(r.uid)
+        await seed_audit_agents(r.uid)
         return _to_dto(r)
 
     async def update(
