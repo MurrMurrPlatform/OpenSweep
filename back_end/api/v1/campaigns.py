@@ -10,7 +10,11 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from api.dependencies import get_current_user, require_role
-from domains.campaigns.schemas import CampaignDTO, CreateCampaignRequest
+from domains.campaigns.schemas import (
+    CampaignAreasPreview,
+    CampaignDTO,
+    CreateCampaignRequest,
+)
 from domains.campaigns.services import campaign_service
 from domains.tenancy import require_repo_in_org
 from domains.users.schemas import UserDTO
@@ -48,6 +52,19 @@ async def list_campaigns(
         campaign_service.to_dto(c)
         for c in await campaign_service.list_for_repo(repository_uid)
     ]
+
+
+@router.get(
+    "/repositories/{repository_uid}/campaign-areas",
+    response_model=CampaignAreasPreview,
+    operation_id="opensweep_campaign_areas_preview",
+)
+async def preview_campaign_areas(
+    repository_uid: str, user: UserDTO = Depends(get_current_user)
+):
+    """The partition a campaign would use — computed live, nothing persisted."""
+    await require_repo_in_org(repository_uid, user.org_uid)
+    return await campaign_service.preview_areas(repository_uid)
 
 
 @router.get(

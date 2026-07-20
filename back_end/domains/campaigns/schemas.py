@@ -14,6 +14,8 @@ class CampaignDTO(BaseModel):
     template: str = "rotation"
     effort: str = ""
     lens_keys: list[str] = Field(default_factory=list)
+    # Rotation only: how many areas each pass covers.
+    k: int = 3
     # Part dicts as stored: {idx, kind, title, scope_paths, doc_uids,
     # lens_keys, run_uid, state, file_count}.
     parts: list[dict] = Field(default_factory=list)
@@ -37,3 +39,24 @@ class CreateCampaignRequest(BaseModel):
     k: int = 3
     max_parallel: int = 2
     title: str = ""
+
+
+class CampaignAreaPreview(BaseModel):
+    """One area of the would-be partition — planner.normalize_areas output."""
+
+    title: str = ""
+    scope_paths: list[str] = Field(default_factory=list)
+    doc_uids: list[str] = Field(default_factory=list)
+    file_count: Optional[int] = None
+
+
+class CampaignAreasPreview(BaseModel):
+    """The partition a campaign would use, computed live, never persisted
+    (GET /repositories/{uid}/campaign-areas)."""
+
+    areas: list[CampaignAreaPreview] = Field(default_factory=list)
+    # "" = planned against the full tree; else why sizing degraded.
+    degraded: str = ""
+    total_files: int = 0
+    # The remainder ("Uncovered paths") file count — 0 when docs cover everything.
+    uncovered_files: int = 0

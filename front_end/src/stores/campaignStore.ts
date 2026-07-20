@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { apiGet, apiPost } from '@/services/api'
-import type { CampaignDTO, CreateCampaignRequest } from '@/types/api'
+import type { CampaignAreasPreview, CampaignDTO, CreateCampaignRequest } from '@/types/api'
 
 export const useCampaignStore = defineStore('campaigns', () => {
   const list = ref<CampaignDTO[]>([])
@@ -14,6 +14,11 @@ export const useCampaignStore = defineStore('campaigns', () => {
 
   async function get(uid: string): Promise<CampaignDTO> {
     return apiGet<CampaignDTO>(`/campaigns/${uid}`)
+  }
+
+  /** The partition a campaign would use right now — computed live, nothing persisted. */
+  async function fetchAreas(repository_uid: string): Promise<CampaignAreasPreview> {
+    return apiGet<CampaignAreasPreview>(`/repositories/${repository_uid}/campaign-areas`)
   }
 
   /** Plans only (status=planning) — launch is the separate, explicit go signal. */
@@ -35,5 +40,5 @@ export const useCampaignStore = defineStore('campaigns', () => {
     return c
   }
 
-  return { list, fetchForRepo, get, create, launch, cancel }
+  return { list, fetchForRepo, get, fetchAreas, create, launch, cancel }
 })

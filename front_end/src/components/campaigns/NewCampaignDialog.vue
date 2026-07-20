@@ -1,12 +1,17 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Layers } from 'lucide-vue-next'
+import { ChevronRight, Layers, TriangleAlert } from 'lucide-vue-next'
 import { useCampaignStore } from '@/stores/campaignStore'
 import { useLensStore } from '@/stores/lensStore'
 import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible'
 import {
   Dialog,
   DialogContent,
@@ -24,7 +29,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import type { AgentEffort, CampaignDTO, CampaignTemplate, LensDTO } from '@/types/api'
+import type {
+  AgentEffort,
+  CampaignAreasPreview,
+  CampaignDTO,
+  CampaignTemplate,
+  LensDTO,
+} from '@/types/api'
 
 const props = defineProps<{
   open: boolean
@@ -53,6 +64,11 @@ const selectedKeys = ref<Set<string>>(new Set())
 /** Focused template picks exactly one lens. */
 const focusedKey = ref('')
 
+/** Live partition preview — what the plan will look like, before creating. */
+const areasPreview = ref<CampaignAreasPreview | null>(null)
+const loadingAreas = ref(false)
+const areasOpen = ref(false)
+
 watch(
   () => props.open,
   async (open) => {
@@ -61,6 +77,15 @@ watch(
     effort.value = 'default'
     k.value = 3
     title.value = ''
+    // Best-effort preview — creation works fine without it.
+    areasPreview.value = null
+    areasOpen.value = false
+    loadingAreas.value = true
+    campaigns
+      .fetchAreas(props.repositoryUid)
+      .then((p) => (areasPreview.value = p))
+      .catch(() => (areasPreview.value = null))
+      .finally(() => (loadingAreas.value = false))
     loadingLenses.value = true
     try {
       const all = await lensStore.fetchAll()
@@ -93,6 +118,21 @@ const lensKeys = computed(() =>
       : []
     : localLenses.value.filter((l) => selectedKeys.value.has(l.key)).map((l) => l.key),
 )
+
+const areaCount = computed(() => areasPreview.value?.areas.length ?? 0)
+const rotationCovers = computed(() => Math.min(Math.max(k.value || 0, 0), areaCount.value))
+
+const previewSummary = computed(() => {
+  const p = areasPreview.value
+  if (!p) return ''
+  const n = (x: number) => x.toLocaleString('en-US')
+  const bits = [
+    `Partitions into ${p.areas.length} area${p.areas.length === 1 ? '' : 's'}`,
+    `${n(p.total_files)} files`,
+  ]
+  if (p.uncovered_files > 0) bits.push(`${n(p.uncovered_files)} uncovered`)
+  return bits.join(' · ')
+})
 
 const canCreate = computed(() => {
   if (creating.value || !props.repositoryUid) return false
@@ -163,6 +203,52 @@ async function create() {
         <div v-if="template === 'rotation'" class="space-y-1.5">
           <Label for="campaign-k">Areas this pass (k)</Label>
           <Input id="campaign-k" v-model.number="k" type="number" min="1" class="max-w-32" />
+        </div>
+
+        <!-- Live partition preview — nothing is persisted until Create. -->
+        <div class="rounded-md border bg-muted/30 px-3 py-2 text-sm">
+          <div v-if="loadingAreas" class="text-muted-foreground">Sizing areas…</div>
+          <div v-else-if="!areasPreview" class="text-muted-foreground">
+            Area preview unavailable.
+          </div>
+          <Collapsible v-else v-model:open="areasOpen">
+            <div class="flex flex-wrap items-center gap-2">
+              <CollapsibleTrigger
+                class="flex min-w-0 items-center gap-1.5 text-left hover:text-foreground"
+              >
+                <ChevronRight
+                  class="h-3.5 w-3.5 shrink-0 transition-transform"
+                  :class="{ 'rotate-90': areasOpen }"
+                />
+                <span class="truncate">{{ previewSummary }}</span>
+              </CollapsibleTrigger>
+              <Badge
+                v-if="areasPreview.degraded"
+                variant="warn"
+                class="px-1.5 text-[10px]"
+                :title="areasPreview.degraded"
+              >
+                <TriangleAlert class="h-3 w-3" /> degraded
+              </Badge>
+            </div>
+            <p v-if="template === 'rotation' && areaCount" class="mt-1 pl-5 text-xs text-muted-foreground">
+              Rotation covers {{ rotationCovers }} of {{ areaCount }} areas this pass.
+            </p>
+            <CollapsibleContent>
+              <ul class="mt-2 max-h-48 space-y-0.5 overflow-y-auto pl-5">
+                <li
+                  v-for="(a, i) in areasPreview.areas"
+                  :key="i"
+                  class="flex items-baseline justify-between gap-3 text-xs"
+                >
+                  <span class="truncate" :title="a.scope_paths.join('\n')">{{ a.title }}</span>
+                  <span class="shrink-0 tabular-nums text-muted-foreground">
+                    {{ a.file_count ?? '—' }} files
+                  </span>
+                </li>
+              </ul>
+            </CollapsibleContent>
+          </Collapsible>
         </div>
 
         <div class="space-y-1.5">

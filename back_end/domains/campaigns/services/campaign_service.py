@@ -35,6 +35,7 @@ def to_dto(c: Campaign) -> CampaignDTO:
         template=c.template or "rotation",
         effort=c.effort or "",
         lens_keys=list(c.lens_keys or []),
+        k=int(getattr(c, "k", 3) or 3),
         parts=[dict(p) for p in (c.parts or [])],
         max_parallel=int(c.max_parallel or 2),
         created_by=c.created_by or "",
@@ -127,35 +128,53 @@ async def _file_tree_paths(repo) -> tuple[list[str], str]:
         return [], f"file tree unavailable ({type(exc).__name__})"
 
 
-async def create(
-    repository_uid: str,
-    req: CreateCampaignRequest,
-    *,
-    created_by: str = "",
-    trigger_provenance: str = "manual",
-) -> Campaign:
-    """Plan a campaign (status=planning — launch is the separate go signal)."""
+async def _doc_inputs(repository_uid: str) -> list[dict]:
+    """The repo's docs as the planner's input dicts."""
     from domains.docs.models import Doc
+
+    return [
+        {
+            "uid": d.uid,
+            "slug": d.slug or "",
+            "title": d.title or "",
+            "watch_paths": list(d.watch_paths or []),
+        }
+        for d in await Doc.nodes.all()
+        if d.repository_uid == repository_uid
+    ]
+
+
+async def _plan_areas(repository_uid: str, repo) -> tuple[list[dict], str, int]:
+    """(normalized areas, degraded_reason — "" = full tree, total file count).
+
+    The docs+tree+normalize_areas half of planning — shared by the plan
+    builder and the no-persist preview endpoint."""
+    docs = await _doc_inputs(repository_uid)
+    file_paths, degraded_reason = await _file_tree_paths(repo)
+    areas = planner.normalize_areas(docs, file_paths)
+    return areas, degraded_reason, len(file_paths)
+
+
+async def _plan_parts(
+    repository_uid: str,
+    *,
+    template: str,
+    lens_keys: list[str],
+    k: int,
+) -> tuple[list[dict], str]:
+    """(part list, degraded_reason) for the given plan inputs.
+
+    The ONE plan builder — create() and launch()'s replan both go through
+    here so the two can never drift."""
     from domains.lenses.services import lens_service
     from domains.repositories.models import Repository
     from domains.runs.services.audit_selection import coverage_recency_for
 
-    template = (req.template or "rotation").strip()
-    if template not in CAMPAIGN_TEMPLATES:
-        raise HTTPException(
-            status_code=422,
-            detail=f"invalid template {req.template!r}; valid: {sorted(CAMPAIGN_TEMPLATES)}",
-        )
     repo = await Repository.nodes.get_or_none(uid=repository_uid)
     if repo is None:
         raise HTTPException(status_code=404, detail=f"Repository {repository_uid} not found")
-    if template == "focused" and not req.lens_keys:
-        raise HTTPException(
-            status_code=422, detail="focused campaigns need lens_keys[0] as the focus lens"
-        )
 
-    docs = [d for d in await Doc.nodes.all() if d.repository_uid == repository_uid]
-    file_paths, degraded_reason = await _file_tree_paths(repo)
+    areas, degraded_reason, _total = await _plan_areas(repository_uid, repo)
 
     lenses = [
         {
@@ -166,22 +185,10 @@ async def create(
         }
         for lens in await lens_service.list_lenses(enabled_only=True)
     ]
-    if req.lens_keys:
-        wanted = set(req.lens_keys)
+    if lens_keys:
+        wanted = set(lens_keys)
         lenses = [lens for lens in lenses if lens["key"] in wanted]
 
-    areas = planner.normalize_areas(
-        [
-            {
-                "uid": d.uid,
-                "slug": d.slug or "",
-                "title": d.title or "",
-                "watch_paths": list(d.watch_paths or []),
-            }
-            for d in docs
-        ],
-        file_paths,
-    )
     path_recency = None
     if template == "rotation":
         path_recency = await coverage_recency_for(repository_uid)
@@ -189,9 +196,62 @@ async def create(
         template,
         areas,
         lenses,
-        k=req.k,
+        k=k,
         path_recency=path_recency,
-        focus_lens=req.lens_keys[0] if template == "focused" and req.lens_keys else None,
+        focus_lens=lens_keys[0] if template == "focused" and lens_keys else None,
+    )
+    return parts, degraded_reason
+
+
+async def preview_areas(repository_uid: str) -> dict:
+    """The partition a campaign WOULD use, without persisting anything —
+    backs GET /repositories/{uid}/campaign-areas."""
+    from domains.repositories.models import Repository
+
+    repo = await Repository.nodes.get_or_none(uid=repository_uid)
+    if repo is None:
+        raise HTTPException(status_code=404, detail=f"Repository {repository_uid} not found")
+    areas, degraded_reason, total_files = await _plan_areas(repository_uid, repo)
+    uncovered = sum(
+        int(a.get("file_count") or 0)
+        for a in areas
+        if str(a.get("title") or "").startswith(planner.REMAINDER_TITLE)
+    )
+    return {
+        "areas": areas,
+        "degraded": degraded_reason,
+        "total_files": total_files,
+        "uncovered_files": uncovered,
+    }
+
+
+async def create(
+    repository_uid: str,
+    req: CreateCampaignRequest,
+    *,
+    created_by: str = "",
+    trigger_provenance: str = "manual",
+) -> Campaign:
+    """Plan a campaign (status=planning — launch is the separate go signal)."""
+    template = (req.template or "rotation").strip()
+    if template not in CAMPAIGN_TEMPLATES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"invalid template {req.template!r}; valid: {sorted(CAMPAIGN_TEMPLATES)}",
+        )
+    if template == "focused" and not req.lens_keys:
+        raise HTTPException(
+            status_code=422, detail="focused campaigns need lens_keys[0] as the focus lens"
+        )
+
+    # Clamp k up front so the stored value and the plan (and any launch-time
+    # replan) are built from the same number.
+    k = max(int(req.k or 3), 1)
+    parts, degraded_reason = await _plan_parts(
+        repository_uid,
+        template=template,
+        lens_keys=list(req.lens_keys or []),
+        k=k,
     )
 
     c = Campaign(
@@ -202,6 +262,7 @@ async def create(
         template=template,
         effort=(req.effort or "").strip(),
         lens_keys=list(req.lens_keys or []),
+        k=k,
         parts=parts,
         max_parallel=max(int(req.max_parallel or 2), 1),
         created_by=created_by,
@@ -234,9 +295,51 @@ async def _transition(c: Campaign, to_status: str) -> None:
     await c.save()
 
 
+async def _replan(c: Campaign) -> None:
+    """Recompute the plan with the campaign's stored inputs and replace the
+    parts when the world moved since planning (new doc pages, tree changes).
+
+    A degraded recompute (tree unavailable/truncated) or any error keeps the
+    existing parts — a stale-but-real plan beats a fresh-but-blind one."""
+    try:
+        parts, degraded_reason = await _plan_parts(
+            c.repository_uid,
+            template=c.template or "rotation",
+            lens_keys=list(c.lens_keys or []),
+            k=int(getattr(c, "k", 3) or 3),
+        )
+    except Exception as exc:  # noqa: BLE001 — launch must not fail on replan
+        logger.warning(
+            f"campaign {c.uid}: replan failed ({type(exc).__name__}: {exc}) — "
+            "launching with the original parts",
+            extra={"tag": "campaigns"},
+        )
+        await record_event(c, "replan_skipped", reason=f"{type(exc).__name__}: {exc}")
+        return
+    if degraded_reason:
+        logger.warning(
+            f"campaign {c.uid}: replan degraded ({degraded_reason}) — "
+            "launching with the original parts",
+            extra={"tag": "campaigns"},
+        )
+        await record_event(c, "replan_skipped", reason=degraded_reason)
+        return
+    if parts == list(c.parts or []):
+        return
+    was = len(c.parts or [])
+    c.parts = parts
+    await c.save()
+    await record_event(c, "replanned", parts=len(parts), was=was)
+
+
 async def launch(uid: str, *, actor_uid: str = "") -> Campaign:
-    """planning → running; the celery tick starts dispatching parts."""
+    """planning → running; the celery tick starts dispatching parts.
+
+    The stored plan is a snapshot from creation time — replan first so the
+    campaign runs against today's docs and tree, not a stale partition."""
     c = await get(uid)
+    if (c.status or "planning") == "planning":
+        await _replan(c)
     await _transition(c, "running")
     await record_event(c, "launched", by=actor_uid)
     return c

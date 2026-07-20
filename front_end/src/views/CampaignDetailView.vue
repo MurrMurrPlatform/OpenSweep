@@ -158,6 +158,9 @@ function severityVariant(sev: string) {
 const events = computed<CampaignEvent[]>(() => [...(campaign.value?.events ?? [])].reverse())
 
 function eventLabel(e: CampaignEvent): string {
+  if (e.type === 'replanned' && typeof e.parts === 'number' && typeof e.was === 'number') {
+    return `replanned at launch — ${e.was} → ${e.parts} parts`
+  }
   const type = String(e.type || '').replaceAll('_', ' ')
   return e.part != null ? `${type} — part ${e.part}` : type
 }

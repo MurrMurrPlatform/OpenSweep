@@ -1563,6 +1563,8 @@ export interface CampaignDTO {
   /** '' = default tiers (areas normal, global sweeps deep). */
   effort: AgentEffort | ''
   lens_keys: string[]
+  /** Rotation only: how many areas each pass covers. */
+  k: number
   parts: CampaignPart[]
   max_parallel: number
   created_by: string
@@ -1582,6 +1584,25 @@ export interface CreateCampaignRequest {
   k?: number
   max_parallel?: number
   title?: string
+}
+
+/** One area of the would-be partition (campaign-areas preview). */
+export interface CampaignAreaPreview {
+  title: string
+  scope_paths: string[]
+  doc_uids: string[]
+  /** null when the file tree was unavailable (degraded sizing). */
+  file_count: number | null
+}
+
+/** The partition a campaign would use right now — computed live, never persisted. */
+export interface CampaignAreasPreview {
+  areas: CampaignAreaPreview[]
+  /** '' = planned against the full tree; else why sizing degraded. */
+  degraded: string
+  total_files: number
+  /** Files no doc page watches (the "Uncovered paths" remainder). */
+  uncovered_files: number
 }
 
 // ── Lenses (audit checklist prompts — platform rows, org-tunable) ───────────

@@ -36,6 +36,10 @@ class Campaign(AsyncStructuredNode):
     # The lens keys the plan was built from (empty = all enabled).
     lens_keys = JSONProperty(default=[])
 
+    # Rotation only: how many areas this pass covers. Stored so launch can
+    # replan with exactly the inputs the campaign was created with.
+    k = IntegerProperty(default=3)
+
     # The plan: [{idx, kind: area|global, title, scope_paths, doc_uids,
     # lens_keys, run_uid, state: pending|running|done|failed, file_count}].
     # Part state only moves forward (done/failed are sticky — tick.plan_tick).
