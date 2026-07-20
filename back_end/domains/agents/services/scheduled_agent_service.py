@@ -30,6 +30,15 @@ from logging_config import logger
 KEEP_DOCS_CURRENT_TITLE = "Keep docs current"
 AUDIT_STALE_TITLE = "Audit stale code"
 
+# Recurring whole-repo audit bindings seeded on every repository. The weekly
+# hunts are enabled by default; the daily hunt is seeded disabled (opt-in) as
+# it is the higher-frequency, higher-cost sweep.
+DEEP_ISSUE_HUNT_KEY = "deep-issue-hunt"
+SECURITY_AUDIT_KEY = "security-audit"
+DEEP_HUNT_WEEKLY_TITLE = "Weekly FULL deep issue hunt (Mon)"
+DEEP_HUNT_DAILY_TITLE = "Daily deep issue hunt (Tue–Sat)"
+SECURITY_AUDIT_WEEKLY_TITLE = "Weekly security audit (Mon)"
+
 
 def validate_trigger(trigger: str) -> str:
     raw = (trigger or "").strip()
@@ -244,3 +253,70 @@ async def seed_audit_stale(repository_uid: str) -> ScheduledAgent | None:
     )
     await s.save()
     return s
+
+
+async def _seed_binding(
+    repository_uid: str,
+    *,
+    key: str,
+    title: str,
+    trigger: str,
+    enabled: bool,
+) -> ScheduledAgent | None:
+    """Idempotent one-off: bind system agent `key` to a repo on `trigger`.
+
+    Skips (returns None) if the agent is missing or a same-title binding for
+    that agent already exists on the repo — so re-running never duplicates and
+    never clobbers a user's later edits (enable/dial/cron changes).
+    """
+    agent = await system_agent_by_key(key)
+    if agent is None:
+        logger.warning(
+            "%s system agent missing — skipping %r seed",
+            key,
+            title,
+            extra={"tag": "seeding"},
+        )
+        return None
+    for s in await ScheduledAgent.nodes.filter(repository_uid=repository_uid):
+        if s.title == title and s.agent_uid == agent.uid:
+            return None
+    s = ScheduledAgent(
+        uid=uuid4().hex,
+        agent_uid=agent.uid,
+        repository_uid=repository_uid,
+        title=title,
+        trigger=trigger,
+        target={},  # empty = repo-wide
+        compute_dial="ask-before-run",
+        enabled=enabled,
+        provenance="system",
+    )
+    await s.save()
+    return s
+
+
+async def seed_audit_agents(repository_uid: str) -> list[ScheduledAgent]:
+    """Idempotent: the recurring whole-repo audit bindings every repo gets.
+
+    - Weekly FULL deep issue hunt (Mondays 06:00)  — enabled.
+    - Weekly security audit (Mondays 08:00)         — enabled.
+    - Daily deep issue hunt (Tue–Sat 06:00)         — seeded DISABLED; flip
+      `enabled` on to opt into the higher-frequency (higher-cost) daily sweep.
+
+    All seed with compute_dial="ask-before-run": an enabled binding's cron tick
+    proposes a run for approval rather than auto-billing. Dial up to
+    auto-run-cheap/auto-run-any for unattended operation.
+    """
+    seeded: list[ScheduledAgent] = []
+    for key, title, trigger, enabled in (
+        (DEEP_ISSUE_HUNT_KEY, DEEP_HUNT_WEEKLY_TITLE, "cron:0 6 * * 1", True),
+        (SECURITY_AUDIT_KEY, SECURITY_AUDIT_WEEKLY_TITLE, "cron:0 8 * * 1", True),
+        (DEEP_ISSUE_HUNT_KEY, DEEP_HUNT_DAILY_TITLE, "cron:0 6 * * 2-6", False),
+    ):
+        s = await _seed_binding(
+            repository_uid, key=key, title=title, trigger=trigger, enabled=enabled
+        )
+        if s is not None:
+            seeded.append(s)
+    return seeded

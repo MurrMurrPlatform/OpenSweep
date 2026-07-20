@@ -81,6 +81,7 @@ async def register_github_repo(
     try:
         from domains.docs.services.doc_service import seed_conventions_doc
         from domains.agents.services.scheduled_agent_service import (
+            seed_audit_agents,
             seed_audit_stale,
             seed_keep_docs_current,
         )
@@ -88,6 +89,7 @@ async def register_github_repo(
         await seed_conventions_doc(node.uid)
         await seed_keep_docs_current(node.uid)
         await seed_audit_stale(node.uid)
+        await seed_audit_agents(node.uid)
     except Exception as exc:  # noqa: BLE001
         from logging_config import logger
 
