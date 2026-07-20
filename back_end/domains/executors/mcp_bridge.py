@@ -19,7 +19,7 @@ from infrastructure.code_graph import code_graph_codex_overrides, code_graph_ser
 from infrastructure.run_tokens import mint_run_token
 
 # Startup budget (ms) the claude CLI grants each MCP server before marking it
-# failed. The SSE handshake to the platform mount can lag behind the CLI's
+# failed. The HTTP handshake to the platform mount can lag behind the CLI's
 # first turn; a generous ceiling keeps a slow connect from stranding the run
 # without opensweep-platform tools.
 _MCP_STARTUP_TIMEOUT_MS = "60000"
@@ -75,9 +75,10 @@ async def probe_platform_mcp(timeout_seconds: float = 3.0) -> str:
 def mcp_remote_args(*, run_uid: str) -> list[str]:
     """`mcp-remote` argv (minus the leading npx) for the /mcp/platform bridge.
 
-    The stdio fallback for CLIs that can't speak fastapi-mcp's SSE transport
-    natively (opencode, codex) — claude connects direct-SSE via
-    `write_claude_mcp_config` instead. mcp-remote rejects non-HTTPS URLs
+    The stdio fallback for CLIs that can't speak fastapi-mcp's Streamable HTTP
+    transport natively (opencode, codex) — claude connects direct-HTTP via
+    `write_claude_mcp_config` instead. mcp-remote negotiates HTTP first and
+    falls back to SSE, so it rides the same URL. mcp-remote rejects non-HTTPS URLs
     unless --allow-http is set or the host is literal "localhost" — the
     backend is reachable on the Docker network (OPENSWEEP_BACKEND_INTERNAL_URL)
     but not over TLS. X-OpenSweep-Run-Uid carries run provenance; X-OpenSweep-Auth
@@ -121,9 +122,10 @@ def write_claude_mcp_config(
 ) -> str:
     """Write per-run claude `--mcp-config` JSON and return its absolute path.
 
-    The platform mount is declared as a direct SSE server (fastapi-mcp ships
-    SSE): the `claude` CLI connects to it natively, with no node/npx bridge
-    process in between — one less startup race before the tools register.
+    The platform mount is declared as a direct Streamable HTTP server
+    (fastapi-mcp `.mount_http()`): the `claude` CLI connects to it natively,
+    with no node/npx bridge process in between — one less startup race before
+    the tools register.
 
     When `workspace_path` is set and the codebase-memory-mcp binary is
     available, a second stdio server is added so the agent can answer
@@ -151,7 +153,7 @@ def write_claude_mcp_config(
     payload = {
         "mcpServers": {
             "opensweep-platform": {
-                "type": "sse",
+                "type": "http",
                 "url": platform_mcp_url(),
                 "headers": headers,
             },

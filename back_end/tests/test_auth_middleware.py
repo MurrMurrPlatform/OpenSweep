@@ -193,7 +193,7 @@ def test_mcp_bridge_carries_a_scoped_run_token_not_the_platform_token(monkeypatc
     monkeypatch.delenv("OPENSWEEP_RUN_TOKEN_SECRET", raising=False)
     path = write_claude_mcp_config(run_uid="run123", scratch_root=str(tmp_path))
     server = json.loads(open(path).read())["mcpServers"]["opensweep-platform"]
-    assert server["type"] == "sse"
+    assert server["type"] == "http"
     assert server["url"].endswith(settings.MCP_PLATFORM_TOOL_MOUNT_PATH)
     assert server["headers"]["X-OpenSweep-Auth"] == mint_run_token("run123")
     assert server["headers"]["X-OpenSweep-Run-Uid"] == "run123"

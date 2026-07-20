@@ -13,6 +13,11 @@ PLATFORM.md draws a hard line between two transports:
 
 The two mounts are kept distinct so a third-party hitting `/mcp` can't
 forge findings/knowledge under another Run's provenance.
+
+Both mounts use fastapi-mcp's Streamable HTTP transport (`.mount_http()`):
+a single endpoint at the mount path serving GET/POST/DELETE. This is the
+current MCP transport standard; SSE (the deprecated `.mount()`) is gone.
+Clients therefore declare `"type": "http"`, not `"type": "sse"`.
 """
 
 from fastapi import FastAPI
@@ -154,7 +159,7 @@ def mount_mcp(app: FastAPI) -> None:
         return
 
     # Config sanity: Zitadel-only auth without a run-token secret means every
-    # executor callback to the platform mount 401s — the SSE endpoint still
+    # executor callback to the platform mount 401s — the HTTP endpoint still
     # "connects", so the failure mode is a server that lists zero tools.
     from infrastructure.run_tokens import run_token_config_error
 
@@ -185,7 +190,7 @@ def mount_mcp(app: FastAPI) -> None:
                 include_operations=OPENSWEEP_MCP_OPERATIONS,
                 headers=MCP_FORWARD_HEADERS,
             )
-            external.mount(mount_path=settings.MCP_MOUNT_PATH)
+            external.mount_http(mount_path=settings.MCP_MOUNT_PATH)
             logger.info(
                 f"MCP (external) mounted at {settings.MCP_MOUNT_PATH} "
                 f"with {len(OPENSWEEP_MCP_OPERATIONS)} tools",
@@ -211,7 +216,7 @@ def mount_mcp(app: FastAPI) -> None:
             include_operations=OPENSWEEP_PLATFORM_TOOL_OPERATIONS,
             headers=MCP_FORWARD_HEADERS,
         )
-        platform.mount(mount_path=platform_mount_path)
+        platform.mount_http(mount_path=platform_mount_path)
         logger.info(
             f"MCP (platform-tools) mounted at {platform_mount_path} "
             f"with {len(OPENSWEEP_PLATFORM_TOOL_OPERATIONS)} tools",
