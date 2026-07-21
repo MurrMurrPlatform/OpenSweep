@@ -136,7 +136,17 @@ async def system_agent_by_key(key: str) -> Agent | None:
     url = source_url_for_key(key)
     if not url:
         return None
-    return await system_agent_by_url(url)
+    row = await system_agent_by_url(url)
+    if row is None:
+        # Library variants (opensweep://library/<slug>) share the bare key with
+        # the agent/ namespace, but source_url_for_key can only produce the
+        # agent/ form. Fall back to the library URL so a variant dispatched
+        # directly by key (e.g. a scheduled deep-issue-hunt) resolves its body
+        # instead of degrading to the "Run the <key> agent." fallback.
+        lib_url = variant_source_url(key)
+        if lib_url != url:
+            row = await system_agent_by_url(lib_url)
+    return row
 
 
 async def agent_body_by_key(key: str) -> str | None:
