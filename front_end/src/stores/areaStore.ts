@@ -3,11 +3,13 @@ import { ref } from 'vue'
 import { apiDelete, apiGet, apiPatch, apiPost } from '@/services/api'
 import type {
   AcceptAreaEditResponse,
+  AreaDetailDTO,
   AreaDTO,
   AreaEditDTO,
   AreaEditStatus,
   MapAreasResponse,
   UpdateAreaRequest,
+  UpdateAreaResponse,
 } from '@/types/api'
 
 /** Response of the bulk accept/reject endpoints — per-uid outcomes. */
@@ -47,10 +49,16 @@ export const useAreaStore = defineStore('areas', () => {
     return data
   }
 
-  async function patchArea(uid: string, body: UpdateAreaRequest): Promise<AreaDTO> {
-    const area = await apiPatch<AreaDTO>(`/areas/${uid}`, body)
-    areas.value = areas.value.map((a) => (a.uid === uid ? area : a))
-    return area
+  /** Everything the area detail page renders — scope sizing, docs, coverage. */
+  async function fetchDetail(uid: string): Promise<AreaDetailDTO> {
+    return apiGet<AreaDetailDTO>(`/areas/${uid}/detail`)
+  }
+
+  /** Applies the edit; `warnings` are advisory partition drift notes for a toast. */
+  async function patchArea(uid: string, body: UpdateAreaRequest): Promise<UpdateAreaResponse> {
+    const result = await apiPatch<UpdateAreaResponse>(`/areas/${uid}`, body)
+    areas.value = areas.value.map((a) => (a.uid === uid ? result.area : a))
+    return result
   }
 
   async function deleteArea(uid: string): Promise<void> {
@@ -115,6 +123,7 @@ export const useAreaStore = defineStore('areas', () => {
     error,
     fetchAreas,
     fetchEdits,
+    fetchDetail,
     patchArea,
     deleteArea,
     acceptEdit,

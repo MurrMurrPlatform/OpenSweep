@@ -37,7 +37,7 @@ def _campaign(**overrides):
                 "run_uid": "",
                 "state": "pending",
                 "file_count": 12,
-                "area_key": "features/checkout",
+                "area_keys": ["features/checkout"],
             },
         ],
     }
@@ -107,9 +107,33 @@ async def test_feature_part_structural_inlines_the_spec(seams, monkeypatch):
     assert structural.index(_SPEC_HEADING) < structural.index("covered_paths")
     # Feature parts run the same seeded "ask" base as area parts.
     assert seams["compose"]["agent_key"] == "ask"
-    # The target backlink carries the part's area key.
-    assert seams["trigger_run"]["target"]["area_key"] == "features/checkout"
+    # The target backlink carries the part's area keys.
+    assert seams["trigger_run"]["target"]["area_keys"] == ["features/checkout"]
     assert seams["trigger_run"]["title"] == "Campaign: Checkout"
+
+
+async def test_feature_part_with_no_area_keys_degrades_without_lookup(
+    seams, monkeypatch
+):
+    """An empty area_keys list (planner glitch, hand-edited plan) takes the
+    degrade path — no Area lookup, no raise."""
+
+    async def must_not_look_up(repository_uid, key):  # pragma: no cover
+        raise AssertionError("get_area_by_key called for an empty area_keys part")
+
+    monkeypatch.setattr(
+        part_dispatch.area_service, "get_area_by_key", must_not_look_up
+    )
+
+    async def fake_write_audit(**kwargs):
+        return None
+
+    monkeypatch.setattr(part_dispatch, "write_audit", fake_write_audit)
+    c = _campaign()
+    c.parts[0]["area_keys"] = []
+    run_uid = await part_dispatch.dispatch_part(c, c.parts[0])
+    assert run_uid == "run1"
+    assert "## Note — feature spec unavailable" in seams["compose"]["structural"]
 
 
 @pytest.mark.parametrize(

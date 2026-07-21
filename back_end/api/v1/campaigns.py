@@ -6,7 +6,7 @@ follow the standard tenancy guard; per-campaign routes resolve the
 repository through the node.
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from api.dependencies import get_current_user, require_role
@@ -60,11 +60,17 @@ async def list_campaigns(
     operation_id="opensweep_campaign_areas_preview",
 )
 async def preview_campaign_areas(
-    repository_uid: str, user: UserDTO = Depends(get_current_user)
+    repository_uid: str,
+    area_prefix: str = Query(""),
+    user: UserDTO = Depends(get_current_user),
 ):
-    """The partition a campaign would use — computed live, nothing persisted."""
+    """The partition a campaign would use — computed live, nothing persisted.
+    `area_prefix` slices the listing exactly as a campaign planned with it
+    would."""
     await require_repo_in_org(repository_uid, user.org_uid)
-    return await campaign_service.preview_areas(repository_uid)
+    return await campaign_service.preview_areas(
+        repository_uid, area_prefix=area_prefix.strip()
+    )
 
 
 @router.get(

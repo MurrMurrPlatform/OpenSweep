@@ -324,18 +324,25 @@ def areas_from_map(
     file_paths: list[str],
     *,
     target_max: int = DEFAULT_TARGET_MAX,
-) -> list[dict]:
-    """Area-map subsystem leaves → area dicts sized against the real tree.
+) -> tuple[list[dict], dict]:
+    """Area-map subsystem leaves → (area dicts sized against the real tree,
+    partition health).
 
     Leaves are {area_key, title, scope_paths, doc_uids} from the enabled
     Area map. Unlike normalize_areas, leaves are NEVER auto-split or
     tiny-merged — semantic sizing is the mapping agent's job; an oversized
     leaf is only FLAGGED (`oversized`) so the map can be refined. Each
-    output dict carries its `area_key`.
+    output dict carries its `area_key` plus `dead_scope_paths` — its scope
+    entries matching zero tree files ([] when the tree is empty).
 
     Ignore scopes are subtracted from leaf counts and the remainder —
     non-auditable files get no run scoped to them, even when a leaf scope
     also covers them.
+
+    Health is {"overlapping_files": files claimed by more than one leaf
+    (sum of per-leaf counts minus the distinct covered set),
+    "dead_ignore_scopes": ignore scope entries matching no tree files} —
+    both zero/empty when the tree is empty.
 
     The remainder — files matched by no leaf scope and no ignore scope —
     has no semantic owner, so it keeps the mechanical split/merge treatment
@@ -348,17 +355,23 @@ def areas_from_map(
 
     out: list[dict] = []
     covered: set[str] = set()
+    claimed = 0
     for leaf in subsystem_leaves:
         scope = [
             p for p in (_normalize(p) for p in (leaf.get("scope_paths") or [])) if p
         ]
         count: int | None = None
+        dead_scopes: list[str] = []
         if paths:
             matched = [
                 f for f in paths if watches_path(scope, f) and not watches_path(ignores, f)
             ]
             covered.update(matched)
             count = len(matched)
+            claimed += count
+            dead_scopes = [
+                s for s in scope if not any(watches_path([s], f) for f in paths)
+            ]
         area = _area(
             str(leaf.get("title") or leaf.get("area_key") or ""),
             scope,
@@ -367,7 +380,17 @@ def areas_from_map(
         )
         area["area_key"] = str(leaf.get("area_key") or "")
         area["oversized"] = bool(count and count > target_max)
+        area["dead_scope_paths"] = dead_scopes
         out.append(area)
+
+    health = {
+        "overlapping_files": max(claimed - len(covered), 0),
+        "dead_ignore_scopes": (
+            [s for s in ignores if not any(watches_path([s], f) for f in paths)]
+            if paths
+            else []
+        ),
+    }
 
     uncovered = [
         f for f in paths if f not in covered and not watches_path(ignores, f)
@@ -392,7 +415,92 @@ def areas_from_map(
             piece["oversized"] = bool(
                 piece["file_count"] and piece["file_count"] > target_max
             )
+            piece["dead_scope_paths"] = []
         out.extend(pieces)
+    return out, health
+
+
+def bundle_siblings(
+    areas: list[dict],
+    *,
+    target_min: int = DEFAULT_TARGET_MIN,
+    target_max: int = DEFAULT_TARGET_MAX,
+) -> list[dict]:
+    """Group undersized SIBLING map leaves into shared parts — pure.
+
+    Input: areas_from_map subsystem dicts (area_key/title/scope_paths/
+    doc_uids/file_count/oversized). Leaves group by parent key prefix (the
+    key minus its last segment; top-level keys group under ""); within a
+    group, leaves under target_min files greedily merge into a running
+    bundle that flushes once it reaches target_min. An area at or above
+    target_min always stands alone, a merge never pushes a bundle past
+    target_max, and the parent boundary is never crossed — "backend/api"
+    and "frontend/api" never share a part. Leaves without a file count
+    (degraded tree) and remainder areas (empty area_key) are never bundled.
+
+    Every output dict carries `area_keys` (the bundled keys; [key] for a
+    lone leaf, [] for remainders) instead of the singular `area_key`.
+    Multi-leaf bundles union scope_paths and doc_uids, sum file_count, and
+    title as "<Parent> — <leaf titles joined ' + '>".
+    """
+
+    def _passthrough(area: dict, keys: list[str]) -> dict:
+        out = {k: v for k, v in area.items() if k != "area_key"}
+        out["area_keys"] = keys
+        return out
+
+    def _bundle(group: list[dict], parent: str) -> dict:
+        keys = [str(a["area_key"]) for a in group]
+        label_source = parent or keys[0].split("/", 1)[0]
+        label = "/".join(
+            seg.replace("-", " ").title() for seg in label_source.split("/")
+        )
+        return {
+            "area_keys": keys,
+            "title": f"{label} — " + " + ".join(str(a["title"]) for a in group),
+            "scope_paths": list(
+                dict.fromkeys(p for a in group for p in (a.get("scope_paths") or []))
+            ),
+            "doc_uids": list(
+                dict.fromkeys(u for a in group for u in (a.get("doc_uids") or []))
+            ),
+            "file_count": sum(int(a["file_count"] or 0) for a in group),
+            "oversized": False,
+        }
+
+    out: list[dict] = []
+    buffers: dict[str, list[dict]] = {}
+
+    def _flush(parent: str) -> None:
+        buffer = buffers.get(parent) or []
+        if not buffer:
+            return
+        if len(buffer) == 1:
+            a = buffer[0]
+            out.append(_passthrough(a, [str(a["area_key"])]))
+        else:
+            out.append(_bundle(buffer, parent))
+        buffer.clear()
+
+    for area in areas:
+        key = str(area.get("area_key") or "")
+        count = area.get("file_count")
+        if not key:  # remainder pieces have no area — never bundled
+            out.append(_passthrough(area, []))
+            continue
+        if count is None or count >= target_min:
+            # Adequate (or unsized) leaves always stand alone.
+            out.append(_passthrough(area, [key]))
+            continue
+        parent = key.rsplit("/", 1)[0] if "/" in key else ""
+        buffer = buffers.setdefault(parent, [])
+        if buffer and sum(int(a["file_count"] or 0) for a in buffer) + count > target_max:
+            _flush(parent)
+        buffer.append(area)
+        if sum(int(a["file_count"] or 0) for a in buffer) >= target_min:
+            _flush(parent)
+    for parent in list(buffers):
+        _flush(parent)
     return out
 
 
@@ -435,17 +543,24 @@ def _area_recency(
 
 
 def _part(idx: int, kind: str, title: str, area: dict | None, lens_keys: list[str]) -> dict:
+    a = area or {}
+    # Bundles carry area_keys; feature areas a singular area_key;
+    # docs-derived areas neither → [].
+    keys = a.get("area_keys")
+    if keys is None:
+        key = str(a.get("area_key") or "")
+        keys = [key] if key else []
     return {
         "idx": idx,
         "kind": kind,
         "title": title,
-        "scope_paths": list((area or {}).get("scope_paths") or []),
-        "doc_uids": list((area or {}).get("doc_uids") or []),
+        "scope_paths": list(a.get("scope_paths") or []),
+        "doc_uids": list(a.get("doc_uids") or []),
         "lens_keys": list(lens_keys),
         "run_uid": "",
         "state": "pending",
-        "file_count": (area or {}).get("file_count"),
-        "area_key": str((area or {}).get("area_key") or ""),
+        "file_count": a.get("file_count"),
+        "area_keys": [str(k) for k in keys],
     }
 
 

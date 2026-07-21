@@ -25,7 +25,7 @@ def _part(idx):
         "run_uid": "",
         "state": "pending",
         "file_count": 10,
-        "area_key": "",
+        "area_keys": [],
     }
 
 
@@ -196,7 +196,7 @@ def preview_seams(monkeypatch):
         return state.map_inputs
 
     monkeypatch.setattr(campaign_service, "_doc_inputs", fake_docs)
-    monkeypatch.setattr(campaign_service, "_file_tree_paths", fake_tree)
+    monkeypatch.setattr(campaign_service, "file_tree_paths", fake_tree)
     monkeypatch.setattr(campaign_service, "_area_map_inputs", fake_map_inputs)
     return state
 
@@ -216,12 +216,16 @@ async def test_preview_areas_reports_partition_without_persisting(preview_seams)
     assert titles == ["API", "Uncovered paths"]
     assert out["areas"][0]["scope_paths"] == ["src/api"]
     assert out["areas"][0]["file_count"] == 2
-    # Docs-derived areas: source "docs", subsystem kind, no keys, no flags.
+    # Docs-derived areas: source "docs", subsystem kind, no keys, no flags,
+    # and health stays zero/empty (the docs partition never overlaps).
     assert out["source"] == "docs"
     assert out["oversized_areas"] == []
     assert all(a["kind"] == "subsystem" for a in out["areas"])
     assert all(a["area_key"] == "" for a in out["areas"])
     assert all(a["oversized"] is False for a in out["areas"])
+    assert all(a["dead_scope_paths"] == [] for a in out["areas"])
+    assert out["overlapping_files"] == 0
+    assert out["dead_ignore_scopes"] == []
 
 
 async def test_preview_areas_uses_the_area_map_when_present(preview_seams):
@@ -253,10 +257,16 @@ async def test_preview_areas_uses_the_area_map_when_present(preview_seams):
     by_key = {a["area_key"]: a for a in out["areas"]}
     assert by_key["backend"]["kind"] == "subsystem"
     assert by_key["backend"]["file_count"] == 2
+    assert by_key["backend"]["dead_scope_paths"] == []
     # Feature overlays ride along in the preview with their own kind.
     assert by_key["features/checkout"]["kind"] == "feature"
     assert by_key["features/checkout"]["file_count"] == 1
+    assert by_key["features/checkout"]["dead_scope_paths"] == []
     assert out["oversized_areas"] == []
+    # A clean partition: no double-claimed files, no dead ignore scopes
+    # ("scripts" matches scripts/x.sh — fenced off, not dead).
+    assert out["overlapping_files"] == 0
+    assert out["dead_ignore_scopes"] == []
 
 
 async def test_preview_areas_features_only_map_plans_from_docs_but_keeps_features(
@@ -309,6 +319,74 @@ async def test_preview_areas_passes_degraded_reason_through(preview_seams):
     assert out["total_files"] == 0
     assert out["uncovered_files"] == 0
     assert [a["file_count"] for a in out["areas"]] == [None]
+
+
+async def test_preview_areas_reports_partition_health(preview_seams):
+    """Two leaves claiming the same file → overlapping_files; scopes and
+    ignore scopes matching nothing → dead_scope_paths / dead_ignore_scopes."""
+    preview_seams.map_inputs = {
+        "subsystem_leaves": [
+            {
+                "area_key": "backend",
+                "title": "Backend",
+                "scope_paths": ["src", "gone/dir"],
+                "doc_uids": [],
+            },
+            {
+                "area_key": "api",
+                "title": "API",
+                "scope_paths": ["src/api"],
+                "doc_uids": [],
+            },
+        ],
+        "features": [],
+        "ignore_scopes": ["vendor"],
+    }
+    preview_seams.tree = (["src/api/a.py", "src/b.py"], "")
+
+    out = await campaign_service.preview_areas("repo1")
+
+    assert out["overlapping_files"] == 1  # src/api/a.py claimed twice
+    assert out["dead_ignore_scopes"] == ["vendor"]
+    by_key = {a["area_key"]: a for a in out["areas"]}
+    assert by_key["backend"]["dead_scope_paths"] == ["gone/dir"]
+    assert by_key["api"]["dead_scope_paths"] == []
+
+
+async def test_preview_areas_area_prefix_slices_the_listing(preview_seams):
+    preview_seams.map_inputs = {
+        "subsystem_leaves": [
+            {
+                "area_key": "backend/api",
+                "title": "API",
+                "scope_paths": ["src/api"],
+                "doc_uids": [],
+            },
+            {
+                "area_key": "frontend",
+                "title": "Frontend",
+                "scope_paths": ["fe"],
+                "doc_uids": [],
+            },
+        ],
+        "features": [
+            {
+                "area_key": "backend/checkout",
+                "title": "Checkout",
+                "scope_paths": ["src/api/a.py"],
+                "doc_uids": [],
+            }
+        ],
+        "ignore_scopes": [],
+    }
+    preview_seams.tree = (["src/api/a.py", "fe/app.ts"], "")
+
+    out = await campaign_service.preview_areas("repo1", area_prefix="backend")
+
+    keys = {a["area_key"] for a in out["areas"]}
+    assert keys == {"backend/api", "backend/checkout"}
+    # Totals + health stay whole-map; only the listing is sliced.
+    assert out["total_files"] == 2
 
 
 async def test_preview_areas_404s_on_unknown_repo(preview_seams):

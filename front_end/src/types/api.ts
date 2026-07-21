@@ -1507,7 +1507,7 @@ export interface ThreadProgress {
 
 export type CampaignStatus = 'planning' | 'running' | 'finalizing' | 'done' | 'failed' | 'cancelled'
 export type CampaignTemplate = 'full' | 'rotation' | 'focused'
-export type CampaignPartKind = 'area' | 'global'
+export type CampaignPartKind = 'area' | 'feature' | 'global'
 export type CampaignPartState = 'pending' | 'running' | 'done' | 'failed'
 
 /** One bounded slice of a campaign — an area sweep or a whole-repo pass. */
@@ -1515,6 +1515,8 @@ export interface CampaignPart {
   idx: number
   kind: CampaignPartKind
   title: string
+  /** Area-map keys bundled into this part (empty for global sweeps). */
+  area_keys: string[]
   scope_paths: string[]
   doc_uids: string[]
   lens_keys: string[]
@@ -1565,6 +1567,8 @@ export interface CampaignDTO {
   lens_keys: string[]
   /** Rotation only: how many areas each pass covers. */
   k: number
+  /** '' = the whole map; else the sweep is scoped to areas under this key prefix. */
+  area_prefix: string
   parts: CampaignPart[]
   max_parallel: number
   created_by: string
@@ -1584,12 +1588,18 @@ export interface CreateCampaignRequest {
   k?: number
   max_parallel?: number
   title?: string
+  /** Scope the sweep to areas under this key prefix ('' = the whole map). */
+  area_prefix?: string
 }
 
 /** One area of the would-be partition (campaign-areas preview). */
 export interface CampaignAreaPreview {
+  /** The area-map key ('' for docs-derived partitions). */
+  area_key: string
   title: string
   scope_paths: string[]
+  /** Scope paths that match no files in the current tree. */
+  dead_scope_paths: string[]
   doc_uids: string[]
   /** null when the file tree was unavailable (degraded sizing). */
   file_count: number | null
@@ -1598,11 +1608,19 @@ export interface CampaignAreaPreview {
 /** The partition a campaign would use right now — computed live, never persisted. */
 export interface CampaignAreasPreview {
   areas: CampaignAreaPreview[]
+  /** Where the partition comes from ('area-map' or docs-derived). */
+  source: string
   /** '' = planned against the full tree; else why sizing degraded. */
   degraded: string
   total_files: number
-  /** Files no doc page watches (the "Uncovered paths" remainder). */
+  /** Files no partition leaf covers (the map-drift remainder). */
   uncovered_files: number
+  /** Files claimed by more than one partition leaf. */
+  overlapping_files: number
+  /** Area keys whose file count exceeds the target part size. */
+  oversized_areas: string[]
+  /** Ignore-area scope paths that match nothing in the tree. */
+  dead_ignore_scopes: string[]
 }
 
 // ── Lenses (audit checklist prompts — platform rows, org-tunable) ───────────
@@ -1701,6 +1719,59 @@ export interface UpdateAreaRequest {
   spec?: string
   doc_uids?: string[]
   enabled?: boolean
+}
+
+/** PATCH /areas/{uid} — applies the edit and returns partition warnings to eyeball. */
+export interface UpdateAreaResponse {
+  area: AreaDTO
+  warnings: string[]
+}
+
+/** One scope path of an area, sized against the current file tree. */
+export interface AreaScopeEntry {
+  path: string
+  /** null when the file tree was unavailable. */
+  file_count: number | null
+  /** true = the path matches nothing in the tree. */
+  dead: boolean
+  /** Capped sample of matched files. */
+  files: string[]
+}
+
+/** A doc page reachable from an area (linked or suggested). */
+export interface AreaDocLink {
+  uid: string
+  slug: string
+  title: string
+}
+
+/** Another area adjacent to this one (shared paths / docs / parent-child). */
+export interface AreaRelated {
+  uid: string
+  key: string
+  kind: AreaKind
+  title: string
+}
+
+/** One campaign-part coverage stamp touching this area. */
+export interface AreaCoverageStamp {
+  run_uid: string
+  outcome: string
+  checked_at: string | null
+  lens_verdicts: { lens: string; verdict: string; note?: string }[]
+}
+
+/** GET /areas/{uid}/detail — everything the area detail page renders. */
+export interface AreaDetailDTO {
+  area: AreaDTO
+  scope: AreaScopeEntry[]
+  /** '' = scope sized against the full tree; else why sizing degraded. */
+  tree_degraded: string
+  linked_docs: AreaDocLink[]
+  suggested_docs: AreaDocLink[]
+  related_areas: AreaRelated[]
+  coverage: AreaCoverageStamp[]
+  pending_edits: AreaEditDTO[]
 }
 
 /** Accepting an edit applies it and returns partition warnings to eyeball. */

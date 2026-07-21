@@ -14,10 +14,12 @@ from pydantic import BaseModel, Field
 from api.dependencies import get_current_user, require_role
 from domains.areas.schemas import (
     AcceptAreaEditResponse,
+    AreaDetailDTO,
     AreaDTO,
     AreaEditDTO,
     BulkAreaEditRequest,
     UpdateAreaRequest,
+    UpdateAreaResponse,
 )
 from domains.areas.services import area_service
 from domains.runs.services.active_runs import conflict_detail
@@ -44,14 +46,26 @@ async def get_area(uid: str, user: UserDTO = Depends(get_current_user)) -> AreaD
     return area_service.area_to_dto(a)
 
 
+@router.get("/areas/{uid}/detail", operation_id="opensweep_area_detail")
+async def area_detail(
+    uid: str, user: UserDTO = Depends(get_current_user)
+) -> AreaDetailDTO:
+    """Everything the area detail page needs in one load: scope sized
+    against the live tree, linked/suggested docs, related areas, recent
+    coverage, pending edits."""
+    a = await area_service.get_area(uid)
+    await require_repo_in_org(a.repository_uid, user.org_uid)
+    return await area_service.area_detail(uid)
+
+
 @router.patch("/areas/{uid}", operation_id="opensweep_update_area")
 async def update_area(
     uid: str, req: UpdateAreaRequest, user: UserDTO = Depends(require_role("maintainer"))
-) -> AreaDTO:
+) -> UpdateAreaResponse:
     existing = await area_service.get_area(uid)
     await require_repo_in_org(existing.repository_uid, user.org_uid)
-    a = await area_service.update_area(uid, req, actor=user.uid)
-    return area_service.area_to_dto(a)
+    a, warnings = await area_service.update_area(uid, req, actor=user.uid)
+    return UpdateAreaResponse(area=area_service.area_to_dto(a), warnings=warnings)
 
 
 @router.delete("/areas/{uid}", operation_id="opensweep_delete_area")

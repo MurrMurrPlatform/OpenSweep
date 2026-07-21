@@ -118,8 +118,30 @@ async def test_area_part_trigger_run_call_shape(area_seams):
     assert target["campaign_part"] == 0
     assert target["paths"] == ["back_end/domains", "back_end/api"]
     assert target["doc_uids"] == ["doc1"]
-    # Parts persisted before the area map lack area_key — tolerated as "".
-    assert target["area_key"] == ""
+    # Docs-derived parts carry no area keys.
+    assert target["area_keys"] == []
+
+
+async def test_bundled_part_scope_contract_names_every_area(area_seams):
+    c = _campaign()
+    c.parts[0]["area_keys"] = ["backend/api", "backend/core"]
+    await part_dispatch.dispatch_part(c, c.parts[0])
+    structural = area_seams["compose"]["structural"]
+    assert (
+        "This part covers areas: backend/api, backend/core — audit all of them."
+        in structural
+    )
+    assert area_seams["trigger_run"]["target"]["area_keys"] == [
+        "backend/api",
+        "backend/core",
+    ]
+
+
+async def test_single_area_part_gets_no_bundle_line(area_seams):
+    c = _campaign()
+    c.parts[0]["area_keys"] = ["backend"]
+    await part_dispatch.dispatch_part(c, c.parts[0])
+    assert "This part covers areas:" not in area_seams["compose"]["structural"]
 
 
 async def test_cron_provenance_dispatches_as_schedule(area_seams):

@@ -44,6 +44,12 @@ def _scope_contract(campaign, part: dict) -> str:
     ]
     lines += [f"- {p}" for p in (part.get("scope_paths") or [])]
     lines.append("Do not investigate outside this scope.")
+    keys = [str(k) for k in (part.get("area_keys") or [])]
+    if len(keys) > 1:
+        # Bundled sibling areas share this run — none may be skipped.
+        lines.append(
+            f"This part covers areas: {', '.join(keys)} — audit all of them."
+        )
     return "\n".join(lines)
 
 
@@ -56,13 +62,12 @@ _REPORTING_CONTRACT = (
 
 
 def _target(campaign, part: dict, **extra: Any) -> dict[str, Any]:
-    # .get throughout — parts persisted before the area map lack area_key.
     return {
         "paths": list(part.get("scope_paths") or []),
         "doc_uids": list(part.get("doc_uids") or []),
         "campaign_uid": campaign.uid,
         "campaign_part": int(part["idx"]),
-        "area_key": str(part.get("area_key") or ""),
+        "area_keys": [str(k) for k in (part.get("area_keys") or [])],
         **extra,
     }
 
@@ -125,7 +130,10 @@ async def _dispatch_feature(campaign, part: dict) -> str:
     over a fixable map edit. Degradation is made visible: an audit event is
     written and the run's structural carries a note telling the agent the
     spec contract could not be verified."""
-    area_key = str(part.get("area_key") or "")
+    keys = [str(k) for k in (part.get("area_keys") or [])]
+    # Feature parts are never bundled — one Area per part ([0]); an empty
+    # list degrades exactly like a deleted area.
+    area_key = keys[0] if keys else ""
     area = (
         await area_service.get_area_by_key(campaign.repository_uid, area_key)
         if area_key

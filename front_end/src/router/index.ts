@@ -98,6 +98,8 @@ const router = createRouter({
           meta: { title: 'Run', eyebrow: 'Live', section: 'main' } },
         { path: 'campaigns/:uid', name: 'campaign-detail', component: () => import('@/views/CampaignDetailView.vue'),
           meta: { title: 'Campaign', eyebrow: 'Operate', section: 'main' } },
+        { path: 'areas/:uid', name: 'area-detail', component: () => import('@/views/AreaDetailView.vue'),
+          meta: { title: 'Area', eyebrow: 'Knowledge', section: 'main' } },
         { path: 'scheduled-agents/:uid', name: 'scheduled-agent-detail', component: () => import('@/views/agents/ScheduledAgentDetailView.vue'),
           meta: { title: 'Scheduled agent', eyebrow: 'Operate', section: 'main' } },
         { path: 'agents', name: 'agent-library', component: () => import('@/views/agents/AgentLibraryView.vue'),

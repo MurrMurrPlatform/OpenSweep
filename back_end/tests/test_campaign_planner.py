@@ -259,8 +259,8 @@ def test_full_plan_covers_all_areas_plus_globals():
     # idx sequential, areas before globals, all pending.
     assert [p["idx"] for p in parts] == list(range(4))
     assert all(p["state"] == "pending" and p["run_uid"] == "" for p in parts)
-    # Docs-derived areas carry no area_key — parts get the "" default.
-    assert all(p["area_key"] == "" for p in parts)
+    # Docs-derived areas carry no area key — parts get the [] default.
+    assert all(p["area_keys"] == [] for p in parts)
 
 
 def test_disabled_lenses_are_excluded():

@@ -87,17 +87,37 @@ async def run_generate_docs(
     The LLM walks the repository itself (via its executor's native file
     tools) and proposes the documentation page tree via `propose_doc_edit`.
     Every page lands as a pending DocEdit for human review.
+
+    Docs are scaffolded by the Area map (one page per subsystem area by
+    default), so a repo with no enabled subsystem areas cannot generate:
+    the gate raises LifecycleError BEFORE any dispatch — the API converts
+    it to a 409. keep-docs-current / targeted doc updates are ungated.
     """
+    subsystem_areas = [
+        a
+        for a in await Area.nodes.all()
+        if a.repository_uid == repository_uid
+        and bool(a.enabled)
+        and (a.kind or "subsystem") == "subsystem"
+    ]
+    if not subsystem_areas:
+        raise LifecycleError(
+            "no area map — run Map areas first (docs are scaffolded by the "
+            "area partition)"
+        )
+
     result = GenerateDocsResult(repository_uid=repository_uid)
 
     try:
         existing_pages = await _existing_pages_listing(repository_uid)
+        areas_listing = await _existing_areas_listing(repository_uid)
         prompt_body = await load_agent_prompt_body(agent_uid)
         if prompt_body is None:
             prompt_body = await _workflow_prompt(repository_uid, "discover")
         composed = await _generate_docs_intent(
             repository_uid=repository_uid,
             existing_pages_listing=existing_pages,
+            areas_listing=areas_listing,
             prompt_body=prompt_body,
         )
         run = await trigger_run(
@@ -628,16 +648,19 @@ async def _existing_areas_listing(repository_uid: str) -> str:
 
 async def _docs_metadata_listing(repository_uid: str) -> str:
     """Metadata-only listing of the doc tree for the map-areas prompt: slug,
-    title, watch_paths — never bodies or summaries. Areas must be grounded in
-    the code, not restate the docs; bodies are pulled deliberately via the
-    `read_doc` tool when the agent decides it needs one."""
+    uid, title, watch_paths — never bodies or summaries. Areas must be
+    grounded in the code, not restate the docs; bodies are pulled
+    deliberately via the `read_doc` tool when the agent decides it needs
+    one. The uid is what an area proposal links back via doc_uids."""
     docs = [d for d in await Doc.nodes.all() if d.repository_uid == repository_uid]
     if not docs:
         return "(no documentation pages yet)"
     lines: list[str] = []
     for d in sorted(docs, key=lambda x: x.slug)[:150]:
         watch = ", ".join(str(p) for p in (d.watch_paths or [])) or "(no watch paths)"
-        lines.append(f"- {d.slug}: {d.title or d.slug} :: watch_paths: {watch}")
+        lines.append(
+            f"- {d.slug} (uid={d.uid}): {d.title or d.slug} :: watch_paths: {watch}"
+        )
     if len(docs) > 150:
         lines.append(f"… and {len(docs) - 150} more pages (elided)")
     return "\n".join(lines)
@@ -676,19 +699,25 @@ async def _generate_docs_intent(
     *,
     repository_uid: str,
     existing_pages_listing: str,
+    areas_listing: str = "",
     prompt_body: Optional[str] = None,
 ):
     # The seeded "generate-docs" agent base is the instructions layer (org
     # override applied; an explicit prompt or the repo's "discover" stage pin
     # replaces it via prompt_body). The propose_doc_edit tooling contract
-    # rides in the structural slot so no override can displace it.
+    # and the Area-map metadata (the scaffold the page tree defaults to —
+    # mirror of map-areas' docs listing) ride in the structural slot so no
+    # override can displace them.
     from domains.agents.services.composition import compose_agent_intent
 
+    structural = _GENERATE_DOCS_TOOLING_CONTRACT
+    if areas_listing:
+        structural += "\n\n## Area map (metadata)\n" + areas_listing
     return await compose_agent_intent(
         repository_uid=repository_uid,
         agent_key="generate-docs",
         prompt_body=prompt_body,
-        structural=_GENERATE_DOCS_TOOLING_CONTRACT,
+        structural=structural,
         existing_state_listing=existing_pages_listing,
     )
 

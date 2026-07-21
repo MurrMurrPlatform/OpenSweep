@@ -16,9 +16,11 @@ export const useCampaignStore = defineStore('campaigns', () => {
     return apiGet<CampaignDTO>(`/campaigns/${uid}`)
   }
 
-  /** The partition a campaign would use right now — computed live, nothing persisted. */
-  async function fetchAreas(repository_uid: string): Promise<CampaignAreasPreview> {
-    return apiGet<CampaignAreasPreview>(`/repositories/${repository_uid}/campaign-areas`)
+  /** The partition a campaign would use right now — computed live, nothing persisted.
+   *  `areaPrefix` scopes the preview to areas under that key prefix. */
+  async function fetchAreas(repository_uid: string, areaPrefix = ''): Promise<CampaignAreasPreview> {
+    const qs = areaPrefix ? `?area_prefix=${encodeURIComponent(areaPrefix)}` : ''
+    return apiGet<CampaignAreasPreview>(`/repositories/${repository_uid}/campaign-areas${qs}`)
   }
 
   /** Plans only (status=planning) — launch is the separate, explicit go signal. */

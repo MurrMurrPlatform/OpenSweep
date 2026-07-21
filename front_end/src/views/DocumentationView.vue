@@ -22,6 +22,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import { useAgentStore } from '@/stores/agentStore'
+import { useAreaStore } from '@/stores/areaStore'
 import { useDocStore } from '@/stores/docStore'
 import type { AgentDTO } from '@/types/api'
 import { useMemoryStore } from '@/stores/memoryStore'
@@ -70,10 +71,11 @@ import type { DocDTO, DocEditDTO, MemoryDTO } from '@/types/api'
 const docs = useDocStore()
 const memories = useMemoryStore()
 const agents = useAgentStore()
+const areaStore = useAreaStore()
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
-const { uid: repoUid } = useCurrentRepo()
+const { uid: repoUid, slug: repoSlug } = useCurrentRepo()
 
 const loading = ref(true)
 const error = ref<string | null>(null)
@@ -86,6 +88,13 @@ async function reload() {
   if (!repoUid.value) return
   loading.value = true
   error.value = null
+  // Docs gate: the doc tree is generated one page per area, so generation
+  // needs the area map first. Best-effort — an areas fetch failure must
+  // never gate (or break) the docs page.
+  void areaStore
+    .fetchAreas(repoUid.value)
+    .then(() => (areasKnown.value = true))
+    .catch(() => (areasKnown.value = false))
   try {
     await Promise.all([
       docs.fetchAll({ repository_uid: repoUid.value }),
@@ -107,6 +116,13 @@ async function reload() {
 
 onMounted(reload)
 watch(repoUid, reload)
+
+// ── Docs gate: no enabled areas → generation has nothing to hang pages on ────
+
+/** true once the areas fetch landed — an unknown map never gates. */
+const areasKnown = ref(false)
+const docsGated = computed(() => areasKnown.value && !areaStore.areas.some((a) => a.enabled))
+const GATE_TOOLTIP = 'Map areas first — the doc tree is generated one page per area'
 
 // ── Pages: a folder tree derived from "/"-segmented slugs ───────────────────
 
@@ -231,7 +247,7 @@ async function confirmDeleteSelected() {
 const generating = ref(false)
 
 async function generateDocs() {
-  if (!repoUid.value || generating.value) return
+  if (!repoUid.value || generating.value || docsGated.value) return
   generating.value = true
   try {
     const result = await docs.generate(repoUid.value)
@@ -623,10 +639,12 @@ async function confirmDeleteMemory() {
       >
         Reset docs…
       </Button>
-      <Button variant="outline" size="sm" :loading="generating" @click="generateDocs" title="Dispatch one LLM run that proposes doc pages for this repository. Proposals land below as pending edits.">
-        <Wand2 v-if="!generating" />
-        Generate docs
-      </Button>
+      <span :title="docsGated ? GATE_TOOLTIP : 'Dispatch one LLM run that proposes doc pages for this repository. Proposals land below as pending edits.'">
+        <Button variant="outline" size="sm" :loading="generating" :disabled="docsGated" @click="generateDocs">
+          <Wand2 v-if="!generating" />
+          Generate docs
+        </Button>
+      </span>
       <Button variant="outline" size="sm" :loading="syncing" @click="syncToRepo" title="Sync docs to the repo as an AGENTS.md + docs/** pull request.">
         <GitPullRequest v-if="!syncing" />
         Sync to repo
@@ -649,6 +667,23 @@ async function confirmDeleteMemory() {
     </ErrorState>
 
     <template v-else>
+      <!-- Docs gate: generation hangs pages on the area map — map first. -->
+      <div
+        v-if="docsGated"
+        class="flex items-center gap-2 rounded-sm border border-border bg-muted px-3 py-2 text-sm text-muted-foreground"
+      >
+        <BookOpen class="h-4 w-4 shrink-0" />
+        <span>
+          The doc tree is generated one page per area —
+          <RouterLink
+            v-if="repoSlug"
+            :to="{ name: 'areas', params: { repoSlug } }"
+            class="text-primary hover:underline"
+          >map the areas first</RouterLink>
+          <template v-else>map the areas first</template>.
+        </span>
+      </div>
+
       <!-- Stale banner: pages whose watched code moved on without them. -->
       <div
         v-if="staleDocs.length"
@@ -774,13 +809,20 @@ async function confirmDeleteMemory() {
               <EmptyState
                 :icon="BookOpen"
                 title="No pages yet"
-                description="Generate docs to let an agent propose a wiki from the code — or create a page by hand."
+                :description="docsGated
+                  ? 'The doc tree is generated one page per area, so the wiki needs the area map first. Map the areas, then generate docs — or create a page by hand.'
+                  : 'Generate docs to let an agent propose a wiki from the code — or create a page by hand.'"
                 class="border-0"
               >
-                <Button size="sm" :loading="generating" @click="generateDocs">
-                  <Wand2 v-if="!generating" />
-                  Generate docs
-                </Button>
+                <RouterLink v-if="docsGated && repoSlug" :to="{ name: 'areas', params: { repoSlug } }">
+                  <Button size="sm" variant="outline">Map areas first</Button>
+                </RouterLink>
+                <span v-else :title="docsGated ? GATE_TOOLTIP : undefined">
+                  <Button size="sm" :loading="generating" :disabled="docsGated" @click="generateDocs">
+                    <Wand2 v-if="!generating" />
+                    Generate docs
+                  </Button>
+                </span>
               </EmptyState>
             </div>
           </CardContent>

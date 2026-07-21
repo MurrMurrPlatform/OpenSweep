@@ -22,6 +22,7 @@ from domains.campaigns.models import (
 )
 from domains.campaigns.schemas import CampaignDTO, CreateCampaignRequest
 from domains.campaigns.services import planner
+from domains.repositories.services.file_tree import file_tree_paths
 from infrastructure.audit import write_audit
 from logging_config import logger
 
@@ -79,54 +80,6 @@ async def record_event(campaign: Campaign, type: str, **payload) -> None:
         campaign.status = fresh.status
         campaign.parts = fresh.parts
         campaign.updated_at = fresh.updated_at
-
-
-async def _file_tree_paths(repo) -> tuple[list[str], str]:
-    """(blob paths at the default branch head, degraded_reason — "" = full).
-
-    Empty paths + a reason on ANY failure (missing provider, no head sha,
-    network) — the plan degrades to watch-path-only areas instead of
-    failing. A truncated tree (very large repo) keeps the partial paths but
-    still carries a reason: file counts and the remainder part are computed
-    against a partial universe, and the plan must say so."""
-    from infrastructure.git_providers import get_provider_client
-
-    try:
-        client = get_provider_client(repo)
-        if not (client.is_active and repo.github_owner and repo.github_repo):
-            logger.warning(
-                f"campaign planning: no active git provider for {repo.uid} — "
-                "planning from watch paths only",
-                extra={"tag": "campaigns"},
-            )
-            return [], "no active git provider connection"
-        sha = await client.get_branch_head_sha(
-            repo.github_owner, repo.github_repo, repo.default_branch or "main"
-        )
-        if not sha:
-            logger.warning(
-                f"campaign planning: no head sha for {repo.uid} — "
-                "planning from watch paths only",
-                extra={"tag": "campaigns"},
-            )
-            return [], f"no head sha for branch {repo.default_branch or 'main'}"
-        tree = await client.get_tree(repo.github_owner, repo.github_repo, sha)
-        paths = [str(p) for p in (tree.get("paths") or [])]
-        if tree.get("truncated"):
-            logger.warning(
-                f"campaign planning: tree truncated for {repo.uid} "
-                f"({len(paths)} paths) — plan covers a partial file list",
-                extra={"tag": "campaigns"},
-            )
-            return paths, "file tree truncated (very large repo) — partial file list"
-        return paths, ""
-    except Exception as exc:  # noqa: BLE001 — degrade, never fail planning
-        logger.warning(
-            f"campaign planning: tree unavailable for {repo.uid}: "
-            f"{type(exc).__name__}: {exc}",
-            extra={"tag": "campaigns"},
-        )
-        return [], f"file tree unavailable ({type(exc).__name__})"
 
 
 async def _doc_inputs(repository_uid: str) -> list[dict]:
@@ -187,16 +140,18 @@ async def _area_map_inputs(repository_uid: str) -> dict | None:
 
 async def _plan_areas(
     repository_uid: str, repo
-) -> tuple[list[dict], str, int, str, list[dict]]:
+) -> tuple[list[dict], str, int, str, list[dict], dict]:
     """(areas, degraded_reason — "" = full tree, total file count, source
-    "area-map"|"docs", feature areas).
+    "area-map"|"docs", feature areas, partition health).
 
     The tree+partition half of planning — shared by the plan builder and
     the no-persist preview endpoint. A repo whose enabled Area map has
     subsystem leaves plans from them (source "area-map"); otherwise the
     docs' watch scopes (source "docs"). A map WITHOUT subsystem leaves
     (features-only) still contributes its feature areas on top of the
-    docs partition, with the flip explained in degraded_reason."""
+    docs partition, with the flip explained in degraded_reason. Health
+    ({overlapping_files, dead_ignore_scopes}) only exists for area-map
+    partitions — the docs partition is non-overlapping by construction."""
     from domains.docs.services.doc_freshness import watches_path
 
     def _count_features(features: list[dict], file_paths: list[str]) -> list[dict]:
@@ -215,14 +170,14 @@ async def _plan_areas(
             out.append(fa)
         return out
 
-    file_paths, degraded_reason = await _file_tree_paths(repo)
+    file_paths, degraded_reason = await file_tree_paths(repo)
     map_inputs = await _area_map_inputs(repository_uid)
     if map_inputs is not None and map_inputs["subsystem_leaves"]:
-        areas = planner.areas_from_map(
+        areas, health = planner.areas_from_map(
             map_inputs["subsystem_leaves"], map_inputs["ignore_scopes"], file_paths
         )
         feature_areas = _count_features(map_inputs["features"], file_paths)
-        return areas, degraded_reason, len(file_paths), "area-map", feature_areas
+        return areas, degraded_reason, len(file_paths), "area-map", feature_areas, health
 
     docs = await _doc_inputs(repository_uid)
     areas = planner.normalize_areas(docs, file_paths)
@@ -234,7 +189,14 @@ async def _plan_areas(
         feature_areas = _count_features(map_inputs["features"], file_paths)
         note = "area map present but has no enabled subsystem leaves — planned from docs"
         degraded_reason = f"{degraded_reason}; {note}" if degraded_reason else note
-    return areas, degraded_reason, len(file_paths), "docs", feature_areas
+    return (
+        areas,
+        degraded_reason,
+        len(file_paths),
+        "docs",
+        feature_areas,
+        {"overlapping_files": 0, "dead_ignore_scopes": []},
+    )
 
 
 async def _plan_parts(
@@ -257,7 +219,7 @@ async def _plan_parts(
     if repo is None:
         raise HTTPException(status_code=404, detail=f"Repository {repository_uid} not found")
 
-    areas, degraded_reason, _total, source, feature_areas = await _plan_areas(
+    areas, degraded_reason, _total, source, feature_areas, _health = await _plan_areas(
         repository_uid, repo
     )
     if area_prefix:
@@ -270,6 +232,11 @@ async def _plan_parts(
             degraded_reason = (
                 f"{degraded_reason}; {note}" if degraded_reason else note
             )
+    if source == "area-map":
+        # Undersized sibling leaves share one run — the map stays
+        # fine-grained while parts stay worth a dispatch. Rotation ranks
+        # the bundles (a bundle's recency is its union's stalest path).
+        areas = planner.bundle_siblings(areas)
 
     lenses = [
         {
@@ -308,27 +275,39 @@ async def _plan_parts(
     return parts, degraded_reason, source
 
 
-async def preview_areas(repository_uid: str) -> dict:
+async def preview_areas(repository_uid: str, *, area_prefix: str = "") -> dict:
     """The partition a campaign WOULD use, without persisting anything —
-    backs GET /repositories/{uid}/campaign-areas."""
+    backs GET /repositories/{uid}/campaign-areas. An `area_prefix` slices
+    the listing to the areas at or under that key, exactly as a campaign
+    planned with it would (health + totals stay whole-map)."""
     from domains.repositories.models import Repository
 
     repo = await Repository.nodes.get_or_none(uid=repository_uid)
     if repo is None:
         raise HTTPException(status_code=404, detail=f"Repository {repository_uid} not found")
-    areas, degraded_reason, total_files, source, feature_areas = await _plan_areas(
+    areas, degraded_reason, total_files, source, feature_areas, health = await _plan_areas(
         repository_uid, repo
     )
+    if area_prefix:
+        areas = planner.filter_by_prefix(areas, area_prefix)
+        feature_areas = planner.filter_by_prefix(feature_areas, area_prefix)
     uncovered = sum(
         int(a.get("file_count") or 0)
         for a in areas
         if str(a.get("title") or "").startswith(planner.REMAINDER_TITLE)
     )
     listed = [
-        {"area_key": "", "kind": "subsystem", "oversized": False, **a}
+        {
+            "area_key": "",
+            "kind": "subsystem",
+            "oversized": False,
+            "dead_scope_paths": [],
+            **a,
+        }
         for a in areas
     ] + [
-        {"oversized": False, **fa, "kind": "feature"} for fa in feature_areas
+        {"oversized": False, "dead_scope_paths": [], **fa, "kind": "feature"}
+        for fa in feature_areas
     ]
     return {
         "areas": listed,
@@ -339,6 +318,8 @@ async def preview_areas(repository_uid: str) -> dict:
         "oversized_areas": [
             str(a.get("title") or "") for a in listed if a.get("oversized")
         ],
+        "overlapping_files": int(health.get("overlapping_files") or 0),
+        "dead_ignore_scopes": list(health.get("dead_ignore_scopes") or []),
     }
 
 

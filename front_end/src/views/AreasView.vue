@@ -5,28 +5,23 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  FolderTree,
   Map as MapIcon,
-  Pencil,
-  Trash2,
+  TriangleAlert,
   X,
 } from 'lucide-vue-next'
 import { useAreaStore } from '@/stores/areaStore'
+import { useCampaignStore } from '@/stores/campaignStore'
 import { useCurrentRepo } from '@/composables/useCurrentRepo'
 import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
+import { areaStaleTitle } from '@/lib/areas'
+import AreaEditReviewCard from '@/components/areas/AreaEditReviewCard.vue'
 import { MarkdownView } from '@/components/ui/markdown'
 import { PageHeader } from '@/components/ui/page-header'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from '@/components/ui/dialog'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -37,23 +32,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
-import { Switch } from '@/components/ui/switch'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 import { ErrorState } from '@/components/ui/error-state'
-import type { AreaDTO, AreaEditDTO, AreaKind } from '@/types/api'
+import type { AreaDTO, AreaEditDTO, CampaignAreasPreview } from '@/types/api'
 
 const areaStore = useAreaStore()
+const campaignStore = useCampaignStore()
 const toast = useToast()
 const { uid: repoUid } = useCurrentRepo()
 
@@ -62,10 +47,19 @@ const error = ref<string | null>(null)
 
 // ── Load ─────────────────────────────────────────────────────────────────────
 
+/** Best-effort partition health (campaign-areas preview) — null hides the strip. */
+const preview = ref<CampaignAreasPreview | null>(null)
+
 async function reload() {
   if (!repoUid.value) return
   loading.value = true
   error.value = null
+  // The health strip is best-effort: any preview failure just hides it.
+  preview.value = null
+  void campaignStore
+    .fetchAreas(repoUid.value)
+    .then((p) => (preview.value = p))
+    .catch(() => (preview.value = null))
   try {
     await Promise.all([
       areaStore.fetchAreas(repoUid.value),
@@ -113,31 +107,103 @@ async function mapAreas() {
   }
 }
 
-// ── Hierarchy: keys are path-like; indent is derived from key depth ──────────
+// ── Health strip (partition drift, from the campaign-areas preview) ──────────
+
+const n = (x: number) => x.toLocaleString('en-US')
+
+/** Areas whose every scope path matches nothing — they audit thin air. */
+const deadAreaCount = computed(() => {
+  const p = preview.value
+  if (!p) return 0
+  return p.areas.filter(
+    (a) => a.scope_paths.length > 0 && a.dead_scope_paths.length === a.scope_paths.length,
+  ).length
+})
+
+const hasDrift = computed(() => {
+  const p = preview.value
+  if (!p) return false
+  return (
+    p.uncovered_files > 0 ||
+    deadAreaCount.value > 0 ||
+    p.oversized_areas.length > 0 ||
+    p.overlapping_files > 0 ||
+    p.dead_ignore_scopes.length > 0
+  )
+})
+
+// ── Sections: Partition (subsystem tree) / Features / Ignored ────────────────
 
 const sortedAreas = computed<AreaDTO[]>(() => [...areaStore.areas].sort((a, b) => a.key.localeCompare(b.key)))
+const subsystems = computed(() => sortedAreas.value.filter((a) => a.kind === 'subsystem'))
+const features = computed(() => sortedAreas.value.filter((a) => a.kind === 'feature'))
+const ignored = computed(() => sortedAreas.value.filter((a) => a.kind === 'ignore'))
 
-function depth(key: string): number {
-  return key.split('/').length - 1
+/** area_key → file_count, from the preview (best-effort rollups). */
+const fileCountByKey = computed<Map<string, number | null>>(() => {
+  const m = new Map<string, number | null>()
+  for (const a of preview.value?.areas ?? []) if (a.area_key) m.set(a.area_key, a.file_count)
+  return m
+})
+
+interface PartitionRow {
+  type: 'group' | 'area'
+  key: string
+  /** Last key segment (what the row shows). */
+  name: string
+  depth: number
+  area?: AreaDTO
+  /** Leaf: its own file count. Group: rollup of all descendants. */
+  fileTotal: number | null
 }
 
-const KIND_VARIANT: Record<AreaKind, 'secondary' | 'info' | 'outline'> = {
-  subsystem: 'secondary',
-  feature: 'info',
-  ignore: 'outline',
+function groupFileTotal(prefix: string): number | null {
+  const counts = fileCountByKey.value
+  let total = 0
+  let any = false
+  for (const a of subsystems.value) {
+    if (a.key !== prefix && !a.key.startsWith(prefix + '/')) continue
+    const c = counts.get(a.key)
+    if (typeof c === 'number') {
+      total += c
+      any = true
+    }
+  }
+  return any ? total : null
 }
 
-function kindVariant(kind: string) {
-  return KIND_VARIANT[kind as AreaKind] ?? 'secondary'
+/** The subsystem tree: leaves under implicit group headers derived from key
+ *  segments. A prefix that is itself an area renders as an area row; missing
+ *  intermediate prefixes get a synthetic group row with a descendant rollup. */
+const partitionRows = computed<PartitionRow[]>(() => {
+  const areaKeys = new Set(subsystems.value.map((a) => a.key))
+  const emittedGroups = new Set<string>()
+  const rows: PartitionRow[] = []
+  for (const a of subsystems.value) {
+    const segments = a.key.split('/')
+    for (let i = 1; i < segments.length; i++) {
+      const prefix = segments.slice(0, i).join('/')
+      if (areaKeys.has(prefix) || emittedGroups.has(prefix)) continue
+      emittedGroups.add(prefix)
+      rows.push({ type: 'group', key: prefix, name: segments[i - 1], depth: i - 1, fileTotal: groupFileTotal(prefix) })
+    }
+    rows.push({
+      type: 'area',
+      key: a.key,
+      name: segments[segments.length - 1],
+      depth: segments.length - 1,
+      area: a,
+      fileTotal: fileCountByKey.value.get(a.key) ?? null,
+    })
+  }
+  return rows
+})
+
+function indent(depth: number) {
+  return { paddingLeft: `${12 + depth * 20}px` }
 }
 
-function staleTitle(a: AreaDTO): string {
-  const count = `${a.stale_paths.length} path${a.stale_paths.length === 1 ? '' : 's'} changed since last review`
-  const reviewed = a.last_reviewed_at ? `\nlast reviewed ${a.last_reviewed_at.slice(0, 10)}` : ''
-  return count + reviewed
-}
-
-// Collapsible spec previews (areas + pending edits), keyed by uid.
+// Collapsible spec previews, keyed by uid.
 const expandedSpecs = ref<Set<string>>(new Set())
 
 function toggleSpec(uid: string) {
@@ -147,51 +213,14 @@ function toggleSpec(uid: string) {
   expandedSpecs.value = next
 }
 
-// ── Inline edit dialog ───────────────────────────────────────────────────────
-
-const editOpen = ref(false)
-const saving = ref(false)
-const editingArea = ref<AreaDTO | null>(null)
-const draftTitle = ref('')
-const draftKind = ref<AreaKind>('subsystem')
-const draftScopePaths = ref('')
-const draftSpec = ref('')
-const draftEnabled = ref(true)
-
-function openEdit(a: AreaDTO) {
-  editingArea.value = a
-  draftTitle.value = a.title
-  draftKind.value = a.kind
-  draftScopePaths.value = a.scope_paths.join('\n')
-  draftSpec.value = a.spec
-  draftEnabled.value = a.enabled
-  editOpen.value = true
+/** First non-empty spec line, de-markdown'd — the inline "why ignored" reason. */
+function specSummary(a: AreaDTO): string {
+  const line = a.spec.split('\n').find((l) => l.trim())
+  return (line ?? '').replace(/^#+\s*/, '').trim()
 }
-
-async function saveEdit() {
-  const target = editingArea.value
-  if (!target || saving.value) return
-  saving.value = true
-  try {
-    await areaStore.patchArea(target.uid, {
-      title: draftTitle.value,
-      kind: draftKind.value,
-      scope_paths: draftScopePaths.value.split('\n').map((p) => p.trim()).filter(Boolean),
-      spec: draftSpec.value,
-      enabled: draftEnabled.value,
-    })
-    editOpen.value = false
-    toast.success('Area saved', target.key)
-  } catch (e: unknown) {
-    toast.error('Save failed', e instanceof Error ? e.message : String(e))
-  } finally {
-    saving.value = false
-  }
-}
-
-// ── Delete ───────────────────────────────────────────────────────────────────
 
 // ── Reset (destructive: wipe the whole map) ──────────────────────────────────
+
 const resetOpen = ref(false)
 const resetting = ref(false)
 
@@ -209,26 +238,6 @@ async function confirmReset() {
     toast.error('Reset failed', e instanceof Error ? e.message : String(e))
   } finally {
     resetting.value = false
-  }
-}
-
-const deleteOpen = ref(false)
-const pendingDelete = ref<AreaDTO | null>(null)
-
-function deleteArea(a: AreaDTO) {
-  pendingDelete.value = a
-  deleteOpen.value = true
-}
-
-async function confirmDelete() {
-  const a = pendingDelete.value
-  if (!a) return
-  deleteOpen.value = false
-  try {
-    await areaStore.deleteArea(a.uid)
-    toast.success('Area deleted', a.key)
-  } catch (e: unknown) {
-    toast.error('Delete failed', e instanceof Error ? e.message : String(e))
   }
 }
 
@@ -305,21 +314,12 @@ async function confirmResolveAll() {
     if (!errorEntries.length && !warningEntries.length) {
       toast.success(action === 'accept' ? `Accepted ${uids.length} edits` : `Rejected ${uids.length} edits`)
     }
-    if (repoUid.value) {
-      await Promise.all([
-        areaStore.fetchAreas(repoUid.value),
-        areaStore.fetchEdits(repoUid.value, 'pending'),
-      ])
-    }
+    await reload()
   } catch (e: unknown) {
     toast.error(`Bulk ${action} failed`, e instanceof Error ? e.message : String(e))
   } finally {
     bulkResolving.value = null
   }
-}
-
-function editHeading(edit: AreaEditDTO): string {
-  return edit.title || edit.key
 }
 </script>
 
@@ -361,6 +361,52 @@ function editHeading(edit: AreaEditDTO): string {
     </ErrorState>
 
     <template v-else>
+      <!-- ── Health strip (drift between the map and the tree) ───────────── -->
+      <Card v-if="preview && sortedAreas.length">
+        <CardContent class="space-y-2 p-4">
+          <template v-if="hasDrift">
+            <div class="flex flex-wrap items-center gap-1.5">
+              <span
+                v-if="preview.uncovered_files > 0"
+                class="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-0.5 text-xs text-amber-800 dark:text-amber-300"
+              >
+                <TriangleAlert class="h-3 w-3" />
+                {{ n(preview.uncovered_files) }} file{{ preview.uncovered_files === 1 ? '' : 's' }} uncovered by the map
+              </span>
+              <span
+                v-if="deadAreaCount > 0"
+                class="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-0.5 text-xs text-amber-800 dark:text-amber-300"
+              >
+                <TriangleAlert class="h-3 w-3" />
+                {{ deadAreaCount }} area{{ deadAreaCount === 1 ? '' : 's' }} match{{ deadAreaCount === 1 ? 'es' : '' }} no files
+              </span>
+              <span
+                v-if="preview.oversized_areas.length"
+                class="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-0.5 text-xs text-amber-800 dark:text-amber-300"
+                :title="preview.oversized_areas.join('\n')"
+              >
+                {{ preview.oversized_areas.length }} oversized
+              </span>
+              <span
+                v-if="preview.overlapping_files > 0"
+                class="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-0.5 text-xs text-amber-800 dark:text-amber-300"
+              >
+                {{ n(preview.overlapping_files) }} file{{ preview.overlapping_files === 1 ? '' : 's' }} in overlapping leaves
+              </span>
+              <span
+                v-if="preview.dead_ignore_scopes.length"
+                class="inline-flex max-w-full items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-0.5 text-xs text-amber-800 dark:text-amber-300"
+                :title="preview.dead_ignore_scopes.join('\n')"
+              >
+                <span class="truncate font-mono">dead ignore scopes: {{ preview.dead_ignore_scopes.join(', ') }}</span>
+              </span>
+            </div>
+            <p class="text-xs text-muted-foreground">Run Map areas to let the agent fix the partition.</p>
+          </template>
+          <p v-else class="text-xs text-good">Map covers the tree — no drift detected.</p>
+        </CardContent>
+      </Card>
+
       <!-- ── Pending edits (agent proposals) ─────────────────────────────── -->
       <Card v-if="areaStore.edits.length">
         <CardHeader class="flex-row flex-wrap items-center justify-between gap-2 space-y-0">
@@ -387,249 +433,213 @@ function editHeading(edit: AreaEditDTO): string {
           </div>
         </CardHeader>
         <CardContent class="p-0">
-          <div
+          <AreaEditReviewCard
             v-for="edit in areaStore.edits"
             :key="edit.uid"
-            class="border-b border-border p-4 last:border-b-0 space-y-2"
+            :edit="edit"
+            :resolving="resolvingUid === edit.uid"
+            :disabled="(!!resolvingUid && resolvingUid !== edit.uid) || !!bulkResolving"
+            @accept="acceptEdit(edit)"
+            @reject="rejectEdit(edit)"
+          />
+        </CardContent>
+      </Card>
+
+      <!-- ── Empty map ───────────────────────────────────────────────────── -->
+      <Card v-if="!sortedAreas.length">
+        <CardContent class="p-4">
+          <EmptyState
+            :icon="MapIcon"
+            title="No areas yet"
+            description="The area map is the reviewed partition campaigns audit against: path-keyed areas with scopes and specs. Click Map areas to let an agent propose it from the code — every proposal lands here for review."
+            class="border-0"
           >
-            <div class="flex flex-wrap items-center justify-between gap-2">
-              <div class="min-w-0">
-                <div class="flex flex-wrap items-center gap-1.5">
-                  <span class="font-mono text-sm font-medium">{{ edit.key }}</span>
-                  <Badge :variant="kindVariant(edit.kind)" class="px-1.5 text-[10px]">{{ edit.kind || 'subsystem' }}</Badge>
-                  <Badge v-if="!edit.area_uid" variant="info" class="px-1.5 text-[10px]">new area</Badge>
-                  <Badge v-if="edit.proposed_enabled === false" variant="destructive" class="px-1.5 text-[10px]">proposes retiring</Badge>
-                  <Badge v-else variant="warn" class="px-1.5 text-[10px]" title="Replaces the area's current spec">updates existing</Badge>
-                </div>
-                <div v-if="editHeading(edit) !== edit.key" class="text-sm">{{ editHeading(edit) }}</div>
-                <div class="text-xs text-muted-foreground">
-                  <span v-if="edit.source_run_uid">
-                    run
-                    <RouterLink
-                      :to="{ name: 'run-detail', params: { uid: edit.source_run_uid } }"
-                      class="font-mono text-primary hover:underline"
-                    >{{ edit.source_run_uid.slice(0, 8) }}</RouterLink>
+            <Button size="sm" :loading="mapping" @click="mapAreas">
+              <MapIcon v-if="!mapping" />
+              Map areas
+            </Button>
+          </EmptyState>
+        </CardContent>
+      </Card>
+
+      <template v-else>
+        <!-- ── Partition: the subsystem tree ─────────────────────────────── -->
+        <Card>
+          <CardHeader class="flex-row items-center justify-between space-y-0">
+            <CardTitle class="text-base">Partition</CardTitle>
+            <span class="text-xs text-muted-foreground">
+              {{ subsystems.length }} subsystem area{{ subsystems.length === 1 ? '' : 's' }}
+            </span>
+          </CardHeader>
+          <CardContent class="p-0">
+            <div v-if="!subsystems.length" class="p-4 text-sm text-muted-foreground">
+              No subsystem areas — the exclusive partition is empty.
+            </div>
+            <ul v-else class="divide-y divide-border">
+              <li v-for="row in partitionRows" :key="`${row.type}:${row.key}`">
+                <!-- Implicit parent: a group header derived from key segments -->
+                <div
+                  v-if="row.type === 'group'"
+                  class="flex items-center gap-1.5 bg-muted/40 py-1.5 pr-3 text-xs font-semibold text-muted-foreground"
+                  :style="indent(row.depth)"
+                >
+                  <FolderTree class="h-3.5 w-3.5 shrink-0" />
+                  <span class="truncate font-mono">{{ row.name }}/</span>
+                  <span v-if="row.fileTotal != null" class="ml-auto font-normal tabular-nums">
+                    {{ n(row.fileTotal) }} files
                   </span>
-                  <span v-if="edit.created_at"> · {{ edit.created_at.slice(0, 10) }}</span>
                 </div>
-              </div>
-              <div class="flex gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  :disabled="!!resolvingUid || !!bulkResolving"
-                  @click="rejectEdit(edit)"
-                >
-                  <X /> Reject
-                </Button>
-                <Button
-                  size="sm"
-                  :loading="resolvingUid === edit.uid"
-                  :disabled="(!!resolvingUid && resolvingUid !== edit.uid) || !!bulkResolving"
-                  @click="acceptEdit(edit)"
-                >
-                  <Check /> Accept
-                </Button>
-              </div>
-            </div>
 
-            <p v-if="edit.rationale" class="text-sm text-muted-foreground">{{ edit.rationale }}</p>
-
-            <div v-if="edit.scope_paths.length" class="flex flex-wrap gap-1.5">
-              <span
-                v-for="path in edit.scope_paths"
-                :key="path"
-                class="rounded-full border border-border px-2.5 py-0.5 font-mono text-xs"
-              >
-                {{ path }}
-              </span>
-            </div>
-
-            <!-- Collapsible spec preview -->
-            <div v-if="edit.proposed_spec">
-              <button
-                type="button"
-                class="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-                @click="toggleSpec(edit.uid)"
-              >
-                <component :is="expandedSpecs.has(edit.uid) ? ChevronDown : ChevronRight" class="h-3.5 w-3.5" />
-                {{ edit.current_spec ? 'Proposed spec (replaces the current one)' : 'Proposed spec' }}
-              </button>
-              <div v-if="expandedSpecs.has(edit.uid)" class="mt-2 space-y-2">
-                <div class="rounded-md border border-border p-3">
-                  <MarkdownView :model-value="edit.proposed_spec" preview-only />
-                </div>
-                <details v-if="edit.current_spec" class="rounded-md border border-border p-3">
-                  <summary class="cursor-pointer text-xs text-muted-foreground">Current spec (being replaced)</summary>
-                  <MarkdownView :model-value="edit.current_spec" preview-only class="mt-2" />
-                </details>
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      <!-- ── The area map ────────────────────────────────────────────────── -->
-      <Card>
-        <CardHeader class="flex-row items-center justify-between space-y-0">
-          <CardTitle class="text-base">Area map</CardTitle>
-          <span class="text-xs text-muted-foreground">{{ sortedAreas.length }} area{{ sortedAreas.length === 1 ? '' : 's' }}</span>
-        </CardHeader>
-        <CardContent class="p-0">
-          <div v-if="!sortedAreas.length" class="p-4">
-            <EmptyState
-              :icon="MapIcon"
-              title="No areas yet"
-              description="The area map is the reviewed partition campaigns audit against: path-keyed areas with scopes and specs. Click Map areas to let an agent propose it from the code — every proposal lands here for review."
-              class="border-0"
-            >
-              <Button size="sm" :loading="mapping" @click="mapAreas">
-                <MapIcon v-if="!mapping" />
-                Map areas
-              </Button>
-            </EmptyState>
-          </div>
-
-          <ul v-else class="divide-y divide-border">
-            <li v-for="a in sortedAreas" :key="a.uid">
-              <div
-                class="flex items-start gap-2 py-2 pr-3 transition-colors hover:bg-accent/50"
-                :class="{ 'opacity-60': !a.enabled }"
-                :style="{ paddingLeft: `${12 + depth(a.key) * 20}px` }"
-              >
-                <button
-                  type="button"
-                  class="mt-0.5 rounded-sm p-1 text-muted-foreground hover:text-foreground"
-                  :title="a.spec ? 'Toggle spec preview' : 'No spec yet'"
-                  :disabled="!a.spec"
-                  @click="toggleSpec(a.uid)"
-                >
-                  <component :is="expandedSpecs.has(a.uid) ? ChevronDown : ChevronRight" class="h-3.5 w-3.5" />
-                </button>
-                <div class="min-w-0 flex-1">
-                  <div class="flex flex-wrap items-center gap-1.5">
-                    <span class="truncate text-sm font-medium">{{ a.title || a.key }}</span>
-                    <Badge :variant="kindVariant(a.kind)" class="px-1.5 text-[10px]">{{ a.kind }}</Badge>
-                    <Badge v-if="!a.enabled" variant="outline" class="px-1.5 text-[10px]">disabled</Badge>
-                    <span
-                      v-if="a.stale"
-                      class="h-2 w-2 shrink-0 rounded-full bg-amber-500"
-                      :title="staleTitle(a)"
-                    />
-                    <Badge v-if="a.pending_edits > 0" variant="warn" class="px-1.5 text-[10px]" title="Pending agent edits">
-                      {{ a.pending_edits }}
-                    </Badge>
-                  </div>
-                  <div class="truncate font-mono text-[10px] text-muted-foreground">{{ a.key }}</div>
-                  <div v-if="a.scope_paths.length" class="mt-1 flex flex-wrap items-center gap-1.5">
-                    <span
-                      v-for="path in a.scope_paths.slice(0, 2)"
-                      :key="path"
-                      class="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] text-muted-foreground"
-                      :title="path"
+                <template v-else-if="row.area">
+                  <RouterLink
+                    :to="{ name: 'area-detail', params: { uid: row.area.uid } }"
+                    class="flex items-start gap-2 py-2 pr-3 transition-colors hover:bg-accent/50"
+                    :class="{ 'opacity-60': !row.area.enabled }"
+                    :style="indent(row.depth)"
+                  >
+                    <button
+                      type="button"
+                      class="mt-0.5 rounded-sm p-1 text-muted-foreground hover:text-foreground"
+                      :title="row.area.spec ? 'Toggle spec preview' : 'No spec yet'"
+                      :disabled="!row.area.spec"
+                      @click.stop.prevent="toggleSpec(row.area.uid)"
                     >
-                      {{ path }}
+                      <component :is="expandedSpecs.has(row.area.uid) ? ChevronDown : ChevronRight" class="h-3.5 w-3.5" />
+                    </button>
+                    <div class="min-w-0 flex-1">
+                      <div class="flex flex-wrap items-center gap-1.5">
+                        <span class="truncate text-sm font-medium">{{ row.area.title || row.area.key }}</span>
+                        <Badge v-if="!row.area.enabled" variant="outline" class="px-1.5 text-[10px]">disabled</Badge>
+                        <span
+                          v-if="row.area.stale"
+                          class="h-2 w-2 shrink-0 rounded-full bg-amber-500"
+                          :title="areaStaleTitle(row.area)"
+                        />
+                        <Badge v-if="row.area.pending_edits > 0" variant="warn" class="px-1.5 text-[10px]" title="Pending agent edits">
+                          {{ row.area.pending_edits }}
+                        </Badge>
+                      </div>
+                      <div class="truncate font-mono text-[10px] text-muted-foreground">{{ row.area.key }}</div>
+                      <div v-if="row.area.scope_paths.length" class="mt-1 flex flex-wrap items-center gap-1.5">
+                        <span
+                          v-for="path in row.area.scope_paths.slice(0, 2)"
+                          :key="path"
+                          class="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] text-muted-foreground"
+                          :title="path"
+                        >
+                          {{ path }}
+                        </span>
+                        <span
+                          v-if="row.area.scope_paths.length > 2"
+                          class="text-[10px] text-muted-foreground"
+                          :title="row.area.scope_paths.slice(2).join('\n')"
+                        >
+                          +{{ row.area.scope_paths.length - 2 }}
+                        </span>
+                      </div>
+                    </div>
+                    <span v-if="row.fileTotal != null" class="shrink-0 text-xs tabular-nums text-muted-foreground">
+                      {{ n(row.fileTotal) }} files
                     </span>
-                    <span
-                      v-if="a.scope_paths.length > 2"
-                      class="text-[10px] text-muted-foreground"
-                      :title="a.scope_paths.slice(2).join('\n')"
-                    >
-                      +{{ a.scope_paths.length - 2 }}
-                    </span>
+                  </RouterLink>
+                  <div
+                    v-if="expandedSpecs.has(row.area.uid) && row.area.spec"
+                    class="mb-2 mr-3 rounded-md border border-border p-3"
+                    :style="{ marginLeft: `${36 + row.depth * 20}px` }"
+                  >
+                    <MarkdownView :model-value="row.area.spec" preview-only />
                   </div>
-                  <div v-if="expandedSpecs.has(a.uid) && a.spec" class="mt-2 rounded-md border border-border p-3">
-                    <MarkdownView :model-value="a.spec" preview-only />
+                </template>
+              </li>
+            </ul>
+          </CardContent>
+        </Card>
+
+        <!-- ── Features: cross-cutting spec overlays ─────────────────────── -->
+        <Card v-if="features.length">
+          <CardHeader class="flex-row items-center justify-between space-y-0">
+            <CardTitle class="text-base">Features</CardTitle>
+            <span class="text-xs text-muted-foreground">
+              {{ features.length }} overlay{{ features.length === 1 ? '' : 's' }} — audited against their spec, on top of the partition
+            </span>
+          </CardHeader>
+          <CardContent class="p-0">
+            <ul class="divide-y divide-border">
+              <li v-for="a in features" :key="a.uid">
+                <RouterLink
+                  :to="{ name: 'area-detail', params: { uid: a.uid } }"
+                  class="flex items-start gap-2 border-l-2 border-l-primary/60 py-2 pl-2.5 pr-3 transition-colors hover:bg-accent/50"
+                  :class="{ 'opacity-60': !a.enabled }"
+                >
+                  <button
+                    type="button"
+                    class="mt-0.5 rounded-sm p-1 text-muted-foreground hover:text-foreground"
+                    :title="a.spec ? 'Toggle spec preview' : 'No spec yet'"
+                    :disabled="!a.spec"
+                    @click.stop.prevent="toggleSpec(a.uid)"
+                  >
+                    <component :is="expandedSpecs.has(a.uid) ? ChevronDown : ChevronRight" class="h-3.5 w-3.5" />
+                  </button>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex flex-wrap items-center gap-1.5">
+                      <span class="truncate text-sm font-medium">{{ a.title || a.key }}</span>
+                      <Badge variant="info" class="px-1.5 text-[10px]">feature</Badge>
+                      <Badge v-if="!a.enabled" variant="outline" class="px-1.5 text-[10px]">disabled</Badge>
+                      <span
+                        v-if="a.stale"
+                        class="h-2 w-2 shrink-0 rounded-full bg-amber-500"
+                        :title="areaStaleTitle(a)"
+                      />
+                      <Badge v-if="a.pending_edits > 0" variant="warn" class="px-1.5 text-[10px]" title="Pending agent edits">
+                        {{ a.pending_edits }}
+                      </Badge>
+                      <span
+                        v-if="a.scope_paths.length"
+                        class="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground"
+                        :title="a.scope_paths.join('\n')"
+                      >
+                        spans {{ a.scope_paths.length }} path{{ a.scope_paths.length === 1 ? '' : 's' }}
+                      </span>
+                    </div>
+                    <div class="truncate font-mono text-[10px] text-muted-foreground">{{ a.key }}</div>
                   </div>
+                </RouterLink>
+                <div
+                  v-if="expandedSpecs.has(a.uid) && a.spec"
+                  class="mb-2 ml-9 mr-3 rounded-md border border-border p-3"
+                >
+                  <MarkdownView :model-value="a.spec" preview-only />
                 </div>
-                <div class="flex shrink-0 gap-1">
-                  <Button variant="ghost" size="icon-sm" title="Edit area" @click="openEdit(a)">
-                    <Pencil />
-                  </Button>
-                  <Button variant="ghost" size="icon-sm" class="text-destructive" title="Delete area" @click="deleteArea(a)">
-                    <Trash2 />
-                  </Button>
-                </div>
-              </div>
-            </li>
-          </ul>
-        </CardContent>
-      </Card>
+              </li>
+            </ul>
+          </CardContent>
+        </Card>
+
+        <!-- ── Ignored: not auditable, spec says why ─────────────────────── -->
+        <Card v-if="ignored.length">
+          <CardContent class="p-0">
+            <details>
+              <summary class="cursor-pointer select-none px-4 py-3 text-sm font-medium text-muted-foreground hover:text-foreground">
+                Ignored ({{ ignored.length }}) — not auditable; the reason lives in the spec
+              </summary>
+              <ul class="divide-y divide-border border-t border-border">
+                <li v-for="a in ignored" :key="a.uid">
+                  <RouterLink
+                    :to="{ name: 'area-detail', params: { uid: a.uid } }"
+                    class="flex items-baseline gap-2 px-4 py-2 text-muted-foreground transition-colors hover:bg-accent/50"
+                    :class="{ 'opacity-60': !a.enabled }"
+                  >
+                    <span class="shrink-0 font-mono text-xs">{{ a.key }}</span>
+                    <span class="min-w-0 truncate text-xs italic" :title="a.spec">{{ specSummary(a) || 'no reason recorded' }}</span>
+                    <Badge v-if="!a.enabled" variant="outline" class="shrink-0 px-1.5 text-[10px]">disabled</Badge>
+                  </RouterLink>
+                </li>
+              </ul>
+            </details>
+          </CardContent>
+        </Card>
+      </template>
     </template>
-
-    <!-- ── Edit dialog ─────────────────────────────────────────────────────── -->
-    <Dialog :open="editOpen" @update:open="editOpen = $event">
-      <DialogContent class="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>Edit area</DialogTitle>
-          <DialogDescription>
-            <span class="font-mono">{{ editingArea?.key }}</span> — a human edit counts as a review and clears staleness.
-          </DialogDescription>
-        </DialogHeader>
-        <div class="space-y-3">
-          <div class="grid gap-3 md:grid-cols-2">
-            <div class="space-y-1.5">
-              <Label>Title</Label>
-              <Input v-model="draftTitle" placeholder="Area title" />
-            </div>
-            <div class="space-y-1.5">
-              <Label>Kind</Label>
-              <Select :model-value="draftKind" @update:model-value="draftKind = $event as AreaKind">
-                <SelectTrigger class="w-full"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="subsystem">subsystem — exclusive partition leaf</SelectItem>
-                  <SelectItem value="feature">feature — cross-cutting spec overlay</SelectItem>
-                  <SelectItem value="ignore">ignore — not auditable (spec says why)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <div class="space-y-1.5">
-            <Label>Scope paths (one per line)</Label>
-            <Textarea
-              v-model="draftScopePaths"
-              :rows="3"
-              placeholder="backend/delivery/&#10;backend/webhooks.py"
-              class="font-mono text-xs"
-            />
-          </div>
-          <div class="space-y-1.5">
-            <Label>Spec (markdown — what to check here)</Label>
-            <Textarea v-model="draftSpec" :rows="8" placeholder="What matters in this area…" class="font-mono text-xs" />
-          </div>
-          <div class="flex items-center gap-2">
-            <Switch :model-value="draftEnabled" @update:model-value="draftEnabled = $event" />
-            <Label>Enabled — disabled areas are ignored by planning</Label>
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="ghost" size="sm" @click="editOpen = false">Cancel</Button>
-          <Button size="sm" :loading="saving" @click="saveEdit">
-            <Check /> Save
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-
-    <AlertDialog v-model:open="deleteOpen">
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Delete area</AlertDialogTitle>
-          <AlertDialogDescription>
-            Delete area "{{ pendingDelete?.title || pendingDelete?.key }}"? Pending edits against it are rejected. This cannot be undone.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            class="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            @click="confirmDelete"
-          >
-            Delete
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
 
     <AlertDialog v-model:open="bulkResolveOpen">
       <AlertDialogContent>

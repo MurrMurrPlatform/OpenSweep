@@ -20,7 +20,7 @@ class CampaignDTO(BaseModel):
     # key ("" = the whole map).
     area_prefix: str = ""
     # Part dicts as stored: {idx, kind, title, scope_paths, doc_uids,
-    # lens_keys, run_uid, state, file_count, area_key}.
+    # lens_keys, run_uid, state, file_count, area_keys}.
     parts: list[dict] = Field(default_factory=list)
     max_parallel: int = 2
     created_by: str = ""
@@ -62,6 +62,9 @@ class CampaignAreaPreview(BaseModel):
     # Map leaves above the size target are flagged, never auto-split —
     # resizing them is the mapping agent's job.
     oversized: bool = False
+    # Scope entries matching zero tree files — likely typos or moved code.
+    # Always [] for docs-derived areas and when the tree is unavailable.
+    dead_scope_paths: list[str] = Field(default_factory=list)
 
 
 class CampaignAreasPreview(BaseModel):
@@ -78,3 +81,8 @@ class CampaignAreasPreview(BaseModel):
     source: str = "docs"
     # Titles of oversized map leaves — the "refine your map" nudge.
     oversized_areas: list[str] = Field(default_factory=list)
+    # Area-map partition health: files claimed by more than one subsystem
+    # leaf, and ignore scope entries matching no tree files. 0/[] for
+    # docs-derived partitions and when the tree is unavailable.
+    overlapping_files: int = 0
+    dead_ignore_scopes: list[str] = Field(default_factory=list)

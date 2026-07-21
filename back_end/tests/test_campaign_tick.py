@@ -14,7 +14,7 @@ def _part(idx, *, kind="area", state="pending", run_uid=""):
         "run_uid": run_uid,
         "state": state,
         "file_count": 10,
-        "area_key": "",
+        "area_keys": [],
     }
 
 

@@ -20,6 +20,7 @@ from api.dependencies import get_current_user, require_role
 from domains.runs.schemas import Effort, normalize_effort
 from domains.runs.services.active_runs import active_runs_for, conflict_detail
 from domains.run_policies.services.effort import ensure_policy_for_effort
+from domains.runs.services.lifecycle import LifecycleError
 from domains.runs.services.sweep import (
     AuditResult,
     DeepScanResult,
@@ -118,11 +119,16 @@ async def run_generate_docs_endpoint(
             ),
         )
 
-    result: GenerateDocsResult = await run_generate_docs(
-        repository_uid=repository_uid,
-        triggered_by=user.uid,
-        agent_uid=req.agent_uid if req else None,
-    )
+    try:
+        result: GenerateDocsResult = await run_generate_docs(
+            repository_uid=repository_uid,
+            triggered_by=user.uid,
+            agent_uid=req.agent_uid if req else None,
+        )
+    except LifecycleError as exc:
+        # The docs gate (no area map yet) — a precondition conflict, not a
+        # server error.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return GenerateDocsResultDTO(**result.__dict__)
 
 

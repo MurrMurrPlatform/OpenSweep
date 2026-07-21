@@ -40,6 +40,7 @@ def test_areas_routes_are_mounted():
     for path in (
         "/api/v1/areas",
         "/api/v1/areas/{uid}",
+        "/api/v1/areas/{uid}/detail",
         "/api/v1/area-edits",
         "/api/v1/area-edits/{uid}/accept",
         "/api/v1/area-edits/{uid}/reject",
@@ -56,6 +57,7 @@ def test_areas_operation_ids():
     for op_id in (
         "opensweep_list_areas",
         "opensweep_get_area",
+        "opensweep_area_detail",
         "opensweep_update_area",
         "opensweep_delete_area",
         "opensweep_list_area_edits",

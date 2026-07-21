@@ -264,10 +264,41 @@ async def test_update_area_counts_as_review(stores):
     a = await area_service.create_area(repository_uid="r1", key="backend")
     a.last_reviewed_at = None
     a.stale_paths = ["back_end/models.py"]
-    await area_service.update_area(a.uid, UpdateAreaRequest(spec="charter"), actor="human")
+    _, warnings = await area_service.update_area(
+        a.uid, UpdateAreaRequest(spec="charter"), actor="human"
+    )
     assert a.spec == "charter"
     assert a.last_reviewed_at is not None
     assert a.stale_paths == []
+    assert warnings == []
+
+
+async def test_update_area_warns_on_partition_overlap_of_the_new_values(stores):
+    """PATCH warnings mirror accept-time checks, computed over the UPDATED
+    scope — the editor sees the overlap they just created."""
+    await area_service.create_area(
+        repository_uid="r1", key="backend/api", scope_paths=["src/api"]
+    )
+    a = await area_service.create_area(repository_uid="r1", key="frontend")
+    _, warnings = await area_service.update_area(
+        a.uid, UpdateAreaRequest(scope_paths=["src/api/views"])
+    )
+    assert warnings == [
+        "scope 'src/api/views' overlaps leaf 'backend/api' ('src/api')"
+    ]
+
+
+async def test_update_area_disabling_clears_the_warning_surface(stores):
+    await area_service.create_area(
+        repository_uid="r1", key="backend/api", scope_paths=["src/api"]
+    )
+    a = await area_service.create_area(
+        repository_uid="r1", key="frontend", scope_paths=["src/api"]
+    )
+    _, warnings = await area_service.update_area(
+        a.uid, UpdateAreaRequest(enabled=False)
+    )
+    assert warnings == []  # a disabled area is out of the partition
 
 
 async def test_delete_area_rejects_pending_edits(stores):
@@ -400,3 +431,181 @@ async def test_reset_areas_wipes_areas_and_edits_for_the_repo_only(stores):
     assert result == {"areas_deleted": 2, "edits_deleted": 1}
     assert stores.areas == [other]
     assert stores.edits == []
+
+
+# ── area_detail — the one-load detail payload ───────────────────────────────
+
+
+@pytest.fixture
+def detail_seams(stores, monkeypatch) -> SimpleNamespace:
+    """area_detail's lazy-import seams stubbed: repo + tree, docs, and
+    Checked stamps live in this namespace; Areas/AreaEdits ride `stores`."""
+    import domains.checked.services.checked_service as checked_service
+    import domains.docs.services.doc_service as doc_service
+    import domains.repositories.models as repo_models
+    import domains.repositories.services.file_tree as file_tree_mod
+
+    state = SimpleNamespace(
+        tree=([], ""),
+        docs=[],  # SimpleNamespace(uid, slug, title, watch_paths)
+        stamps=[],
+        stamp_calls=[],
+    )
+
+    class _RepoNodes:
+        @staticmethod
+        async def get_or_none(**kw):
+            return SimpleNamespace(uid=kw.get("uid"))
+
+    monkeypatch.setattr(
+        repo_models, "Repository", SimpleNamespace(nodes=_RepoNodes)
+    )
+
+    async def fake_tree(repo):
+        return state.tree
+
+    monkeypatch.setattr(file_tree_mod, "file_tree_paths", fake_tree)
+
+    async def fake_get_doc(uid):
+        for d in state.docs:
+            if d.uid == uid:
+                return d
+        raise HTTPException(status_code=404, detail="gone")
+
+    async def fake_list_docs(repository_uid):
+        return list(state.docs)
+
+    monkeypatch.setattr(doc_service, "get_doc", fake_get_doc)
+    monkeypatch.setattr(doc_service, "list_docs", fake_list_docs)
+
+    async def fake_stamps(repository_uid, paths, *, limit=10):
+        state.stamp_calls.append((repository_uid, list(paths), limit))
+        return list(state.stamps)
+
+    monkeypatch.setattr(checked_service, "stamps_for_paths", fake_stamps)
+    return state
+
+
+async def test_area_detail_sizes_scope_against_the_tree(stores, detail_seams):
+    a = await area_service.create_area(
+        repository_uid="r1", key="backend", scope_paths=["src/api", "gone/dir"]
+    )
+    detail_seams.tree = (["src/api/a.py", "src/api/b.py", "other.md"], "")
+
+    out = await area_service.area_detail(a.uid)
+
+    assert out.area.uid == a.uid
+    assert out.tree_degraded == ""
+    by_path = {s.path: s for s in out.scope}
+    assert by_path["src/api"].file_count == 2
+    assert by_path["src/api"].dead is False
+    assert by_path["src/api"].files == ["src/api/a.py", "src/api/b.py"]
+    assert by_path["gone/dir"].file_count == 0
+    assert by_path["gone/dir"].dead is True
+    assert by_path["gone/dir"].files == []
+
+
+async def test_area_detail_scope_files_cap_at_50(stores, detail_seams):
+    a = await area_service.create_area(
+        repository_uid="r1", key="backend", scope_paths=["src"]
+    )
+    detail_seams.tree = ([f"src/f{i:03}.py" for i in range(80)], "")
+    out = await area_service.area_detail(a.uid)
+    (entry,) = out.scope
+    assert entry.file_count == 80
+    assert len(entry.files) == 50
+
+
+async def test_area_detail_degraded_tree_never_declares_scopes_dead(
+    stores, detail_seams
+):
+    a = await area_service.create_area(
+        repository_uid="r1", key="backend", scope_paths=["src/api"]
+    )
+    detail_seams.tree = ([], "no active git provider connection")
+    out = await area_service.area_detail(a.uid)
+    assert out.tree_degraded == "no active git provider connection"
+    (entry,) = out.scope
+    assert entry.file_count is None
+    assert entry.dead is False
+
+
+async def test_area_detail_links_and_suggests_docs(stores, detail_seams):
+    a = await area_service.create_area(
+        repository_uid="r1",
+        key="backend",
+        scope_paths=["src/api"],
+        doc_uids=["d1", "d-deleted"],
+    )
+    detail_seams.docs = [
+        SimpleNamespace(uid="d1", slug="api", title="API", watch_paths=["elsewhere"]),
+        SimpleNamespace(
+            uid="d2", slug="api-deep", title="API deep", watch_paths=["src/api/deep"]
+        ),
+        SimpleNamespace(uid="d3", slug="fe", title="FE", watch_paths=["front_end"]),
+    ]
+    out = await area_service.area_detail(a.uid)
+    # Linked: best-effort — the deleted uid is skipped, not an error.
+    assert [d.uid for d in out.linked_docs] == ["d1"]
+    assert out.linked_docs[0].slug == "api"
+    # Suggested: watch overlap with the scope, minus already-linked.
+    assert [d.uid for d in out.suggested_docs] == ["d2"]
+
+
+async def test_area_detail_relates_features_and_subsystem_leaves(
+    stores, detail_seams
+):
+    sub = await area_service.create_area(
+        repository_uid="r1", key="backend/api", scope_paths=["src/api"]
+    )
+    # A parent grouping never appears as related — only leaves.
+    await area_service.create_area(
+        repository_uid="r1", key="backend", scope_paths=[]
+    )
+    feat = await area_service.create_area(
+        repository_uid="r1",
+        key="checkout",
+        kind="feature",
+        scope_paths=["src/api/checkout.py", "front_end/checkout"],
+    )
+    await area_service.create_area(
+        repository_uid="r1", key="frontend", scope_paths=["front_end"]
+    )
+
+    sub_out = await area_service.area_detail(sub.uid)
+    assert [r.uid for r in sub_out.related_areas] == [feat.uid]
+    assert sub_out.related_areas[0].kind == "feature"
+
+    feat_out = await area_service.area_detail(feat.uid)
+    related_keys = {r.key for r in feat_out.related_areas}
+    assert related_keys == {"backend/api", "frontend"}
+
+
+async def test_area_detail_coverage_and_pending_edits(stores, detail_seams):
+    a = await area_service.create_area(
+        repository_uid="r1", key="backend", scope_paths=["src"]
+    )
+    detail_seams.stamps = [
+        SimpleNamespace(
+            run_uid="run-9",
+            outcome="findings",
+            checked_at=None,
+            lens_verdicts=[{"lens": "bugs", "verdict": "checked-findings"}, "junk"],
+        )
+    ]
+    await area_service.propose_area_edit(
+        repository_uid="r1", proposed_spec="s", key="backend", source_run_uid="run-1"
+    )
+    await area_service.propose_area_edit(
+        repository_uid="r1", proposed_spec="s", key="unrelated", source_run_uid="run-1"
+    )
+
+    out = await area_service.area_detail(a.uid)
+
+    assert detail_seams.stamp_calls == [("r1", ["src"], 10)]
+    (cov,) = out.coverage
+    assert cov.run_uid == "run-9" and cov.outcome == "findings"
+    assert cov.lens_verdicts == [{"lens": "bugs", "verdict": "checked-findings"}]
+    # Pending edits: only THIS area's; the badge count matches the list.
+    assert [e.area_uid for e in out.pending_edits] == [a.uid]
+    assert out.area.pending_edits == 1

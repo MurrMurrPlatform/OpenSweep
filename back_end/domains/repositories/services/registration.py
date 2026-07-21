@@ -51,12 +51,14 @@ async def seed_repo_defaults(repository_uid: str, *, slug: str = "") -> None:
     )
     from domains.docs.services.doc_service import seed_conventions_doc
 
+    # map-areas seeds BEFORE keep-docs-current: the area map gates docs
+    # generation, so its bindings must exist first.
     seeders = [
         ("conventions doc", seed_conventions_doc),
+        ("map-areas", seed_map_areas),
         ("keep-docs-current", seed_keep_docs_current),
         ("audit-stale", seed_audit_stale),
         ("audit agents", seed_audit_agents),
-        ("map-areas", seed_map_areas),
     ]
     for name, seeder in seeders:
         try:

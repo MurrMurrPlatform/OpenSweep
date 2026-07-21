@@ -48,7 +48,7 @@ TREE = (
 
 
 def test_leaves_get_exclusive_counts_area_keys_and_a_remainder():
-    areas = areas_from_map(
+    areas, health = areas_from_map(
         [
             _leaf("backend/api", ["be/api"], doc_uids=["d1"]),
             _leaf("backend/core", ["be/core"]),
@@ -70,10 +70,29 @@ def test_leaves_get_exclusive_counts_area_keys_and_a_remainder():
     assert set(remainder["scope_paths"]) == {"vendor", "README.md"}
     # The counts partition the tree exactly — nothing double-audited.
     assert sum(a["file_count"] for a in areas) == len(TREE)
+    assert health == {"overlapping_files": 0, "dead_ignore_scopes": []}
+    assert all(a["dead_scope_paths"] == [] for a in areas)
+
+
+def test_overlapping_leaves_and_dead_scopes_surface_in_health():
+    areas, health = areas_from_map(
+        [
+            _leaf("backend", ["be", "attic"]),  # "attic" matches nothing
+            _leaf("backend-api", ["be/api"]),  # claims files "backend" also claims
+        ],
+        ["ghost-vendor"],  # matches nothing → dead ignore scope
+        TREE,
+    )
+    by_key = {a["area_key"]: a for a in areas}
+    # be/api files are claimed by BOTH leaves — 3 double-claimed files.
+    assert health["overlapping_files"] == 3
+    assert health["dead_ignore_scopes"] == ["ghost-vendor"]
+    assert by_key["backend"]["dead_scope_paths"] == ["attic"]
+    assert by_key["backend-api"]["dead_scope_paths"] == []
 
 
 def test_ignore_scopes_are_subtracted_from_leaves_and_the_remainder():
-    areas = areas_from_map(
+    areas, _health = areas_from_map(
         [_leaf("backend", ["be"]), _leaf("frontend", ["fe"])],
         ["vendor", "be/api"],
         TREE,
@@ -91,7 +110,7 @@ def test_ignore_scopes_are_subtracted_from_leaves_and_the_remainder():
 
 def test_oversized_leaf_is_flagged_never_split():
     paths = [f"big/a/f{i}.py" for i in range(4)] + [f"big/b/f{i}.py" for i in range(4)]
-    areas = areas_from_map([_leaf("big", ["big"])], [], paths, target_max=5)
+    areas, _health = areas_from_map([_leaf("big", ["big"])], [], paths, target_max=5)
     assert len(areas) == 1  # semantic sizing is the mapping agent's job
     assert areas[0]["oversized"] is True
     assert areas[0]["file_count"] == 8
@@ -99,18 +118,21 @@ def test_oversized_leaf_is_flagged_never_split():
 
 
 def test_tiny_leaves_never_merge():
-    areas = areas_from_map(
+    areas, _health = areas_from_map(
         [_leaf("a", ["a"]), _leaf("b", ["b"])], [], ["a/f.py", "b/f.py"]
     )
     assert [a["area_key"] for a in areas] == ["a", "b"]
 
 
 def test_empty_tree_passes_leaves_through_uncounted():
-    areas = areas_from_map([_leaf("backend", ["be"])], [], [])
+    areas, health = areas_from_map([_leaf("backend", ["be"])], [], [])
     assert len(areas) == 1  # no remainder can exist without a tree
     assert areas[0]["file_count"] is None
     assert areas[0]["oversized"] is False
     assert areas[0]["area_key"] == "backend"
+    # No tree ⇒ no health claims either: nothing is declared dead.
+    assert areas[0]["dead_scope_paths"] == []
+    assert health == {"overlapping_files": 0, "dead_ignore_scopes": []}
 
 
 def test_oversized_remainder_still_splits_by_subdir():
@@ -119,7 +141,7 @@ def test_oversized_remainder_still_splits_by_subdir():
         + [f"y/f{i}.py" for i in range(100)]
         + ["fe/app.ts"]
     )
-    areas = areas_from_map([_leaf("frontend", ["fe"])], [], paths, target_max=150)
+    areas, _health = areas_from_map([_leaf("frontend", ["fe"])], [], paths, target_max=150)
     remainders = [a for a in areas if a["title"].startswith(REMAINDER_TITLE)]
     assert len(remainders) == 2
     assert {tuple(a["scope_paths"]) for a in remainders} == {("x",), ("y",)}
@@ -128,7 +150,7 @@ def test_oversized_remainder_still_splits_by_subdir():
 
 def test_oversized_remainder_tiny_pieces_still_merge():
     paths = [f"z{i}/f{j}.py" for i in range(6) for j in range(10)]
-    areas = areas_from_map([], [], paths, target_max=50)
+    areas, _health = areas_from_map([], [], paths, target_max=50)
     assert len(areas) == 2  # z0..z4 merged to 50 files, z5 left over
     assert " + " in areas[0]["title"]
     assert areas[0]["file_count"] == 50
@@ -167,7 +189,7 @@ def test_full_plan_appends_feature_parts_between_areas_and_globals():
     feat = parts[1]
     assert feat["lens_keys"] == ["implementation-gaps"]
     assert feat["title"] == "Checkout"
-    assert feat["area_key"] == "features/checkout"
+    assert feat["area_keys"] == ["features/checkout"]
     assert feat["scope_paths"] == ["be/checkout"]
     assert feat["doc_uids"] == ["d9"]
     assert feat["file_count"] == 4
@@ -184,15 +206,28 @@ def test_rotation_and_focused_never_emit_feature_parts():
         assert all(p["kind"] != "feature" for p in parts)
 
 
-def test_area_parts_carry_their_area_key():
+def test_area_parts_carry_their_area_keys():
     parts = build_plan("full", [_map_area("backend", ["be"])], [_lens("bugs")])
-    assert parts[0]["area_key"] == "backend"
+    assert parts[0]["area_keys"] == ["backend"]
 
 
-def test_docs_derived_areas_get_empty_area_key():
+def test_bundled_areas_carry_all_their_keys():
+    bundle = {
+        "title": "Backend — A + B",
+        "scope_paths": ["be/a", "be/b"],
+        "doc_uids": [],
+        "file_count": 40,
+        "area_keys": ["backend/a", "backend/b"],
+        "oversized": False,
+    }
+    parts = build_plan("full", [bundle], [_lens("bugs")])
+    assert parts[0]["area_keys"] == ["backend/a", "backend/b"]
+
+
+def test_docs_derived_areas_get_empty_area_keys():
     docs_area = {"title": "t", "scope_paths": ["s"], "doc_uids": [], "file_count": 1}
     parts = build_plan("full", [docs_area], [_lens("bugs")])
-    assert parts[0]["area_key"] == ""
+    assert parts[0]["area_keys"] == []
 
 
 # ── filter_by_prefix ─────────────────────────────────────────────────────────
@@ -239,7 +274,14 @@ def plan_seams(monkeypatch):
     monkeypatch.setattr(repo_models, "Repository", SimpleNamespace(nodes=_Nodes))
 
     async def fake_plan_areas(repository_uid, repo):
-        return state.areas, state.degraded, 10, state.source, state.features
+        return (
+            state.areas,
+            state.degraded,
+            10,
+            state.source,
+            state.features,
+            {"overlapping_files": 0, "dead_ignore_scopes": []},
+        )
 
     monkeypatch.setattr(campaign_service, "_plan_areas", fake_plan_areas)
 
@@ -272,12 +314,13 @@ async def test_area_prefix_slices_the_plan_and_decorates_globals(plan_seams):
         "repo1", template="full", lens_keys=[], k=3, area_prefix="backend"
     )
     assert source == "area-map" and degraded == ""
-    assert [p["area_key"] for p in parts if p["kind"] == "area"] == [
-        "backend/api",
-        "backend/core",
+    # The two undersized backend siblings (10 files each) bundle into one
+    # area part carrying both keys.
+    assert [p["area_keys"] for p in parts if p["kind"] == "area"] == [
+        ["backend/api", "backend/core"]
     ]
-    assert [p["area_key"] for p in parts if p["kind"] == "feature"] == [
-        "backend/api/checkout"
+    assert [p["area_keys"] for p in parts if p["kind"] == "feature"] == [
+        ["backend/api/checkout"]
     ]
     globals_ = [p for p in parts if p["kind"] == "global"]
     assert len(globals_) == 1

@@ -3,7 +3,7 @@
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AreaEditStatus(StrEnum):
@@ -71,3 +71,62 @@ class BulkAreaEditRequest(BaseModel):
 class AcceptAreaEditResponse(BaseModel):
     area: AreaDTO
     warnings: list[str]
+
+
+class UpdateAreaResponse(BaseModel):
+    """PATCH result: the updated area plus the partition warnings the new
+    values create — the same eyeball a human gets at accept time."""
+
+    area: AreaDTO
+    warnings: list[str] = Field(default_factory=list)
+
+
+# ---------- Area detail (GET /areas/{uid}/detail) ----------
+
+
+class AreaScopeEntryDTO(BaseModel):
+    """One scope path sized against the live tree. file_count is None (and
+    dead stays False) when the tree is unavailable; files list is capped."""
+
+    path: str
+    file_count: int | None = None
+    dead: bool = False
+    files: list[str] = Field(default_factory=list)
+
+
+class AreaDocRefDTO(BaseModel):
+    uid: str
+    slug: str = ""
+    title: str = ""
+
+
+class RelatedAreaDTO(BaseModel):
+    uid: str
+    key: str
+    kind: str = "subsystem"
+    title: str = ""
+
+
+class AreaCoverageDTO(BaseModel):
+    """One Checked stamp whose covered paths overlap this area's scope."""
+
+    run_uid: str
+    outcome: str = ""
+    checked_at: datetime | None = None
+    lens_verdicts: list[dict] = Field(default_factory=list)
+
+
+class AreaDetailDTO(BaseModel):
+    area: AreaDTO
+    scope: list[AreaScopeEntryDTO] = Field(default_factory=list)
+    # "" = sized against the full tree; else why the tree was unavailable.
+    tree_degraded: str = ""
+    linked_docs: list[AreaDocRefDTO] = Field(default_factory=list)
+    # Docs whose watch_paths overlap the scope but aren't linked yet.
+    suggested_docs: list[AreaDocRefDTO] = Field(default_factory=list)
+    # Feature → intersecting subsystem leaves; subsystem → features
+    # referencing it.
+    related_areas: list[RelatedAreaDTO] = Field(default_factory=list)
+    # Last 10 overlapping Checked stamps, newest first.
+    coverage: list[AreaCoverageDTO] = Field(default_factory=list)
+    pending_edits: list[AreaEditDTO] = Field(default_factory=list)

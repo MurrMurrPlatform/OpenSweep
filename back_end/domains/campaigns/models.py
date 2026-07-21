@@ -47,9 +47,10 @@ class Campaign(AsyncStructuredNode):
 
     # The plan: [{idx, kind: area|feature|global, title, scope_paths,
     # doc_uids, lens_keys, run_uid, state: pending|running|done|failed,
-    # file_count, area_key}]. area_key ties map-derived parts back to their
-    # Area (""= docs-derived/remainder/global). Part state only moves
-    # forward (done/failed are sticky — tick.plan_tick).
+    # file_count, area_keys}]. area_keys ties map-derived parts back to
+    # their Areas — one key per bundled leaf ([] = docs-derived/remainder/
+    # global). Part state only moves forward (done/failed are sticky —
+    # tick.plan_tick).
     parts = JSONProperty(default=[])
 
     # How many parts may be in flight at once.

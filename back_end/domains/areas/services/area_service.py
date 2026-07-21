@@ -26,7 +26,17 @@ from domains.areas.models import (
     child_key_prefix_of,
     is_leaf,
 )
-from domains.areas.schemas import AreaDTO, AreaEditDTO, AreaEditStatus, UpdateAreaRequest
+from domains.areas.schemas import (
+    AreaCoverageDTO,
+    AreaDetailDTO,
+    AreaDocRefDTO,
+    AreaDTO,
+    AreaEditDTO,
+    AreaEditStatus,
+    AreaScopeEntryDTO,
+    RelatedAreaDTO,
+    UpdateAreaRequest,
+)
 from domains.docs.services.doc_freshness import watches_path
 from infrastructure.audit import write_audit
 
@@ -175,7 +185,12 @@ async def create_area(
     return a
 
 
-async def update_area(uid: str, req: UpdateAreaRequest, *, actor: str = "human") -> Area:
+async def update_area(
+    uid: str, req: UpdateAreaRequest, *, actor: str = "human"
+) -> tuple[Area, list[str]]:
+    """Apply a human edit and return (area, partition warnings) — the same
+    checks an accepted AreaEdit gets, computed over the UPDATED values so
+    the editor sees the overlap they just created."""
     a = await get_area(uid)
     if req.kind is not None:
         if req.kind not in AREA_KINDS:
@@ -197,14 +212,29 @@ async def update_area(uid: str, req: UpdateAreaRequest, *, actor: str = "human")
     a.updated_at = now
     _mark_reviewed(a, now)  # a human edit counts as a review
     await a.save()
+    warnings = (
+        validate_area_fields(
+            key=a.key,
+            kind=a.kind or "subsystem",
+            scope_paths=list(a.scope_paths or []),
+            spec=a.spec or "",
+            existing_areas=[
+                r
+                for r in await _repo_area_rows(a.repository_uid)
+                if r["key"] != a.key
+            ],
+        )
+        if bool(a.enabled)
+        else []  # a disabled area is out of the partition — nothing to warn
+    )
     await write_audit(
         kind="area.updated",
         subject_uid=a.uid,
         subject_type="Area",
         actor_uid=actor,
-        payload={"key": a.key},
+        payload={"key": a.key, "warnings": warnings},
     )
-    return a
+    return a, warnings
 
 
 async def delete_area(uid: str, *, actor: str = "human") -> None:
@@ -248,6 +278,125 @@ async def reset_areas(repository_uid: str, *, actor: str = "human") -> dict:
         payload={"areas_deleted": len(areas), "edits_deleted": len(edits)},
     )
     return {"areas_deleted": len(areas), "edits_deleted": len(edits)}
+
+
+# ---------- Area detail ----------
+
+# The detail view lists at most this many concrete files per scope path —
+# enough to see what a scope covers without shipping the whole tree.
+_SCOPE_FILES_CAP = 50
+
+
+def _scopes_overlap(a: list[str], b: list[str]) -> bool:
+    return any(_paths_overlap(x, y) for x in a for y in b)
+
+
+async def area_detail(uid: str) -> AreaDetailDTO:
+    """Everything the area detail page renders in one load: the scope sized
+    against the live tree, linked + suggested docs, related areas across
+    the subsystem/feature axis, recent coverage stamps, and pending edits."""
+    from domains.checked.services import checked_service
+    from domains.docs.services import doc_service
+    from domains.repositories.models import Repository
+    from domains.repositories.services.file_tree import file_tree_paths
+
+    a = await get_area(uid)
+    scope_paths = [str(p) for p in (a.scope_paths or []) if p]
+
+    repo = await Repository.nodes.get_or_none(uid=a.repository_uid)
+    if repo is None:
+        tree_paths, tree_degraded = [], "repository not found"
+    else:
+        tree_paths, tree_degraded = await file_tree_paths(repo)
+
+    scope: list[AreaScopeEntryDTO] = []
+    for path in scope_paths:
+        if tree_paths:
+            files = [f for f in tree_paths if watches_path([path], f)]
+            scope.append(
+                AreaScopeEntryDTO(
+                    path=path,
+                    file_count=len(files),
+                    dead=not files,
+                    files=files[:_SCOPE_FILES_CAP],
+                )
+            )
+        else:
+            # No tree — sizing (and dead detection) degrade, never guess.
+            scope.append(AreaScopeEntryDTO(path=path))
+
+    linked: list[AreaDocRefDTO] = []
+    for doc_uid in a.doc_uids or []:
+        try:
+            d = await doc_service.get_doc(str(doc_uid))
+        except HTTPException:
+            continue  # a linked page was deleted — best-effort, skip
+        linked.append(AreaDocRefDTO(uid=d.uid, slug=d.slug or "", title=d.title or ""))
+
+    linked_uids = {str(u) for u in (a.doc_uids or [])}
+    suggested = [
+        AreaDocRefDTO(uid=d.uid, slug=d.slug, title=d.title)
+        for d in await doc_service.list_docs(a.repository_uid)
+        if d.uid not in linked_uids
+        and _scopes_overlap(list(d.watch_paths or []), scope_paths)
+    ]
+
+    # Related areas across the subsystem/feature axis: a feature shows the
+    # subsystem leaves it cuts through; a subsystem shows the features
+    # referencing it. Ignore areas relate to nothing.
+    rows = [
+        r
+        for r in await Area.nodes.all()
+        if r.repository_uid == a.repository_uid and bool(r.enabled) and r.uid != a.uid
+    ]
+    kind = a.kind or "subsystem"
+    if kind == "feature":
+        keys = [r.key for r in rows if (r.kind or "subsystem") == "subsystem"]
+        candidates = [
+            r
+            for r in rows
+            if (r.kind or "subsystem") == "subsystem" and is_leaf(r.key, keys)
+        ]
+    elif kind == "subsystem":
+        candidates = [r for r in rows if r.kind == "feature"]
+    else:
+        candidates = []
+    related = [
+        RelatedAreaDTO(
+            uid=r.uid, key=r.key, kind=r.kind or "subsystem", title=r.title or ""
+        )
+        for r in candidates
+        if _scopes_overlap(scope_paths, [str(p) for p in (r.scope_paths or [])])
+    ]
+
+    coverage = [
+        AreaCoverageDTO(
+            run_uid=c.run_uid,
+            outcome=c.outcome or "",
+            checked_at=c.checked_at,
+            lens_verdicts=[v for v in (c.lens_verdicts or []) if isinstance(v, dict)],
+        )
+        for c in await checked_service.stamps_for_paths(
+            a.repository_uid, scope_paths, limit=10
+        )
+    ]
+
+    pending = [
+        e
+        for e in await list_area_edits(a.repository_uid, status="pending")
+        if e.area_uid == a.uid
+    ]
+
+    return AreaDetailDTO(
+        area=area_to_dto(a, pending_edits=len(pending)),
+        scope=scope,
+        tree_degraded=tree_degraded,
+        linked_docs=linked,
+        suggested_docs=suggested,
+        related_areas=related,
+        coverage=coverage,
+        pending_edits=pending,
+    )
 
 
 # ---------- AreaEdits ----------
@@ -390,7 +539,25 @@ def _paths_overlap(a: str, b: str) -> bool:
 
 
 def validate_area_edit(edit, existing_areas: list[dict]) -> list[str]:
-    """Warnings only, never raises — pure over (edit fields, area dicts).
+    """validate_area_fields over an AreaEdit's proposed values."""
+    return validate_area_fields(
+        key=getattr(edit, "key", "") or "",
+        kind=getattr(edit, "kind", "") or "subsystem",
+        scope_paths=list(getattr(edit, "scope_paths", None) or []),
+        spec=getattr(edit, "proposed_spec", "") or "",
+        existing_areas=existing_areas,
+    )
+
+
+def validate_area_fields(
+    *,
+    key: str,
+    kind: str,
+    scope_paths: list[str],
+    spec: str,
+    existing_areas: list[dict],
+) -> list[str]:
+    """Warnings only, never raises — pure over (area fields, area dicts).
 
     `existing_areas` rows carry {key, kind, scope_paths, enabled}. Checks the
     partition invariants a human should eyeball before accepting: leaf-vs-leaf
@@ -399,9 +566,8 @@ def validate_area_edit(edit, existing_areas: list[dict]) -> list[str]:
     a reason. Feature areas are overlays: never warned about.
     """
     warnings: list[str] = []
-    kind = getattr(edit, "kind", "") or "subsystem"
-    key = getattr(edit, "key", "") or ""
-    if kind == "ignore" and not (getattr(edit, "proposed_spec", "") or "").strip():
+    kind = kind or "subsystem"
+    if kind == "ignore" and not (spec or "").strip():
         warnings.append(
             "ignore area without a reason — the spec should say why these "
             "files are not auditable"
@@ -414,7 +580,7 @@ def validate_area_edit(edit, existing_areas: list[dict]) -> list[str]:
     if not is_leaf(key, enabled_keys):
         return warnings  # groupings don't own files; their children do
 
-    for scope in getattr(edit, "scope_paths", None) or []:
+    for scope in scope_paths:
         for other in enabled:
             other_key = other.get("key") or ""
             if not other_key or other_key == key:

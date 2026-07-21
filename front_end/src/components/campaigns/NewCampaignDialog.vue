@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { ChevronRight, Layers, TriangleAlert } from 'lucide-vue-next'
 import { useCampaignStore } from '@/stores/campaignStore'
 import { useLensStore } from '@/stores/lensStore'
@@ -31,11 +31,9 @@ import {
 } from '@/components/ui/select'
 import type {
   AgentEffort,
-  CampaignAreaPreview,
   CampaignAreasPreview,
   CampaignDTO,
   CampaignTemplate,
-  CreateCampaignRequest,
   LensDTO,
 } from '@/types/api'
 
@@ -71,20 +69,8 @@ const areasPreview = ref<CampaignAreasPreview | null>(null)
 const loadingAreas = ref(false)
 const areasOpen = ref(false)
 
-// The area-map backend extends the preview with source / oversized_areas /
-// per-area area_key. Read them defensively so this view compiles and renders
-// sensibly whichever backend it talks to.
-const previewSource = computed(() => {
-  const p = areasPreview.value as (CampaignAreasPreview & { source?: string }) | null
-  return p?.source ?? ''
-})
-const oversizedAreas = computed<string[]>(() => {
-  const p = areasPreview.value as (CampaignAreasPreview & { oversized_areas?: string[] }) | null
-  return p?.oversized_areas ?? []
-})
-function areaKeyOf(a: CampaignAreaPreview): string {
-  return (a as CampaignAreaPreview & { area_key?: string }).area_key ?? ''
-}
+const previewSource = computed(() => areasPreview.value?.source ?? '')
+const oversizedAreas = computed<string[]>(() => areasPreview.value?.oversized_areas ?? [])
 
 /** Scope the campaign to one branch of the area map ('' = everything). */
 const areaPrefix = ref('')
@@ -93,13 +79,56 @@ const areaPrefix = ref('')
 const areaPrefixOptions = computed<string[]>(() => {
   const prefixes = new Set<string>()
   for (const a of areasPreview.value?.areas ?? []) {
-    const key = areaKeyOf(a)
-    if (!key) continue
-    const segments = key.split('/')
+    if (!a.area_key) continue
+    const segments = a.area_key.split('/')
     for (let i = 1; i <= segments.length; i++) prefixes.add(segments.slice(0, i).join('/'))
   }
   return [...prefixes].sort()
 })
+
+// ── Live prefix filtering — refetch the preview scoped to the typed prefix ───
+
+/** The preview filtered by the typed prefix; null while empty prefix/unloaded. */
+const prefixPreview = ref<CampaignAreasPreview | null>(null)
+const loadingPrefix = ref(false)
+let prefixDebounce: number | undefined
+let prefixGeneration = 0
+
+watch(areaPrefix, (prefix) => {
+  window.clearTimeout(prefixDebounce)
+  const trimmed = prefix.trim()
+  if (!trimmed) {
+    prefixPreview.value = null
+    loadingPrefix.value = false
+    prefixGeneration++
+    return
+  }
+  loadingPrefix.value = true
+  prefixDebounce = window.setTimeout(async () => {
+    const gen = ++prefixGeneration
+    try {
+      const p = await campaigns.fetchAreas(props.repositoryUid, trimmed)
+      if (gen === prefixGeneration) prefixPreview.value = p
+    } catch {
+      if (gen === prefixGeneration) prefixPreview.value = null
+    } finally {
+      if (gen === prefixGeneration) loadingPrefix.value = false
+    }
+  }, 300)
+})
+
+onBeforeUnmount(() => window.clearTimeout(prefixDebounce))
+
+const prefixSummary = computed(() => {
+  const p = prefixPreview.value
+  if (!p || !p.areas.length) return ''
+  const n = (x: number) => x.toLocaleString('en-US')
+  return `Prefix matches ${p.areas.length} area${p.areas.length === 1 ? '' : 's'} · ${n(p.total_files)} files`
+})
+
+const prefixMatchesNothing = computed(
+  () => !!areaPrefix.value.trim() && !loadingPrefix.value && prefixPreview.value?.areas.length === 0,
+)
 
 watch(
   () => props.open,
@@ -110,6 +139,7 @@ watch(
     k.value = 3
     title.value = ''
     areaPrefix.value = ''
+    prefixPreview.value = null
     // Best-effort preview — creation works fine without it.
     areasPreview.value = null
     areasOpen.value = false
@@ -177,8 +207,6 @@ async function create() {
   if (!canCreate.value) return
   creating.value = true
   try {
-    // Cast: area_prefix is the area-map extension of CreateCampaignRequest —
-    // harmless for older backends, which simply ignore it.
     const campaign = await campaigns.create(props.repositoryUid, {
       template: template.value,
       lens_keys: lensKeys.value,
@@ -186,7 +214,7 @@ async function create() {
       k: template.value === 'rotation' ? k.value : undefined,
       title: title.value.trim() || undefined,
       area_prefix: areaPrefix.value.trim(),
-    } as CreateCampaignRequest)
+    })
     emit('created', campaign)
     emit('update:open', false)
   } catch (e) {
@@ -369,7 +397,13 @@ async function create() {
           <datalist id="campaign-area-prefix-options">
             <option v-for="p in areaPrefixOptions" :key="p" :value="p" />
           </datalist>
-          <p class="text-xs text-muted-foreground">
+          <p v-if="loadingPrefix" class="text-xs text-muted-foreground">Sizing prefix…</p>
+          <p v-else-if="prefixMatchesNothing" class="flex items-start gap-1.5 text-xs text-destructive/80">
+            <TriangleAlert class="mt-0.5 h-3 w-3 shrink-0" />
+            Prefix matches no areas — the campaign would only run global sweeps.
+          </p>
+          <p v-else-if="prefixSummary" class="text-xs text-muted-foreground">{{ prefixSummary }}</p>
+          <p v-else class="text-xs text-muted-foreground">
             Limit the sweep to areas under this key prefix. Empty = the whole map.
           </p>
         </div>

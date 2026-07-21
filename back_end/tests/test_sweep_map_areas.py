@@ -53,6 +53,36 @@ def test_map_areas_runs_under_the_discover_stage():
     assert stage_for_agent_key("map-areas", "ask") == "discover"
 
 
+def test_map_areas_body_carries_the_boundary_tests():
+    body = _AGENT_BASES["map-areas"]["body"]
+    flat = " ".join(body.split())
+    assert "# Boundary tests" in body
+    assert "ONE sentence without 'and also'" in flat
+    assert "crossing traffic is narrow" in flat
+    assert "files that change together belong together" in flat
+    assert "distinct mindset from its neighbors" in flat
+
+
+def test_map_areas_body_prefers_nested_children_over_dash_compounds():
+    flat = " ".join(_AGENT_BASES["map-areas"]["body"].split())
+    assert "child keys under a scopeless parent" in flat
+    assert '"backend/domains-delivery"' in flat
+    assert "bundles small sibling leaves into one run automatically" in flat
+
+
+def test_map_areas_body_sets_the_feature_bar():
+    flat = " ".join(_AGENT_BASES["map-areas"]["body"].split())
+    assert "spans at least two subsystems" in flat
+    assert "never create feature echoes of single subsystems" in flat
+    assert "infrastructure plumbing" in flat
+
+
+def test_map_areas_body_links_docs_via_doc_uids():
+    flat = " ".join(_AGENT_BASES["map-areas"]["body"].split())
+    assert "doc_uids" in flat
+    assert "the metadata listing carries each page's uid" in flat
+
+
 def test_tooling_contract_names_the_tools():
     flat = " ".join(_MAP_AREAS_TOOLING_CONTRACT.split())
     assert "propose_area_edit" in flat
@@ -122,6 +152,7 @@ async def test_existing_areas_listing_first_run_fallback(monkeypatch):
 async def test_docs_metadata_listing_never_leaks_bodies(monkeypatch):
     docs = [
         SimpleNamespace(
+            uid="doc-queues",
             repository_uid="r1",
             slug="backend/queues",
             title="Queue workers",
@@ -130,6 +161,7 @@ async def test_docs_metadata_listing_never_leaks_bodies(monkeypatch):
             summary="SECRET-SUMMARY-CANARY",
         ),
         SimpleNamespace(
+            uid="doc-other",
             repository_uid="OTHER",
             slug="other",
             title="Other repo",
@@ -140,7 +172,11 @@ async def test_docs_metadata_listing_never_leaks_bodies(monkeypatch):
     ]
     monkeypatch.setattr(sweep, "Doc", SimpleNamespace(nodes=_Nodes(docs)))
     out = await sweep._docs_metadata_listing("r1")
-    assert "- backend/queues: Queue workers :: watch_paths: back_end/domains/queues/" in out
+    # The uid rides along so area proposals can link pages via doc_uids.
+    assert (
+        "- backend/queues (uid=doc-queues): Queue workers "
+        ":: watch_paths: back_end/domains/queues/" in out
+    )
     # Anti-circularity: metadata only — bodies/summaries ride read_doc.
     assert "DISTINCTIVE-BODY-CANARY" not in out
     assert "SECRET-SUMMARY-CANARY" not in out

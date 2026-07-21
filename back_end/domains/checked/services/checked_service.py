@@ -126,6 +126,36 @@ async def record_for_run(*, run_uid: str) -> list[Checked]:
     return stamps
 
 
+async def stamps_for_paths(
+    repository_uid: str, paths: list[str], *, limit: int = 10
+) -> list[Checked]:
+    """The repo's Checked stamps whose covered_paths overlap `paths`
+    ("/"-boundary prefix semantics, either direction), newest first.
+
+    Backs the area detail's coverage strip: an area's scope paths in, the
+    last looks that touched them out."""
+    from domains.docs.services.doc_freshness import watches_path
+
+    wanted = [str(p) for p in paths if p]
+    if not wanted:
+        return []
+
+    def _overlaps(c: Checked) -> bool:
+        for covered in (str(p) for p in (c.covered_paths or []) if p):
+            for p in wanted:
+                if watches_path([p], covered) or watches_path([covered], p):
+                    return True
+        return False
+
+    rows = [
+        c
+        for c in await Checked.nodes.all()
+        if c.repository_uid == repository_uid and _overlaps(c)
+    ]
+    rows.sort(key=lambda c: _dt(c.checked_at), reverse=True)
+    return rows[: max(limit, 0)]
+
+
 async def freshness(*, repository_uid: str) -> list[dict[str, Any]]:
     """Per doc page (plus the repo-level scope): the latest stamp and whether
     the code moved past it. `never checked` scopes are included with
