@@ -28,6 +28,7 @@ from domains.platform_tools import (
     list_docs,
     list_interests,
     list_news_items,
+    propose_area_edit,
     propose_doc_edit,
     read_doc,
     search_memory,
@@ -57,6 +58,11 @@ _TOOLS: dict[str, tuple[_ToolFn, str]] = {
         propose_doc_edit,
         "propose a full replacement body for a documentation page; lands as "
         "a pending edit for human review",
+    ),
+    "propose_area_edit": (
+        propose_area_edit,
+        "propose one area (subsystem | feature | ignore) for the "
+        "repository's area map; lands as a pending edit for human review",
     ),
     "confirm_doc_current": (
         confirm_doc_current,

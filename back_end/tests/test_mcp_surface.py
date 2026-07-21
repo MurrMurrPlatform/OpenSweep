@@ -83,6 +83,7 @@ def test_platform_tools_are_tracking_safe():
         "opensweep_platform_create_finding",
         "opensweep_platform_update_finding",
         "opensweep_platform_propose_doc_edit",
+        "opensweep_platform_propose_area_edit",
         "opensweep_platform_confirm_doc_current",
         "opensweep_platform_write_memory",
         "opensweep_platform_attach_artifact",

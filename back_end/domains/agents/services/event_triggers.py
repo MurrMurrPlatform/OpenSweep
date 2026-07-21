@@ -161,15 +161,17 @@ async def auto_run_candidates_for_change(
 async def refresh_docs_for_change(
     *, repository_uid: str, changed_paths: list[str], source: str = ""
 ) -> None:
-    """Tie a set of changed paths to doc upkeep: mark the watching Doc pages
-    stale, then auto-run any on-event doc bindings the autonomy permits.
-    Shared by the GitHub push webhook and the write-run finalize so
-    freshness fires the moment code changes — whether the change arrives as a
-    redelivered push or as a run that just pushed. Best-effort: never raises.
+    """Tie a set of changed paths to knowledge upkeep: mark the watching Doc
+    pages and the covering Areas stale, then auto-run any on-event doc
+    bindings the autonomy permits. Shared by the GitHub push webhook and the
+    write-run finalize so freshness fires the moment code changes — whether
+    the change arrives as a redelivered push or as a run that just pushed.
+    Best-effort: never raises.
 
-    Idempotent across both callers: mark_docs_stale re-stamps harmlessly and
-    auto_run_candidates_for_change skips bindings already in flight, so
-    the webhook that follows a write-run push never double-dispatches.
+    Idempotent across both callers: mark_docs_stale / mark_areas_stale
+    re-stamp harmlessly and auto_run_candidates_for_change skips bindings
+    already in flight, so the webhook that follows a write-run push never
+    double-dispatches.
     """
     changed = [p for p in (str(p).strip() for p in changed_paths) if p]
     if not changed:
@@ -188,6 +190,21 @@ async def refresh_docs_for_change(
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             f"doc freshness{label} failed for {repository_uid}: {exc}",
+            extra={"tag": "freshness"},
+        )
+    try:
+        from domains.areas.services.area_freshness import mark_areas_stale
+
+        stale_areas = await mark_areas_stale(repository_uid, changed)
+        if stale_areas.areas_marked:
+            logger.info(
+                f"area freshness{label}: {stale_areas.areas_marked} areas marked "
+                f"stale for {repository_uid}",
+                extra={"tag": "freshness"},
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            f"area freshness{label} failed for {repository_uid}: {exc}",
             extra={"tag": "freshness"},
         )
     try:

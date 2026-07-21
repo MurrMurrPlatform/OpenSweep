@@ -41,6 +41,7 @@ PLATFORM_WRITE_TOOLS = (
     "create_finding",
     "update_finding",
     "propose_doc_edit",
+    "propose_area_edit",
     "confirm_doc_current",
     "write_memory",
     "attach_artifact",

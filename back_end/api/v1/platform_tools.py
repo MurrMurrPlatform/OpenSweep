@@ -21,6 +21,7 @@ from domains.findings.schemas import (
     SourcePath,
 )
 from domains.platform_tools.add_analysis_note import add_analysis_note
+from domains.platform_tools.areas_tools import propose_area_edit
 from domains.platform_tools.ask_question import ask_question
 from domains.platform_tools.attach_artifact import attach_artifact
 from domains.platform_tools.complete_run import complete_run
@@ -120,6 +121,19 @@ class ProposeDocEditRequest(BaseModel):
     title: str = ""
     summary: str = ""
     watch_paths: list[str] = Field(default_factory=list)
+    source_run_uid: Optional[str] = None
+    executor: str = "manual"
+
+
+class ProposeAreaEditRequest(BaseModel):
+    repository_uid: str
+    key: str
+    kind: str = "subsystem"
+    title: str = ""
+    scope_paths: list[str] = Field(default_factory=list)
+    spec: str = ""
+    rationale: str = ""
+    doc_uids: list[str] = Field(default_factory=list)
     source_run_uid: Optional[str] = None
     executor: str = "manual"
 
@@ -483,6 +497,20 @@ async def http_propose_doc_edit(
         "x-opensweep-run-uid"
     )
     return await _invoke_platform_tool("propose_doc_edit", propose_doc_edit, **data)
+
+
+@router.post("/propose-area-edit", operation_id="opensweep_platform_propose_area_edit")
+async def http_propose_area_edit(
+    req: ProposeAreaEditRequest,
+    request: Request,
+    user: UserDTO = Depends(get_current_user),
+):
+    await require_tool_repo_access(request, user, req.repository_uid)
+    data = req.model_dump()
+    data["source_run_uid"] = data.get("source_run_uid") or request.headers.get(
+        "x-opensweep-run-uid"
+    )
+    return await _invoke_platform_tool("propose_area_edit", propose_area_edit, **data)
 
 
 @router.post("/write-memory", operation_id="opensweep_platform_write_memory")
