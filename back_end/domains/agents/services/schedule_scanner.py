@@ -163,8 +163,25 @@ async def scan_and_dispatch(*, now: datetime | None = None) -> ScanResult:
                 sa.last_scheduled_at = moment
                 await sa.save()
                 continue
-            from domains.runs.services.sweep import run_map_areas
+            from domains.runs.services.sweep import (
+                map_areas_run_in_flight,
+                run_map_areas,
+            )
 
+            # Same guard as the API endpoint: one map-areas run per repo —
+            # a second would double-propose the same area tree.
+            if await map_areas_run_in_flight(sa.repository_uid):
+                sa.last_scheduled_at = moment
+                await sa.save()
+                logger.info(
+                    f"schedule map-areas sa={sa.uid} expr={payload}: "
+                    "already in flight — skipping tick",
+                    extra={"tag": "schedule"},
+                )
+                continue
+            # On failure, STAMP anyway: this is a monthly maintenance job —
+            # retrying every beat would flood the audit log for a month. The
+            # next cron slot or a manual Map-areas click is the retry path.
             try:
                 mapped = await run_map_areas(
                     repository_uid=sa.repository_uid,
@@ -173,11 +190,27 @@ async def scan_and_dispatch(*, now: datetime | None = None) -> ScanResult:
                 )
             except Exception as exc:  # noqa: BLE001 — one bad repo never stops the scan
                 result.errors.append(f"{sa.uid}: {type(exc).__name__}: {exc}")
+                sa.last_scheduled_at = moment
+                await sa.save()
+                logger.warning(
+                    f"schedule map-areas sa={sa.uid} expr={payload} failed: "
+                    f"{type(exc).__name__}: {exc} — tick consumed, next cron "
+                    "slot (or a manual Map areas) retries",
+                    extra={"tag": "schedule"},
+                )
                 continue
             if not mapped.run_uid:
-                # Dispatch failed (errors captured on the result): don't
-                # stamp — the binding retries on the next tick.
+                # Dispatch failed (errors captured on the result): stamp the
+                # tick anyway — see the retry rationale above.
                 result.errors.extend(f"{sa.uid}: {e}" for e in mapped.errors)
+                sa.last_scheduled_at = moment
+                await sa.save()
+                logger.warning(
+                    f"schedule map-areas sa={sa.uid} expr={payload} dispatched "
+                    "no run — tick consumed, next cron slot (or a manual "
+                    "Map areas) retries",
+                    extra={"tag": "schedule"},
+                )
                 continue
             sa.last_scheduled_at = moment
             await sa.save()

@@ -20,7 +20,7 @@ from domains.areas.schemas import (
     UpdateAreaRequest,
 )
 from domains.areas.services import area_service
-from domains.runs.services.active_runs import active_runs_for, conflict_detail
+from domains.runs.services.active_runs import conflict_detail
 from domains.tenancy import require_repo_in_org
 from domains.users.schemas import UserDTO
 from infrastructure.kill_switch import KillSwitchActiveError, assert_runnable
@@ -161,30 +161,23 @@ async def run_map_areas_endpoint(
     except KillSwitchActiveError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    # In-flight guard: one map-areas run per repository at a time — a second
-    # run would double-propose the same area tree. These runs carry the
-    # map-areas system agent's uid as their agent provenance.
-    from domains.agents.services.registry import system_agent_by_key
+    # Lazy import: the sweep orchestration lands separately; the router must
+    # mount regardless of import order (and tests monkeypatch this seam).
+    from domains.runs.services.sweep import map_areas_run_in_flight, run_map_areas
 
-    map_agent = await system_agent_by_key("map-areas")
-    candidates = await active_runs_for(repository_uid=repository_uid)
-    in_flight = [
-        r
-        for r in candidates
-        if map_agent is not None and (r.agent_uid or "") == map_agent.uid
-    ]
-    if in_flight:
+    # In-flight guard: one map-areas run per repository at a time — a second
+    # run would double-propose the same area tree. The helper matches by the
+    # map-areas system agent's provenance and logs when the guard is inert
+    # (agent not seeded); the schedule scanner shares it.
+    in_flight = await map_areas_run_in_flight(repository_uid)
+    if in_flight is not None:
         raise HTTPException(
             status_code=409,
             detail=conflict_detail(
                 "a map-areas run is already in progress for this repository",
-                in_flight[0],
+                in_flight,
             ),
         )
-
-    # Lazy import: the sweep orchestration lands separately; the router must
-    # mount regardless of import order (and tests monkeypatch this seam).
-    from domains.runs.services.sweep import run_map_areas
 
     result = await run_map_areas(repository_uid=repository_uid, triggered_by=user.uid)
     return MapAreasResultDTO(

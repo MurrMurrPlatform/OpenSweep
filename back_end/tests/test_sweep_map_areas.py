@@ -270,7 +270,12 @@ def scanner_seams(monkeypatch):
         captured["run_map_areas"] = kwargs
         return MapAreasResult(repository_uid=kwargs["repository_uid"], run_uid="run1")
 
+    async def fake_in_flight(repository_uid):
+        captured["in_flight_checked"] = repository_uid
+        return captured.get("in_flight_run")
+
     monkeypatch.setattr(sweep, "run_map_areas", fake_run_map_areas)
+    monkeypatch.setattr(sweep, "map_areas_run_in_flight", fake_in_flight)
     captured["sa"] = sa
     return captured
 
@@ -295,7 +300,10 @@ async def test_disabled_autonomy_skips_but_stamps(scanner_seams):
     assert scanner_seams["sa"].last_scheduled_at == NOW  # tick consumed
 
 
-async def test_dispatch_failure_is_an_error_and_not_stamped(scanner_seams, monkeypatch):
+async def test_dispatch_failure_is_an_error_and_still_stamps(scanner_seams, monkeypatch):
+    """Failure consumes the tick: monthly maintenance must not retry every
+    beat for a month — the next cron slot (or a manual click) is the retry."""
+
     async def failed(**kwargs):
         return MapAreasResult(
             repository_uid=kwargs["repository_uid"],
@@ -306,7 +314,30 @@ async def test_dispatch_failure_is_an_error_and_not_stamped(scanner_seams, monke
     result = await schedule_scanner.scan_and_dispatch(now=NOW)
     assert result.dispatched == 0
     assert any("provider exploded" in e for e in result.errors)
-    assert scanner_seams["sa"].last_scheduled_at is None  # retried next tick
+    assert scanner_seams["sa"].last_scheduled_at == NOW  # tick consumed anyway
+
+
+async def test_dispatch_exception_is_an_error_and_still_stamps(
+    scanner_seams, monkeypatch
+):
+    async def boom(**kwargs):
+        raise RuntimeError("neo down")
+
+    monkeypatch.setattr(sweep, "run_map_areas", boom)
+    result = await schedule_scanner.scan_and_dispatch(now=NOW)
+    assert result.dispatched == 0
+    assert any("RuntimeError" in e for e in result.errors)
+    assert scanner_seams["sa"].last_scheduled_at == NOW  # tick consumed anyway
+
+
+async def test_in_flight_run_skips_the_tick_but_stamps(scanner_seams):
+    scanner_seams["in_flight_run"] = SimpleNamespace(uid="run-busy")
+    result = await schedule_scanner.scan_and_dispatch(now=NOW)
+    assert result.dispatched == 0
+    assert result.errors == []
+    assert "run_map_areas" not in scanner_seams  # nothing double-proposed
+    assert scanner_seams["in_flight_checked"] == "repo1"
+    assert scanner_seams["sa"].last_scheduled_at == NOW  # tick consumed
 
 
 # ── trigger_scheduled_agent routing ─────────────────────────────────────────

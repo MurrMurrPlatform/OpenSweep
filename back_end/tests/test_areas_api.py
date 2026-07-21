@@ -178,11 +178,14 @@ def _patch_map_areas_env(monkeypatch, *, agent=None, active_runs=()):
         return agent
 
     monkeypatch.setattr(areas_mod, "assert_runnable", fake_assert_runnable)
-    monkeypatch.setattr(areas_mod, "active_runs_for", fake_active_runs_for)
 
+    # The guard lives in sweep.map_areas_run_in_flight now (shared with the
+    # schedule scanner); it resolves these two seams lazily at call time.
     import domains.agents.services.registry as registry
+    import domains.runs.services.active_runs as active_runs_mod
 
     monkeypatch.setattr(registry, "system_agent_by_key", fake_system_agent_by_key)
+    monkeypatch.setattr(active_runs_mod, "active_runs_for", fake_active_runs_for)
 
 
 async def test_map_areas_dispatches_via_lazy_import_seam(monkeypatch):
@@ -224,6 +227,32 @@ async def test_map_areas_409_when_in_flight(monkeypatch):
         await areas_mod.run_map_areas_endpoint("repo-a", user=_user())
     assert exc.value.status_code == 409
     assert exc.value.detail["run_uid"] == "run-busy"
+
+
+async def test_map_areas_guard_inert_when_agent_unseeded_still_dispatches(monkeypatch):
+    """No seeded map-areas agent ⇒ the guard is inert (logged), never a 409 —
+    a missing seed must not block mapping."""
+    busy = SimpleNamespace(uid="run-busy", agent_uid="agent-map", scheduled_agent_uid="")
+    _patch_map_areas_env(monkeypatch, agent=None, active_runs=[busy])
+
+    async def fake_run_map_areas(*, repository_uid, triggered_by="", **kwargs):
+        return SimpleNamespace(repository_uid=repository_uid, run_uid="run-9", errors=[], summary="")
+
+    import domains.runs.services.sweep as sweep_mod
+
+    monkeypatch.setattr(sweep_mod, "run_map_areas", fake_run_map_areas, raising=False)
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        sweep_mod,
+        "logger",
+        SimpleNamespace(warning=lambda msg, **kw: warnings.append(msg)),
+    )
+
+    result = await areas_mod.run_map_areas_endpoint("repo-a", user=_user())
+    assert result.run_uid == "run-9"
+    assert any(
+        "map-areas in-flight guard inactive for repo-a" in w for w in warnings
+    )
 
 
 async def test_map_areas_409_when_kill_switch_active(monkeypatch):

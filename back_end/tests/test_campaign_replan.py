@@ -259,6 +259,44 @@ async def test_preview_areas_uses_the_area_map_when_present(preview_seams):
     assert out["oversized_areas"] == []
 
 
+async def test_preview_areas_features_only_map_plans_from_docs_but_keeps_features(
+    preview_seams,
+):
+    """Areas exist but none are enabled subsystem leaves: the partition
+    flips to docs (with the flip explained), yet the map's feature areas
+    ride along so full-template campaigns keep their spec-audit parts."""
+    preview_seams.docs = [
+        {"uid": "d1", "slug": "backend/api", "title": "API", "watch_paths": ["src/api"]}
+    ]
+    preview_seams.map_inputs = {
+        "subsystem_leaves": [],
+        "features": [
+            {
+                "area_key": "features/checkout",
+                "title": "Checkout",
+                "scope_paths": ["src/api/a.py"],
+                "doc_uids": [],
+            }
+        ],
+        "ignore_scopes": [],
+    }
+    preview_seams.tree = (["src/api/a.py", "src/api/b.py"], "")
+
+    out = await campaign_service.preview_areas("repo1")
+
+    assert out["source"] == "docs"
+    assert (
+        "area map present but has no enabled subsystem leaves — planned from docs"
+        in out["degraded"]
+    )
+    by_key = {a["area_key"]: a for a in out["areas"]}
+    assert by_key["features/checkout"]["kind"] == "feature"
+    assert by_key["features/checkout"]["file_count"] == 1
+    # The docs partition owns the subsystem side (area_key "" = docs-derived).
+    assert by_key[""]["title"] == "API"
+    assert by_key[""]["kind"] == "subsystem"
+
+
 async def test_preview_areas_passes_degraded_reason_through(preview_seams):
     preview_seams.docs = [
         {"uid": "d1", "slug": "backend/api", "title": "API", "watch_paths": ["src/api"]}

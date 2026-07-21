@@ -139,6 +139,32 @@ async def run_generate_docs(
     return result
 
 
+async def map_areas_run_in_flight(repository_uid: str):
+    """The active map-areas Run for this repository, or None (truthy = in
+    flight). One guard shared by the API endpoint (409 with the run's
+    detail) and the schedule scanner (skip the tick).
+
+    Map-areas runs carry the map-areas system agent's uid as their agent
+    provenance. When that agent was never seeded the guard is INERT —
+    logged, then treated as nothing-in-flight (fail-open: a missing seed
+    must not block mapping)."""
+    from domains.agents.services.registry import system_agent_by_key
+    from domains.runs.services.active_runs import active_runs_for
+
+    map_agent = await system_agent_by_key("map-areas")
+    if map_agent is None:
+        logger.warning(
+            f"map-areas in-flight guard inactive for {repository_uid}: "
+            "system agent not seeded",
+            extra={"tag": "areas"},
+        )
+        return None
+    candidates = await active_runs_for(repository_uid=repository_uid)
+    return next(
+        (r for r in candidates if (r.agent_uid or "") == map_agent.uid), None
+    )
+
+
 async def run_map_areas(
     *,
     repository_uid: str,

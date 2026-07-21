@@ -146,8 +146,10 @@ async def _doc_inputs(repository_uid: str) -> list[dict]:
 
 
 async def _area_map_inputs(repository_uid: str) -> dict | None:
-    """The repo's enabled Area map as planner inputs, or None when it has
-    no subsystem leaves — docs-derived planning stays the fallback.
+    """The repo's enabled Area map as planner inputs, or None when the repo
+    has NO enabled areas at all. subsystem_leaves may be empty (e.g. a
+    features-only map) — _plan_areas then partitions from the docs but
+    still carries the map's feature areas through.
 
     Files belong to subsystem LEAVES only (parents are groupings); feature
     areas overlay at ANY depth, so all enabled features come through."""
@@ -158,6 +160,8 @@ async def _area_map_inputs(repository_uid: str) -> dict | None:
         for a in await Area.nodes.all()
         if a.repository_uid == repository_uid and bool(a.enabled)
     ]
+    if not rows:
+        return None
     keys = [a.key for a in rows]
 
     def _leaf_dict(a) -> dict:
@@ -168,15 +172,12 @@ async def _area_map_inputs(repository_uid: str) -> dict | None:
             "doc_uids": list(a.doc_uids or []),
         }
 
-    subsystem_leaves = [
-        _leaf_dict(a)
-        for a in rows
-        if (a.kind or "subsystem") == "subsystem" and is_leaf(a.key, keys)
-    ]
-    if not subsystem_leaves:
-        return None
     return {
-        "subsystem_leaves": subsystem_leaves,
+        "subsystem_leaves": [
+            _leaf_dict(a)
+            for a in rows
+            if (a.kind or "subsystem") == "subsystem" and is_leaf(a.key, keys)
+        ],
         "features": [_leaf_dict(a) for a in rows if a.kind == "feature"],
         "ignore_scopes": sorted(
             {p for a in rows if a.kind == "ignore" for p in (a.scope_paths or [])}
@@ -191,18 +192,16 @@ async def _plan_areas(
     "area-map"|"docs", feature areas).
 
     The tree+partition half of planning — shared by the plan builder and
-    the no-persist preview endpoint. A repo with an enabled Area map plans
-    from its subsystem leaves; otherwise the docs' watch scopes."""
+    the no-persist preview endpoint. A repo whose enabled Area map has
+    subsystem leaves plans from them (source "area-map"); otherwise the
+    docs' watch scopes (source "docs"). A map WITHOUT subsystem leaves
+    (features-only) still contributes its feature areas on top of the
+    docs partition, with the flip explained in degraded_reason."""
     from domains.docs.services.doc_freshness import watches_path
 
-    file_paths, degraded_reason = await _file_tree_paths(repo)
-    map_inputs = await _area_map_inputs(repository_uid)
-    if map_inputs is not None:
-        areas = planner.areas_from_map(
-            map_inputs["subsystem_leaves"], map_inputs["ignore_scopes"], file_paths
-        )
-        feature_areas = []
-        for f in map_inputs["features"]:
+    def _count_features(features: list[dict], file_paths: list[str]) -> list[dict]:
+        out = []
+        for f in features:
             fa = dict(f)
             fa["file_count"] = (
                 sum(
@@ -213,12 +212,29 @@ async def _plan_areas(
                 if file_paths
                 else None
             )
-            feature_areas.append(fa)
+            out.append(fa)
+        return out
+
+    file_paths, degraded_reason = await _file_tree_paths(repo)
+    map_inputs = await _area_map_inputs(repository_uid)
+    if map_inputs is not None and map_inputs["subsystem_leaves"]:
+        areas = planner.areas_from_map(
+            map_inputs["subsystem_leaves"], map_inputs["ignore_scopes"], file_paths
+        )
+        feature_areas = _count_features(map_inputs["features"], file_paths)
         return areas, degraded_reason, len(file_paths), "area-map", feature_areas
 
     docs = await _doc_inputs(repository_uid)
     areas = planner.normalize_areas(docs, file_paths)
-    return areas, degraded_reason, len(file_paths), "docs", []
+    feature_areas: list[dict] = []
+    if map_inputs is not None:
+        # Areas exist but none are enabled subsystem leaves: partition from
+        # the docs, keep the map's features (full-template campaigns keep
+        # their spec-audit parts), and say why the source flipped.
+        feature_areas = _count_features(map_inputs["features"], file_paths)
+        note = "area map present but has no enabled subsystem leaves — planned from docs"
+        degraded_reason = f"{degraded_reason}; {note}" if degraded_reason else note
+    return areas, degraded_reason, len(file_paths), "docs", feature_areas
 
 
 async def _plan_parts(

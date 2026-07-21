@@ -333,6 +333,10 @@ def areas_from_map(
     leaf is only FLAGGED (`oversized`) so the map can be refined. Each
     output dict carries its `area_key`.
 
+    Ignore scopes are subtracted from leaf counts and the remainder —
+    non-auditable files get no run scoped to them, even when a leaf scope
+    also covers them.
+
     The remainder — files matched by no leaf scope and no ignore scope —
     has no semantic owner, so it keeps the mechanical split/merge treatment
     of the docs planner. Remainder areas carry area_key "". When the tree
@@ -350,7 +354,9 @@ def areas_from_map(
         ]
         count: int | None = None
         if paths:
-            matched = [f for f in paths if watches_path(scope, f)]
+            matched = [
+                f for f in paths if watches_path(scope, f) and not watches_path(ignores, f)
+            ]
             covered.update(matched)
             count = len(matched)
         area = _area(

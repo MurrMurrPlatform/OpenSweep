@@ -24,6 +24,7 @@ from domains.lenses.services.lens_service import lens_checklist
 from domains.run_policies.services.effort import ensure_policy_for_effort
 from domains.runs.schemas import RunTrigger, normalize_effort
 from domains.runs.services.lifecycle import LifecycleError, trigger_run
+from infrastructure.audit import write_audit
 from logging_config import logger
 
 # How many escalated findings a global sweep's digest carries.
@@ -121,7 +122,9 @@ async def _dispatch_feature(campaign, part: dict) -> str:
     contract, not the plan-time snapshot. Missing/disabled area or empty
     spec degrades to a plain area dispatch — NEVER raises: part states are
     sticky (tick.plan_tick), so a raise here would fail the part forever
-    over a fixable map edit."""
+    over a fixable map edit. Degradation is made visible: an audit event is
+    written and the run's structural carries a note telling the agent the
+    spec contract could not be verified."""
     area_key = str(part.get("area_key") or "")
     area = (
         await area_service.get_area_by_key(campaign.repository_uid, area_key)
@@ -140,7 +143,26 @@ async def _dispatch_feature(campaign, part: dict) -> str:
             f"{area_key!r} {reason} — dispatching as a plain area part",
             extra={"tag": "campaigns"},
         )
-        return await _dispatch_area(campaign, part)
+        await write_audit(
+            kind="campaign.feature_part_degraded",
+            subject_uid=campaign.uid,
+            subject_type="Campaign",
+            repository_uid=campaign.repository_uid,
+            actor_uid="campaign",
+            payload={
+                "part": part.get("idx"),
+                "area_key": area_key,
+                "reason": reason,
+            },
+        )
+        spec_block = (
+            "## Note — feature spec unavailable\n"
+            f"This part was planned as a feature-spec audit of area "
+            f"'{area_key}', but that area {reason}. Audit the scope with the "
+            "lens checklist as a normal sweep; the spec contract could NOT "
+            "be verified — say so in your report."
+        )
+        return await _dispatch_area(campaign, part, spec_block=spec_block)
     spec_block = (
         "## Feature spec — verify the implementation matches this contract "
         "end-to-end\n\n" + spec

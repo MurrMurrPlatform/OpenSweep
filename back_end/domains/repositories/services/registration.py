@@ -35,6 +35,40 @@ def dedupe_slug(base: str, taken: set[str]) -> str:
     return f"{base}-{n}"
 
 
+async def seed_repo_defaults(repository_uid: str, *, slug: str = "") -> None:
+    """Best-effort per-repo seeding: conventions page + the scheduled-agent
+    bindings every repo starts with. Each seeder runs in its own try/except
+    so one failure neither skips the rest nor misattributes the log line —
+    a seeding hiccup must never fail repo creation (each seeder is
+    idempotent and recreated later by its own flow)."""
+    from logging_config import logger
+
+    from domains.agents.services.scheduled_agent_service import (
+        seed_audit_agents,
+        seed_audit_stale,
+        seed_keep_docs_current,
+        seed_map_areas,
+    )
+    from domains.docs.services.doc_service import seed_conventions_doc
+
+    seeders = [
+        ("conventions doc", seed_conventions_doc),
+        ("keep-docs-current", seed_keep_docs_current),
+        ("audit-stale", seed_audit_stale),
+        ("audit agents", seed_audit_agents),
+        ("map-areas", seed_map_areas),
+    ]
+    for name, seeder in seeders:
+        try:
+            await seeder(repository_uid)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                f"{name} seed failed for {slug or repository_uid}: "
+                f"{type(exc).__name__}: {exc}",
+                extra={"tag": "repositories"},
+            )
+
+
 async def register_github_repo(
     *,
     org_uid: str,
@@ -76,29 +110,9 @@ async def register_github_repo(
     await node.save()
     # KNOWLEDGE_V3: every repo starts with a pinned, empty conventions page
     # so agents always have a propose_doc_edit target (same as
-    # RepositoryService.create). Best-effort — a doc-seeding hiccup must not
+    # RepositoryService.create). Best-effort — a seeding hiccup must not
     # fail the registration (the `document` playbook recreates it later).
-    try:
-        from domains.docs.services.doc_service import seed_conventions_doc
-        from domains.agents.services.scheduled_agent_service import (
-            seed_audit_agents,
-            seed_audit_stale,
-            seed_keep_docs_current,
-            seed_map_areas,
-        )
-
-        await seed_conventions_doc(node.uid)
-        await seed_keep_docs_current(node.uid)
-        await seed_audit_stale(node.uid)
-        await seed_audit_agents(node.uid)
-        await seed_map_areas(node.uid)
-    except Exception as exc:  # noqa: BLE001
-        from logging_config import logger
-
-        logger.warning(
-            f"conventions page seed failed for {slug}: {type(exc).__name__}: {exc}",
-            extra={"tag": "repositories"},
-        )
+    await seed_repo_defaults(node.uid, slug=slug)
     await write_audit(
         kind="repository.registered",
         subject_uid=node.uid,

@@ -79,14 +79,16 @@ export const useAreaStore = defineStore('areas', () => {
 
   async function bulkAccept(uids: string[]): Promise<BulkAreaEditResult> {
     const result = await apiPost<BulkAreaEditResult>('/area-edits/bulk-accept', { uids })
-    const done = new Set(uids)
+    // Only drop the edits the server confirmed — failed ones stay reviewable.
+    const done = new Set(result.accepted ?? [])
     edits.value = edits.value.filter((e) => !done.has(e.uid))
     return result
   }
 
   async function bulkReject(uids: string[]): Promise<BulkAreaEditResult> {
     const result = await apiPost<BulkAreaEditResult>('/area-edits/bulk-reject', { uids })
-    const done = new Set(uids)
+    // Only drop the edits the server confirmed — failed ones stay reviewable.
+    const done = new Set(result.rejected ?? [])
     edits.value = edits.value.filter((e) => !done.has(e.uid))
     return result
   }

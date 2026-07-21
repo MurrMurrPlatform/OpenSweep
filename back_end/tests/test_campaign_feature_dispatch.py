@@ -1,7 +1,8 @@
 """Feature part dispatch — the Area's spec is loaded fresh and inlined
 between the lens checklist and the reporting contract; a missing/disabled/
 spec-less area degrades to a plain area dispatch (part states are sticky —
-a raise would fail the part forever)."""
+a raise would fail the part forever) with a visible degradation note in
+the structural and a campaign.feature_part_degraded audit event."""
 
 from types import SimpleNamespace
 
@@ -112,23 +113,46 @@ async def test_feature_part_structural_inlines_the_spec(seams, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "area",
+    ("area", "reason"),
     [
-        None,  # deleted since planning
-        SimpleNamespace(enabled=False, spec="stale"),  # disabled
-        SimpleNamespace(enabled=True, spec="   "),  # spec never written
+        (None, "not found"),  # deleted since planning
+        (SimpleNamespace(enabled=False, spec="stale"), "disabled"),  # disabled
+        (SimpleNamespace(enabled=True, spec="   "), "has no spec"),  # never written
     ],
 )
 async def test_degraded_feature_part_dispatches_as_plain_area_no_raise(
-    seams, monkeypatch, area
+    seams, monkeypatch, area, reason
 ):
     _area_stub(monkeypatch, area)
+    audits = []
+
+    async def fake_write_audit(**kwargs):
+        audits.append(kwargs)
+
+    monkeypatch.setattr(part_dispatch, "write_audit", fake_write_audit)
     c = _campaign()
     run_uid = await part_dispatch.dispatch_part(c, c.parts[0])
     assert run_uid == "run1"  # dispatched anyway — never raises
     structural = seams["compose"]["structural"]
     assert _SPEC_HEADING not in structural
+    # The degradation is visible to the agent: a note replaces the spec block.
+    assert "## Note — feature spec unavailable" in structural
+    assert (
+        "planned as a feature-spec audit of area 'features/checkout', "
+        f"but that area {reason}." in structural
+    )
+    assert "the spec contract could NOT be verified — say so in your report." in structural
     # Still a full area contract: scope + checklist + reporting.
     assert "Do not investigate outside this scope." in structural
     assert "## Audit lenses for this scope" in structural
     assert "lens_verdicts" in structural
+    # …and to operators: one campaign.feature_part_degraded audit event.
+    (audit,) = audits
+    assert audit["kind"] == "campaign.feature_part_degraded"
+    assert audit["subject_uid"] == "c1" and audit["subject_type"] == "Campaign"
+    assert audit["repository_uid"] == "repo1"
+    assert audit["payload"] == {
+        "part": 0,
+        "area_key": "features/checkout",
+        "reason": reason,
+    }

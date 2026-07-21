@@ -386,6 +386,13 @@ async def _repo_area_rows(repository_uid: str) -> list[dict]:
 
 
 async def accept_area_edit(uid: str, *, actor: str = "human") -> tuple[Area, list[str]]:
+    """Apply a pending AreaEdit (creating the Area for new-area proposals).
+
+    On an existing area, spec/scope_paths/doc_uids are FULL REPLACEMENT —
+    an empty value clears the field (the edit carries the area's next
+    shape). key/kind/title keep the existing value when the edit leaves
+    them empty; that IS intentional: an empty string there means "keep",
+    never "erase"."""
     e = await get_area_edit(uid)
     if e.status != "pending":
         raise HTTPException(status_code=409, detail=f"AreaEdit is {e.status}, not pending")
@@ -402,10 +409,8 @@ async def accept_area_edit(uid: str, *, actor: str = "human") -> tuple[Area, lis
             a.kind = e.kind
         if e.title:
             a.title = e.title
-        if e.scope_paths:
-            a.scope_paths = list(e.scope_paths)
-        if e.doc_uids:
-            a.doc_uids = list(e.doc_uids)
+        a.scope_paths = list(e.scope_paths or [])
+        a.doc_uids = list(e.doc_uids or [])
         a.updated_at = now
         _mark_reviewed(a, now)  # an accepted edit counts as a review
         await a.save()

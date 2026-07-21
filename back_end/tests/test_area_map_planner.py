@@ -72,11 +72,21 @@ def test_leaves_get_exclusive_counts_area_keys_and_a_remainder():
     assert sum(a["file_count"] for a in areas) == len(TREE)
 
 
-def test_ignore_scopes_are_subtracted_from_the_remainder():
-    areas = areas_from_map([_leaf("frontend", ["fe"])], ["vendor"], TREE)
-    remainder = next(a for a in areas if a["title"] == REMAINDER_TITLE)
-    assert remainder["file_count"] == 6  # be/* + README.md; vendor fenced off
+def test_ignore_scopes_are_subtracted_from_leaves_and_the_remainder():
+    areas = areas_from_map(
+        [_leaf("backend", ["be"]), _leaf("frontend", ["fe"])],
+        ["vendor", "be/api"],
+        TREE,
+    )
+    by_key = {a["area_key"]: a for a in areas}
+    # A file under BOTH a leaf and an ignore scope drops out of the leaf
+    # count — ignored files get no run scoped to them, anywhere.
+    assert by_key["backend"]["file_count"] == 2  # be/core only; be/api fenced off
+    remainder = by_key[""]
+    assert remainder["title"] == REMAINDER_TITLE
+    assert remainder["file_count"] == 1  # README.md; vendor + be/api fenced off
     assert "vendor" not in remainder["scope_paths"]
+    assert "be" not in remainder["scope_paths"]
 
 
 def test_oversized_leaf_is_flagged_never_split():

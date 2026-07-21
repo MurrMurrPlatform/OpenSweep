@@ -90,6 +90,12 @@ async function mapAreas() {
   mapping.value = true
   try {
     const result = await areaStore.mapNow(repoUid.value)
+    if (!result.run_uid) {
+      // The endpoint resolves 200 with errors captured on the result when
+      // dispatch fails (no provider, etc.) — that is a failure, not success.
+      toast.error('Map areas failed', result.errors?.join('; ') || result.summary)
+      return
+    }
     toast.success(
       'Map areas dispatched',
       result.summary || (result.run_uid ? `run ${result.run_uid.slice(0, 8)}` : undefined),
@@ -261,17 +267,21 @@ async function confirmResolveAll() {
     const result = action === 'accept' ? await areaStore.bulkAccept(uids) : await areaStore.bulkReject(uids)
     const errorEntries = Object.entries(result.errors ?? {})
     const warningEntries = Object.entries(result.warnings ?? {})
+    // Errors and warnings are independent: a batch can have both (some
+    // edits failed, others accepted with partition warnings) — show each.
     if (errorEntries.length) {
       toast.warn(
         `Some edits failed to ${action}`,
         errorEntries.map(([uid, msg]) => `${uid.slice(0, 8)}: ${msg}`).join('; '),
       )
-    } else if (warningEntries.length) {
+    }
+    if (warningEntries.length) {
       toast.warn(
-        `Accepted ${uids.length} edits with warnings`,
+        `Accepted ${result.accepted?.length ?? uids.length} edits with warnings`,
         warningEntries.map(([uid, ws]) => `${uid.slice(0, 8)}: ${ws.join('; ')}`).join(' · '),
       )
-    } else {
+    }
+    if (!errorEntries.length && !warningEntries.length) {
       toast.success(action === 'accept' ? `Accepted ${uids.length} edits` : `Rejected ${uids.length} edits`)
     }
     if (repoUid.value) {

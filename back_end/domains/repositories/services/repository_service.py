@@ -62,20 +62,12 @@ class RepositoryService:
         await r.save()
         # KNOWLEDGE_V3: every repo starts with a pinned, empty conventions
         # page so agents always have a propose_doc_edit target, plus the
-        # on-event "Keep docs current" Investigation (§9).
-        from domains.docs.services.doc_service import seed_conventions_doc
-        from domains.agents.services.scheduled_agent_service import (
-            seed_audit_agents,
-            seed_audit_stale,
-            seed_keep_docs_current,
-            seed_map_areas,
-        )
+        # on-event "Keep docs current" Investigation (§9). Best-effort,
+        # per-seeder — the repo row is already saved; a seeding hiccup must
+        # not turn creation into a 500.
+        from domains.repositories.services.registration import seed_repo_defaults
 
-        await seed_conventions_doc(r.uid)
-        await seed_keep_docs_current(r.uid)
-        await seed_audit_stale(r.uid)
-        await seed_audit_agents(r.uid)
-        await seed_map_areas(r.uid)
+        await seed_repo_defaults(r.uid, slug=r.slug)
         return _to_dto(r)
 
     async def update(

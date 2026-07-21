@@ -193,6 +193,25 @@ async def test_accept_applies_full_replacement_and_stamps_review(stores):
     assert e.status == "accepted" and e.resolved_by == "reviewer"
 
 
+async def test_accept_with_empty_scope_paths_clears_them(stores):
+    # Full replacement: an edit that carries no scope_paths/doc_uids CLEARS
+    # them — key/kind/title are the only keep-if-empty fields.
+    a = await area_service.create_area(
+        repository_uid="r1",
+        key="backend",
+        scope_paths=["back_end/"],
+        doc_uids=["doc-1"],
+    )
+    result = await area_service.propose_area_edit(
+        repository_uid="r1", proposed_spec="scopeless now", key="backend"
+    )
+    accepted, _warnings = await area_service.accept_area_edit(result["area_edit_uid"])
+    assert accepted is a
+    assert a.scope_paths == []
+    assert a.doc_uids == []
+    assert a.key == "backend" and a.kind == "subsystem"  # keep-if-empty fields intact
+
+
 async def test_accept_creates_area_for_new_area_proposal(stores):
     result = await area_service.propose_area_edit(
         repository_uid="r1",
