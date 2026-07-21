@@ -204,9 +204,13 @@ async def run_map_areas(
     try:
         existing_areas = await _existing_areas_listing(repository_uid)
         docs_listing = await _docs_metadata_listing(repository_uid)
+        # NO workflow-stage fallback here: the "discover" stage prompt is
+        # generate-docs guidance ("build the documentation page tree via
+        # propose_doc_edit") — composing it into a map run gives the agent
+        # two conflicting task briefs, and it sometimes follows the docs
+        # one (observed: a Map-areas run filing 25 DocEdits, 0 AreaEdits).
+        # The map-areas base + tooling contract are the whole brief.
         prompt_body = await load_agent_prompt_body(agent_uid)
-        if prompt_body is None:
-            prompt_body = await _workflow_prompt(repository_uid, "discover")
         composed = await _map_areas_intent(
             repository_uid=repository_uid,
             existing_areas_listing=existing_areas,

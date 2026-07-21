@@ -202,8 +202,12 @@ def dispatch_seams(monkeypatch):
         return None
 
     async def fake_workflow(repository_uid, stage):
-        captured["workflow_stage"] = stage
-        return None
+        # run_map_areas must NEVER consult the workflow stage prompt: the
+        # "discover" stage guidance is generate-docs prose ("build the
+        # documentation page tree via propose_doc_edit") — composing it in
+        # gave the mapping agent two conflicting briefs (observed in prod:
+        # a Map-areas run filing 25 DocEdits, 0 AreaEdits).
+        raise AssertionError("map-areas must not fall back to the workflow prompt")
 
     async def fake_areas(repository_uid):
         return AREAS_LISTING
@@ -248,6 +252,9 @@ async def test_run_map_areas_composes_and_triggers_one_ask_run(dispatch_seams):
     assert "## Doc tree (metadata)" in compose["structural"]
     assert DOCS_LISTING in compose["structural"]
 
+    # No workflow-prompt fallback: prompt_body stays None (agent override only).
+    assert compose["prompt_body"] is None
+
     trigger = dispatch_seams["trigger"]
     assert trigger["intent"] == "COMPOSED"
     assert trigger["playbook"] == "ask"
@@ -259,7 +266,6 @@ async def test_run_map_areas_composes_and_triggers_one_ask_run(dispatch_seams):
     assert trigger["triggered_by"] == "map-areas"
 
     assert dispatch_seams["audit"]["kind"] == "sweep.map_areas_dispatched"
-    assert dispatch_seams["workflow_stage"] == "discover"
 
 
 async def test_run_map_areas_captures_dispatch_failure(dispatch_seams, monkeypatch):
