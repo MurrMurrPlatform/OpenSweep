@@ -94,6 +94,16 @@ export const useAreaStore = defineStore('areas', () => {
   }
 
   /** One LLM run that proposes the area map (409 when already running). */
+  /** Destructive: deletes every area + edit for the repo. */
+  async function resetAll(repoUid: string): Promise<{ areas_deleted: number; edits_deleted: number }> {
+    const result = await apiPost<{ areas_deleted: number; edits_deleted: number }>(
+      `/repositories/${repoUid}/areas/reset`,
+    )
+    areas.value = []
+    edits.value = []
+    return result
+  }
+
   async function mapNow(repoUid: string): Promise<MapAreasResponse> {
     return apiPost<MapAreasResponse>(`/repositories/${repoUid}/sweep/map-areas`)
   }
@@ -112,5 +122,6 @@ export const useAreaStore = defineStore('areas', () => {
     bulkAccept,
     bulkReject,
     mapNow,
+    resetAll,
   }
 })

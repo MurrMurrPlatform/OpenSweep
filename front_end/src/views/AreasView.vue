@@ -191,6 +191,27 @@ async function saveEdit() {
 
 // ── Delete ───────────────────────────────────────────────────────────────────
 
+// ── Reset (destructive: wipe the whole map) ──────────────────────────────────
+const resetOpen = ref(false)
+const resetting = ref(false)
+
+async function confirmReset() {
+  if (!repoUid.value) return
+  resetOpen.value = false
+  resetting.value = true
+  try {
+    const result = await areaStore.resetAll(repoUid.value)
+    toast.success(
+      'Area map deleted',
+      `${result.areas_deleted} area${result.areas_deleted === 1 ? '' : 's'} and ${result.edits_deleted} edit${result.edits_deleted === 1 ? '' : 's'} removed. Campaigns plan from docs until a new map is accepted.`,
+    )
+  } catch (e: unknown) {
+    toast.error('Reset failed', e instanceof Error ? e.message : String(e))
+  } finally {
+    resetting.value = false
+  }
+}
+
 const deleteOpen = ref(false)
 const pendingDelete = ref<AreaDTO | null>(null)
 
@@ -308,6 +329,17 @@ function editHeading(edit: AreaEditDTO): string {
       title="Areas"
       subtitle="The reviewed audit partition: path-keyed areas that carry what to check where. Agents propose the map; every change lands here for review."
     >
+      <Button
+        v-if="areaStore.areas.length || areaStore.edits.length"
+        size="sm"
+        variant="outline"
+        class="text-destructive hover:text-destructive"
+        :loading="resetting"
+        title="Delete every area and pending edit for this repository."
+        @click="resetOpen = true"
+      >
+        Reset map…
+      </Button>
       <Button
         size="sm"
         :loading="mapping"
@@ -611,6 +643,26 @@ function editHeading(edit: AreaEditDTO): string {
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction @click="confirmResolveAll">
             {{ pendingBulkAction === 'accept' ? 'Accept all' : 'Reject all' }}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+
+    <AlertDialog v-model:open="resetOpen">
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete the entire area map?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This permanently deletes all {{ areaStore.areas.length }} area{{ areaStore.areas.length === 1 ? '' : 's' }}
+            and {{ areaStore.edits.length }} pending edit{{ areaStore.edits.length === 1 ? '' : 's' }} for this repository.
+            Coverage history is kept, but campaigns fall back to docs-derived planning until a new map is
+            proposed and accepted. This cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction class="bg-destructive text-destructive-foreground hover:bg-destructive/90" @click="confirmReset">
+            Delete everything
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

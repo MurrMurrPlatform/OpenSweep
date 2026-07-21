@@ -182,6 +182,28 @@ async function togglePin(doc: DocDTO) {
   }
 }
 
+// ── Reset (destructive: wipe the whole doc tree) ─────────────────────────────
+const resetDocsOpen = ref(false)
+const resettingDocs = ref(false)
+
+async function confirmResetDocs() {
+  if (!repoUid.value) return
+  resetDocsOpen.value = false
+  resettingDocs.value = true
+  try {
+    const result = await docs.resetAll(repoUid.value)
+    toast.success(
+      'Documentation deleted',
+      `${result.docs_deleted} page${result.docs_deleted === 1 ? '' : 's'} and ${result.edits_deleted} edit${result.edits_deleted === 1 ? '' : 's'} removed.`,
+    )
+    await reload()
+  } catch (e: unknown) {
+    toast.error('Reset failed', e instanceof Error ? e.message : String(e))
+  } finally {
+    resettingDocs.value = false
+  }
+}
+
 const deletePageOpen = ref(false)
 const pendingDeletePage = ref<DocDTO | null>(null)
 
@@ -590,6 +612,17 @@ async function confirmDeleteMemory() {
       title="Documentation"
       subtitle="The repository's wiki: path-organized pages that watch the code they describe. Pinned pages ride along in every run's prompt; agents propose edits that land here as diffs."
     >
+      <Button
+        v-if="docs.list.length || docs.edits.length"
+        variant="outline"
+        size="sm"
+        class="text-destructive hover:text-destructive"
+        :loading="resettingDocs"
+        title="Delete every doc page and pending edit for this repository."
+        @click="resetDocsOpen = true"
+      >
+        Reset docs…
+      </Button>
       <Button variant="outline" size="sm" :loading="generating" @click="generateDocs" title="Dispatch one LLM run that proposes doc pages for this repository. Proposals land below as pending edits.">
         <Wand2 v-if="!generating" />
         Generate docs
@@ -1183,6 +1216,26 @@ async function confirmDeleteMemory() {
             @click="confirmDeleteSelected"
           >
             Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+
+    <AlertDialog v-model:open="resetDocsOpen">
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete all documentation?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This permanently deletes all {{ docs.list.length }} page{{ docs.list.length === 1 ? '' : 's' }}
+            and {{ docs.edits.length }} pending edit{{ docs.edits.length === 1 ? '' : 's' }} for this repository.
+            Memories anchored to these pages keep their content but lose their freshness anchor, and
+            audits lose their doc-derived scoping until docs are regenerated. This cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction class="bg-destructive text-destructive-foreground hover:bg-destructive/90" @click="confirmResetDocs">
+            Delete everything
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

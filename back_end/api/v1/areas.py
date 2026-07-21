@@ -147,6 +147,19 @@ class MapAreasResultDTO(BaseModel):
 
 
 @router.post(
+    "/repositories/{repository_uid}/areas/reset", operation_id="opensweep_reset_areas"
+)
+async def reset_areas(
+    repository_uid: str, user: UserDTO = Depends(require_role("maintainer"))
+) -> dict:
+    """Destructive: delete the repository's entire Area map (areas + edits).
+    Coverage history stays; campaigns fall back to docs-derived planning
+    until a new map is accepted."""
+    await require_repo_in_org(repository_uid, user.org_uid)
+    return await area_service.reset_areas(repository_uid, actor=user.uid)
+
+
+@router.post(
     "/repositories/{repository_uid}/sweep/map-areas",
     response_model=MapAreasResultDTO,
     operation_id="opensweep_run_map_areas",

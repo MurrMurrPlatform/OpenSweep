@@ -226,6 +226,30 @@ async def delete_area(uid: str, *, actor: str = "human") -> None:
     await a.delete()
 
 
+async def reset_areas(repository_uid: str, *, actor: str = "human") -> dict:
+    """Destructive: delete EVERY Area and AreaEdit for the repository.
+
+    A full re-map beats hand-untangling a broken partition — coverage
+    history (Checked stamps) is untouched, but campaigns fall back to
+    docs-derived planning until a new map is accepted. One audit event
+    with counts; irreversible."""
+    areas = [a for a in await Area.nodes.all() if a.repository_uid == repository_uid]
+    edits = [e for e in await AreaEdit.nodes.all() if e.repository_uid == repository_uid]
+    for e in edits:
+        await e.delete()
+    for a in areas:
+        await a.delete()
+    await write_audit(
+        kind="areas.reset",
+        subject_uid=repository_uid,
+        subject_type="Repository",
+        actor_uid=actor,
+        repository_uid=repository_uid,
+        payload={"areas_deleted": len(areas), "edits_deleted": len(edits)},
+    )
+    return {"areas_deleted": len(areas), "edits_deleted": len(edits)}
+
+
 # ---------- AreaEdits ----------
 
 

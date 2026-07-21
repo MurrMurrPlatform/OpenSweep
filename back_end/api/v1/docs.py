@@ -89,6 +89,19 @@ async def delete_doc(uid: str, user: UserDTO = Depends(require_role("maintainer"
     return {"status": "deleted"}
 
 
+@router.post(
+    "/repositories/{repository_uid}/docs/reset", operation_id="opensweep_reset_docs"
+)
+async def reset_docs(
+    repository_uid: str, user: UserDTO = Depends(require_role("maintainer"))
+) -> dict:
+    """Destructive: delete the repository's entire doc tree (pages + edits).
+    Anchored memories keep their content but lose their freshness anchor;
+    Checked stamps stay as history."""
+    await require_repo_in_org(repository_uid, user.org_uid)
+    return await doc_service.reset_docs(repository_uid, actor=user.uid)
+
+
 @router.post("/docs/{uid}/pin", operation_id="opensweep_pin_doc")
 async def pin_doc(
     uid: str, req: SetPinnedRequest, user: UserDTO = Depends(require_role("maintainer"))

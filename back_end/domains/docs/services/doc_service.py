@@ -215,6 +215,37 @@ async def delete_doc(uid: str, *, actor: str = "human") -> None:
     await d.delete()
 
 
+async def reset_docs(repository_uid: str, *, actor: str = "human") -> dict:
+    """Destructive: delete EVERY Doc and DocEdit for the repository.
+
+    A clean regenerate beats hand-pruning a wrong tree. Memories anchored
+    to deleted pages keep their content but lose the freshness anchor
+    (same as single-page delete); Checked stamps stay as history. One
+    audit event with counts; irreversible."""
+    from domains.memory.models import Memory
+
+    docs = [d for d in await Doc.nodes.all() if d.repository_uid == repository_uid]
+    edits = [e for e in await DocEdit.nodes.all() if e.repository_uid == repository_uid]
+    doc_uids = {d.uid for d in docs}
+    for m in await Memory.nodes.all():
+        if (m.anchor_uid or "") in doc_uids:
+            m.anchor_uid = ""
+            await m.save()
+    for e in edits:
+        await e.delete()
+    for d in docs:
+        await d.delete()
+    await write_audit(
+        kind="docs.reset",
+        subject_uid=repository_uid,
+        subject_type="Repository",
+        actor_uid=actor,
+        repository_uid=repository_uid,
+        payload={"docs_deleted": len(docs), "edits_deleted": len(edits)},
+    )
+    return {"docs_deleted": len(docs), "edits_deleted": len(edits)}
+
+
 async def set_pinned(uid: str, *, pinned: bool, actor: str = "human") -> Doc:
     d = await get_doc(uid)
     d.pinned = pinned

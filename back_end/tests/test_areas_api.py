@@ -46,6 +46,7 @@ def test_areas_routes_are_mounted():
         "/api/v1/area-edits/bulk-accept",
         "/api/v1/area-edits/bulk-reject",
         "/api/v1/repositories/{repository_uid}/sweep/map-areas",
+        "/api/v1/repositories/{repository_uid}/areas/reset",
     ):
         assert path in paths, f"missing areas route {path}"
 
@@ -285,3 +286,9 @@ async def test_map_areas_other_agents_runs_do_not_block(monkeypatch):
 
     result = await areas_mod.run_map_areas_endpoint("repo-a", user=_user())
     assert result.run_uid == "run-1"
+
+
+def test_reset_endpoints_are_registered():
+    ops = _openapi_operation_ids()
+    assert "opensweep_reset_areas" in ops
+    assert "opensweep_reset_docs" in ops

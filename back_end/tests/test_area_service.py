@@ -387,3 +387,16 @@ async def test_propose_enabled_false_flows_through_accept(stores):
     )
     assert updated.uid == a.uid
     assert updated.enabled is False
+
+
+async def test_reset_areas_wipes_areas_and_edits_for_the_repo_only(stores):
+    await area_service.create_area(repository_uid="r1", key="backend")
+    await area_service.create_area(repository_uid="r1", key="frontend")
+    await area_service.propose_area_edit(
+        repository_uid="r1", proposed_spec="x", key="new-area", source_run_uid="run-1"
+    )
+    other = await area_service.create_area(repository_uid="r2", key="backend")
+    result = await area_service.reset_areas("r1", actor="human")
+    assert result == {"areas_deleted": 2, "edits_deleted": 1}
+    assert stores.areas == [other]
+    assert stores.edits == []

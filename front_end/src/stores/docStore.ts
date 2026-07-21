@@ -112,6 +112,14 @@ export const useDocStore = defineStore('docs', () => {
   }
 
   /** One LLM run that proposes doc pages for the repository (409 when already running). */
+  /** Destructive: deletes every doc page + edit for the repo. */
+  async function resetAll(repoUid: string): Promise<{ docs_deleted: number; edits_deleted: number }> {
+    const result = await apiPost<{ docs_deleted: number; edits_deleted: number }>(
+      `/repositories/${repoUid}/docs/reset`,
+    )
+    return result
+  }
+
   async function generate(repoUid: string, agent_uid?: string): Promise<GenerateDocsResult> {
     return apiPost<GenerateDocsResult>(`/repositories/${repoUid}/sweep/generate-docs`, {
       agent_uid,
@@ -231,6 +239,7 @@ export const useDocStore = defineStore('docs', () => {
     draft,
     verify,
     generate,
+    resetAll,
     exportToRepo,
     audit,
     deepScan,
