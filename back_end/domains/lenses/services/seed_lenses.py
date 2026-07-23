@@ -28,7 +28,6 @@ from logging_config import logger
 _OWNED_FIELDS = (
     "title",
     "body",
-    "scope",
     "tags",
     "wants",
     "global_agent_key",
@@ -41,7 +40,6 @@ _OWNED_FIELDS = (
 _LENSES: dict[str, dict[str, Any]] = {
     "bugs": {
         "title": "Bugs",
-        "scope": "local",
         "tags": ["audit", "correctness"],
         "wants": ["static_analysis"],
         "body": (
@@ -64,7 +62,6 @@ _LENSES: dict[str, dict[str, Any]] = {
     },
     "security": {
         "title": "Security",
-        "scope": "local",
         "tags": ["audit", "security"],
         "wants": ["static_analysis"],
         "body": (
@@ -87,7 +84,6 @@ _LENSES: dict[str, dict[str, Any]] = {
     },
     "simplification": {
         "title": "Simplification",
-        "scope": "local",
         "tags": ["audit", "cleanup"],
         "wants": ["static_analysis"],
         "body": (
@@ -109,7 +105,6 @@ _LENSES: dict[str, dict[str, Any]] = {
     },
     "refactor-opportunities": {
         "title": "Refactor opportunities",
-        "scope": "local",
         "tags": ["audit", "structure"],
         "wants": [],
         "body": (
@@ -131,7 +126,6 @@ _LENSES: dict[str, dict[str, Any]] = {
     },
     "test-gaps": {
         "title": "Test gaps",
-        "scope": "local",
         "tags": ["audit", "testing"],
         "wants": [],
         "body": (
@@ -153,7 +147,6 @@ _LENSES: dict[str, dict[str, Any]] = {
     },
     "error-handling": {
         "title": "Error handling",
-        "scope": "local",
         "tags": ["audit", "reliability"],
         "wants": [],
         "body": (
@@ -176,7 +169,6 @@ _LENSES: dict[str, dict[str, Any]] = {
     },
     "performance": {
         "title": "Performance",
-        "scope": "local",
         "tags": ["audit", "performance"],
         "wants": [],
         "body": (
@@ -198,7 +190,6 @@ _LENSES: dict[str, dict[str, Any]] = {
     },
     "legacy-patterns": {
         "title": "Legacy patterns",
-        "scope": "local",
         "tags": ["audit", "cleanup"],
         "wants": [],
         "body": (
@@ -222,7 +213,6 @@ _LENSES: dict[str, dict[str, Any]] = {
     # ── Global lenses — whole-repo sweeps, dispatched as their own agents ──
     "architecture-review": {
         "title": "Architecture review",
-        "scope": "global",
         "tags": ["audit", "architecture", "global"],
         "wants": ["static_analysis"],
         "global_agent_key": "architecture-review",
@@ -246,7 +236,6 @@ _LENSES: dict[str, dict[str, Any]] = {
     },
     "implementation-gaps": {
         "title": "Implementation gaps",
-        "scope": "global",
         "tags": ["audit", "product", "global"],
         "wants": [],
         "global_agent_key": "implementation-gaps",
@@ -276,7 +265,6 @@ def _normalized(spec: dict[str, Any]) -> dict[str, Any]:
     return {
         "title": spec.get("title", ""),
         "body": spec.get("body", ""),
-        "scope": spec.get("scope", "local"),
         "tags": list(spec.get("tags", [])),
         "wants": list(spec.get("wants", [])),
         "global_agent_key": spec.get("global_agent_key", ""),
@@ -287,7 +275,6 @@ def _checksum(values: dict[str, Any]) -> str:
     return content_hash(
         values["title"],
         values["body"],
-        values["scope"],
         # list order is meaningful to the hash but not to behavior; the specs
         # list entries deterministically so this is stable.
         ",".join(values["tags"]),
@@ -300,7 +287,6 @@ def _current_values(row: Lens) -> dict[str, Any]:
     return {
         "title": row.title or "",
         "body": row.body or "",
-        "scope": row.scope or "local",
         "tags": list(row.tags or []),
         "wants": list(row.wants or []),
         "global_agent_key": row.global_agent_key or "",

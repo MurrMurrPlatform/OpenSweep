@@ -11,7 +11,6 @@ from types import SimpleNamespace
 
 import domains.lenses.services.seed_lenses as sl
 from domains.agents.services.seed_variants import _VARIANTS
-from domains.lenses.models import LENS_SCOPES
 from domains.lenses.services.lens_service import lens_checklist
 from domains.lenses.services.seed_lenses import (
     _LENSES,
@@ -42,8 +41,8 @@ _EXPECTED_GLOBAL = {"architecture-review", "implementation-gaps"}
 
 
 def test_seeded_lens_set_is_complete():
-    local = {k for k, s in _LENSES.items() if s["scope"] == "local"}
-    global_ = {k for k, s in _LENSES.items() if s["scope"] == "global"}
+    local = {k for k, s in _LENSES.items() if not bool(s.get("global_agent_key"))}
+    global_ = {k for k, s in _LENSES.items() if bool(s.get("global_agent_key"))}
     assert local == _EXPECTED_LOCAL
     assert global_ == _EXPECTED_GLOBAL
 
@@ -53,7 +52,6 @@ def test_lens_specs_are_well_formed():
         assert spec["title"], key
         assert spec["body"].strip(), key
         assert len(spec["body"]) <= _MAX_BODY_CHARS, f"{key}: body too long"
-        assert spec["scope"] in LENS_SCOPES, key
         assert isinstance(spec.get("tags", []), list), key
         assert isinstance(spec.get("wants", []), list), key
         # The lens_verdicts contract depends on agents reporting clean checks
@@ -63,13 +61,13 @@ def test_lens_specs_are_well_formed():
 
 def test_global_lenses_dispatch_a_seeded_variant():
     for key, spec in _LENSES.items():
-        if spec["scope"] == "global":
-            agent_key = spec.get("global_agent_key", "")
-            assert agent_key, key
-            # The dispatch target must be a real seeded variant slug.
+        agent_key = spec.get("global_agent_key", "")
+        if bool(agent_key):
+            # Global lens: dispatch target must be a real seeded variant slug.
             assert agent_key in _VARIANTS, key
         else:
-            assert not spec.get("global_agent_key", ""), key
+            # Local lens: must have no global_agent_key.
+            assert not agent_key, key
 
 
 def test_global_sweep_variants_check_their_escalation_queue():
@@ -115,7 +113,7 @@ class _FakeLens:
 
     def __init__(self, **kw):
         self.__dict__.update(
-            uid=None, key="", title="", scope="local", body="", tags=[],
+            uid=None, key="", title="", body="", tags=[],
             wants=[], global_agent_key="", enabled=True, provenance="",
             seed_checksum="",
         )
@@ -138,12 +136,11 @@ def _patch_model(monkeypatch):
 
 
 def _spec(body="B1"):
-    return {"title": "T", "scope": "local", "tags": ["x"], "wants": [], "body": body}
+    return {"title": "T", "tags": ["x"], "wants": [], "body": body}
 
 
 def _existing(body="B1", seed_checksum=""):
-    row = _FakeLens(provenance="system", key="bugs", body=body, title="T",
-                    scope="local", tags=["x"])
+    row = _FakeLens(provenance="system", key="bugs", body=body, title="T", tags=["x"])
     row.seed_checksum = seed_checksum
     return row
 
