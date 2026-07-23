@@ -97,6 +97,7 @@ AGENT_KEYS = (
     "deep-scan",
     "generate-docs",
     "generate-specs",
+    "revise-spec",
     "audit-stale",
     "run-campaign",
     "map-areas",
@@ -112,7 +113,7 @@ def stage_for_agent_key(key: str, playbook: str) -> str:
     from domains.repositories.services.workflow import STAGES
 
     k = (key or "").strip()
-    if k in {"generate-docs", "generate-specs", "map-areas"}:
+    if k in {"generate-docs", "generate-specs", "revise-spec", "map-areas"}:
         return "discover"
     if k == "deep-scan":
         return "analysis"

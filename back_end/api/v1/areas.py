@@ -23,6 +23,7 @@ from domains.areas.schemas import (
 )
 from domains.areas.services import area_service
 from domains.runs.services.active_runs import conflict_detail
+from domains.runs.services.lifecycle import LifecycleError
 from domains.tenancy import require_repo_in_org
 from domains.users.schemas import UserDTO
 from infrastructure.kill_switch import KillSwitchActiveError, assert_runnable
@@ -209,6 +210,57 @@ async def run_map_areas_endpoint(
     result = await run_map_areas(repository_uid=repository_uid, triggered_by=user.uid)
     return MapAreasResultDTO(
         repository_uid=result.repository_uid,
+        run_uid=result.run_uid,
+        errors=list(result.errors),
+        summary=result.summary,
+    )
+
+
+# ---------- Revise-spec sweep ----------
+
+
+class ReviseSpecRequest(BaseModel):
+    instruction: str
+
+
+class ReviseSpecResultDTO(BaseModel):
+    run_uid: str = ""
+    errors: list[str] = Field(default_factory=list)
+    summary: str = ""
+
+
+@router.post(
+    "/areas/{uid}/revise-spec",
+    response_model=ReviseSpecResultDTO,
+    operation_id="opensweep_revise_area_spec",
+)
+async def revise_area_spec_endpoint(
+    uid: str,
+    req: ReviseSpecRequest,
+    user: UserDTO = Depends(require_role("maintainer")),
+) -> ReviseSpecResultDTO:
+    """Dispatch a one-shot LLM run that revises a single area's spec.
+
+    The maintainer supplies an instruction; the LLM reads the area's code
+    and current spec, then proposes ONE AreaEdit (proposed_spec) for human
+    accept.
+    """
+    area = await area_service.get_area(uid)
+    await require_repo_in_org(area.repository_uid, user.org_uid)
+
+    from domains.runs.services.sweep import revise_area_spec
+
+    try:
+        result = await revise_area_spec(
+            repository_uid=area.repository_uid,
+            area_uid=uid,
+            instruction=req.instruction,
+            triggered_by=user.uid,
+        )
+    except LifecycleError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    return ReviseSpecResultDTO(
         run_uid=result.run_uid,
         errors=list(result.errors),
         summary=result.summary,
