@@ -73,6 +73,20 @@ async def update(
     return to_dto(lens)
 
 
+DEFAULT_LENSES_BY_KIND: dict[str, tuple[str, ...]] = {
+    "subsystem": (
+        "bugs", "security", "performance", "error-handling",
+        "legacy-patterns", "refactor-opportunities", "simplification", "test-gaps",
+    ),
+    "feature": ("implementation-gaps",),
+    "global": ("architecture-review", "implementation-gaps"),
+}
+
+
+def default_lens_keys(kind: str) -> list[str]:
+    return list(DEFAULT_LENSES_BY_KIND.get(kind, ()))
+
+
 # Closing instruction of every checklist: local runs stay in their lane and
 # route cross-cutting observations to the global sweeps via finding tags.
 _ESCALATE_INSTRUCTION = (
