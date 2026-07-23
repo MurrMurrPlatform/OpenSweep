@@ -5,6 +5,8 @@ import {
   Activity,
   ArrowLeft,
   Ban,
+  ChevronDown,
+  ChevronRight,
   FolderTree,
   Gauge,
   Globe,
@@ -234,6 +236,37 @@ function planSentences(s: CampaignPlanSummary): string[] {
 
 const planLines = computed(() => planSentences(planSummary.value))
 
+// ── Part row expand / collapse ───────────────────────────────────────────────
+
+const expandedParts = ref<Set<number>>(new Set())
+
+function togglePart(idx: number) {
+  const next = new Set(expandedParts.value)
+  if (next.has(idx)) next.delete(idx)
+  else next.add(idx)
+  expandedParts.value = next
+}
+
+// ── Plan stat-header helpers ─────────────────────────────────────────────────
+
+const planDetailsOpen = ref(false)
+
+/** Total run count — prefer plan_summary.total_runs, fall back to parts.length. */
+const totalRuns = computed(() =>
+  planSummary.value.total_runs ?? parts.value.length,
+)
+
+/** "N subsystem · N feature · N global" with zeros hidden. */
+const byKindLabel = computed(() => {
+  const bk = planSummary.value.by_kind
+  if (!bk) return ''
+  const segs: string[] = []
+  if (bk.area) segs.push(`${bk.area} subsystem`)
+  if (bk.feature) segs.push(`${bk.feature} feature`)
+  if (bk.global) segs.push(`${bk.global} global`)
+  return segs.join(' · ')
+})
+
 const SEVERITY_ORDER = ['critical', 'high', 'medium', 'low']
 const severityCounts = computed(() => {
   const by = campaign.value?.summary.counts?.by_severity ?? {}
@@ -369,126 +402,246 @@ function scopePathsLabel(paths: string[]): string {
         </span>
       </div>
 
-      <!-- How this plan was built (plan-time reconciliation) -->
-      <Card v-if="hasPlanSummary">
-        <CardHeader class="pb-2">
-          <h2 class="text-sm font-semibold">How this plan was built</h2>
-        </CardHeader>
-        <CardContent class="space-y-1">
-          <p v-for="(line, i) in planLines" :key="i" class="text-sm text-muted-foreground">
-            {{ line }}
-          </p>
-          <p
-            v-if="planSummary.area_prefix"
-            class="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground"
-          >
-            Sliced to areas under
-            <span class="rounded-full border border-border px-2 py-0.5 font-mono text-xs">
-              {{ planSummary.area_prefix }}
-            </span>
-          </p>
-          <p
-            v-if="planSummary.oversized?.length"
-            class="flex items-start gap-1.5 text-sm text-warn"
-            :title="planSummary.oversized.join('\n')"
-          >
-            <TriangleAlert class="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            {{ planSummary.oversized.length }} area{{ planSummary.oversized.length === 1 ? ' exceeds' : 's exceed' }}
-            the target size — ask Map areas to split {{ planSummary.oversized.length === 1 ? 'it' : 'them' }}.
-          </p>
-          <p v-if="planSummary.degraded" class="flex items-start gap-1.5 text-sm text-warn">
-            <TriangleAlert class="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            {{ planSummary.degraded }}
-          </p>
+      <!-- Plan stat-header -->
+      <Card v-if="hasPlanSummary || parts.length">
+        <CardContent class="py-3">
+          <!-- Stats row -->
+          <div class="flex flex-wrap items-center gap-3">
+            <span class="text-2xl font-bold tabular-nums">{{ totalRuns }}</span>
+            <span class="text-sm text-muted-foreground">run{{ totalRuns === 1 ? '' : 's' }}</span>
+            <span v-if="byKindLabel" class="text-sm text-muted-foreground">· {{ byKindLabel }}</span>
+            <Badge
+              v-if="planSummary.oversized?.length"
+              variant="warn"
+              class="gap-1 px-1.5 text-[10px]"
+              :title="planSummary.oversized.join('\n')"
+            >
+              <TriangleAlert class="h-3 w-3" />
+              {{ planSummary.oversized.length }} oversized
+            </Badge>
+            <Badge
+              v-if="planSummary.degraded"
+              variant="warn"
+              class="px-1.5 text-[10px]"
+              title="Degraded plan"
+            >
+              <TriangleAlert class="h-3 w-3" />
+              degraded
+            </Badge>
+          </div>
+          <!-- Collapsible plan details -->
+          <div v-if="hasPlanSummary" class="mt-2">
+            <button
+              class="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+              @click="planDetailsOpen = !planDetailsOpen"
+            >
+              <component :is="planDetailsOpen ? ChevronDown : ChevronRight" class="h-3.5 w-3.5" />
+              How this plan was built
+            </button>
+            <div v-if="planDetailsOpen" class="mt-2 space-y-1 pl-5">
+              <p v-for="(line, i) in planLines" :key="i" class="text-sm text-muted-foreground">
+                {{ line }}
+              </p>
+              <p
+                v-if="planSummary.area_prefix"
+                class="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground"
+              >
+                Sliced to areas under
+                <span class="rounded-full border border-border px-2 py-0.5 font-mono text-xs">
+                  {{ planSummary.area_prefix }}
+                </span>
+              </p>
+              <p
+                v-if="planSummary.oversized?.length"
+                class="flex items-start gap-1.5 text-sm text-warn"
+                :title="planSummary.oversized.join('\n')"
+              >
+                <TriangleAlert class="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                {{ planSummary.oversized.length }} area{{ planSummary.oversized.length === 1 ? ' exceeds' : 's exceed' }}
+                the target size — ask Map areas to split {{ planSummary.oversized.length === 1 ? 'it' : 'them' }}.
+              </p>
+              <p v-if="planSummary.degraded" class="flex items-start gap-1.5 text-sm text-warn">
+                <TriangleAlert class="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                {{ planSummary.degraded }}
+              </p>
+            </div>
+          </div>
         </CardContent>
       </Card>
 
-      <!-- Parts -->
-      <Card>
+      <!-- Batch children roll-up -->
+      <Card v-if="campaign.kind === 'batch'">
+        <CardHeader class="pb-2">
+          <h2 class="text-sm font-semibold">Child campaigns</h2>
+        </CardHeader>
+        <CardContent class="space-y-1.5">
+          <div
+            v-if="!campaign.child_uids?.length"
+            class="text-sm text-muted-foreground"
+          >
+            No child campaigns yet.
+          </div>
+          <RouterLink
+            v-for="childUid in campaign.child_uids"
+            :key="childUid"
+            :to="{ name: 'campaign-detail', params: { uid: childUid } }"
+            class="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted/50"
+          >
+            <Activity class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <span class="font-mono text-xs">{{ childUid.slice(0, 12) }}</span>
+          </RouterLink>
+        </CardContent>
+      </Card>
+
+      <!-- Parts table (non-batch only) -->
+      <Card v-if="campaign.kind !== 'batch'">
         <CardContent class="p-0">
           <div class="overflow-x-auto">
             <table class="w-full text-sm">
               <thead>
                 <tr class="text-left text-xs uppercase tracking-wide text-muted-foreground">
+                  <th class="w-6 px-2 py-2" />
                   <th class="px-4 py-2 font-medium">#</th>
                   <th class="px-4 py-2 font-medium">Part</th>
-                  <th class="px-4 py-2 font-medium">Scope</th>
-                  <th class="px-4 py-2 font-medium">Lenses</th>
                   <th class="px-4 py-2 font-medium">Files</th>
+                  <th class="px-4 py-2 font-medium">Lenses</th>
                   <th class="px-4 py-2 font-medium">State</th>
                   <th class="px-4 py-2 font-medium">Run</th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="p in parts" :key="p.idx" class="border-t border-border">
-                  <td class="px-4 py-2 tabular-nums text-muted-foreground">{{ p.idx }}</td>
-                  <td class="max-w-[240px] px-4 py-2">
-                    <span class="flex items-center gap-1.5 font-medium">
-                      <Globe
-                        v-if="p.kind === 'global'"
-                        class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-                        aria-label="Global sweep"
-                      />
-                      <FolderTree
-                        v-else
-                        class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-                        aria-label="Area sweep"
-                      />
-                      <span class="truncate">{{ p.title || `Part ${p.idx}` }}</span>
-                      <Badge v-if="p.kind === 'feature'" variant="info" class="shrink-0 px-1.5 text-[10px]" title="Spec-anchored feature audit">
-                        feature · spec audit
-                      </Badge>
-                    </span>
-                    <span v-if="p.area_keys.length" class="mt-1 flex max-w-[240px] flex-wrap gap-1">
-                      <Badge
-                        v-for="key in p.area_keys"
-                        :key="key"
-                        variant="outline"
-                        class="px-1.5 font-mono text-[10px]"
-                        title="Area bundled into this part"
+                <template v-for="p in parts" :key="p.idx">
+                  <!-- Collapsed / summary row -->
+                  <tr
+                    class="border-t border-border hover:bg-muted/30"
+                    :class="{ 'cursor-pointer': !p.run_uid }"
+                    @click="!p.run_uid ? togglePart(p.idx) : undefined"
+                  >
+                    <!-- Chevron -->
+                    <td class="w-6 px-2 py-2 text-muted-foreground">
+                      <button
+                        class="flex items-center justify-center"
+                        :aria-label="expandedParts.has(p.idx) ? 'Collapse' : 'Expand'"
+                        @click.stop="togglePart(p.idx)"
                       >
-                        {{ key }}
+                        <component
+                          :is="expandedParts.has(p.idx) ? ChevronDown : ChevronRight"
+                          class="h-3.5 w-3.5"
+                        />
+                      </button>
+                    </td>
+                    <!-- Index -->
+                    <td class="px-4 py-2 tabular-nums text-muted-foreground">{{ p.idx }}</td>
+                    <!-- Title (with kind badge, truncated) -->
+                    <td class="px-4 py-2">
+                      <span class="flex min-w-0 items-center gap-1.5">
+                        <Globe
+                          v-if="p.kind === 'global'"
+                          class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          aria-label="Global sweep"
+                        />
+                        <FolderTree
+                          v-else
+                          class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          aria-label="Area sweep"
+                        />
+                        <Badge
+                          v-if="p.kind === 'feature'"
+                          variant="info"
+                          class="shrink-0 px-1.5 text-[10px]"
+                          title="Spec-anchored feature audit"
+                        >
+                          feature
+                        </Badge>
+                        <span class="max-w-[240px] truncate font-medium" :title="p.title || `Part ${p.idx}`">
+                          {{ p.title || `Part ${p.idx}` }}
+                        </span>
+                      </span>
+                    </td>
+                    <!-- File count -->
+                    <td class="px-4 py-2 tabular-nums text-muted-foreground">
+                      {{ p.file_count ?? '—' }}
+                    </td>
+                    <!-- Lens count chip -->
+                    <td class="px-4 py-2">
+                      <Badge variant="secondary" class="px-1.5 text-[10px]">
+                        {{ p.lens_keys.length }} lens{{ p.lens_keys.length === 1 ? '' : 'es' }}
                       </Badge>
-                    </span>
-                  </td>
-                  <td class="max-w-[220px] px-4 py-2">
-                    <span
-                      class="block truncate font-mono text-xs text-muted-foreground"
-                      :title="p.scope_paths.join('\n')"
-                    >
-                      {{ scopePathsLabel(p.scope_paths) }}
-                    </span>
-                  </td>
-                  <td class="px-4 py-2">
-                    <span class="flex max-w-[260px] flex-wrap gap-1">
-                      <Badge
-                        v-for="key in p.lens_keys"
-                        :key="key"
-                        variant="secondary"
-                        class="px-1.5 font-mono text-[10px]"
+                    </td>
+                    <!-- State -->
+                    <td class="px-4 py-2">
+                      <Badge :variant="partStateVariant(p.state)">{{ p.state }}</Badge>
+                    </td>
+                    <!-- Run link -->
+                    <td class="px-4 py-2">
+                      <RouterLink
+                        v-if="p.run_uid"
+                        :to="{ name: 'run-detail', params: { uid: p.run_uid } }"
+                        class="inline-flex items-center gap-1 text-xs underline-offset-2 hover:underline"
+                        @click.stop
                       >
-                        {{ key }}
-                      </Badge>
-                    </span>
-                  </td>
-                  <td class="px-4 py-2 tabular-nums text-muted-foreground">
-                    {{ p.file_count ?? '—' }}
-                  </td>
-                  <td class="px-4 py-2">
-                    <Badge :variant="partStateVariant(p.state)">{{ p.state }}</Badge>
-                  </td>
-                  <td class="px-4 py-2">
-                    <RouterLink
-                      v-if="p.run_uid"
-                      :to="{ name: 'run-detail', params: { uid: p.run_uid } }"
-                      class="inline-flex items-center gap-1 text-xs underline-offset-2 hover:underline"
-                    >
-                      <Activity class="h-3 w-3" />
-                      <span class="font-mono">{{ p.run_uid.slice(0, 8) }}</span>
-                    </RouterLink>
-                    <span v-else class="text-xs text-muted-foreground">—</span>
-                  </td>
-                </tr>
+                        <Activity class="h-3 w-3" />
+                        <span class="font-mono">{{ p.run_uid.slice(0, 8) }}</span>
+                      </RouterLink>
+                      <span v-else class="text-xs text-muted-foreground">—</span>
+                    </td>
+                  </tr>
+                  <!-- Expanded detail row -->
+                  <tr v-if="expandedParts.has(p.idx)" class="border-t border-border bg-muted/20">
+                    <td />
+                    <td colspan="6" class="px-4 py-3">
+                      <div class="space-y-2">
+                        <!-- Scope paths -->
+                        <div>
+                          <p class="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Scope</p>
+                          <ul class="space-y-0.5">
+                            <li
+                              v-if="!p.scope_paths.length"
+                              class="font-mono text-xs text-muted-foreground"
+                            >
+                              whole repo
+                            </li>
+                            <li
+                              v-for="path in p.scope_paths"
+                              :key="path"
+                              class="font-mono text-xs text-muted-foreground"
+                            >
+                              {{ path }}
+                            </li>
+                          </ul>
+                        </div>
+                        <!-- Area keys -->
+                        <div v-if="p.area_keys.length">
+                          <p class="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Areas</p>
+                          <span class="flex flex-wrap gap-1">
+                            <Badge
+                              v-for="key in p.area_keys"
+                              :key="key"
+                              variant="outline"
+                              class="px-1.5 font-mono text-[10px]"
+                            >
+                              {{ key }}
+                            </Badge>
+                          </span>
+                        </div>
+                        <!-- Lens keys -->
+                        <div v-if="p.lens_keys.length">
+                          <p class="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Lenses</p>
+                          <span class="flex flex-wrap gap-1">
+                            <Badge
+                              v-for="key in p.lens_keys"
+                              :key="key"
+                              variant="secondary"
+                              class="px-1.5 font-mono text-[10px]"
+                            >
+                              {{ key }}
+                            </Badge>
+                          </span>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                </template>
               </tbody>
             </table>
           </div>

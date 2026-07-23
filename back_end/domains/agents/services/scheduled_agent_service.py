@@ -326,7 +326,7 @@ async def seed_audit_agents(repository_uid: str) -> list[ScheduledAgent]:
             ROTATION_CAMPAIGN_WEEKLY_TITLE,
             "cron:0 7 * * 1",
             False,
-            {"template": "rotation", "k": 3},
+            {"kind": "subsystem", "selection": "rotation", "k": 3},
         ),
     ):
         s = await _seed_binding(

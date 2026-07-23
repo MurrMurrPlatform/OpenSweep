@@ -49,12 +49,38 @@ async def build_chat_preamble(context: dict[str, str] | None, *, org_uid: str = 
     return "\n\n".join(parts)
 
 
+async def _area_snapshot(subject_uid: str) -> str:
+    """Snapshot an Area node for the chat preamble. Returns "" when missing."""
+    from domains.areas.models import Area
+
+    area = await Area.nodes.get_or_none(uid=subject_uid)
+    if area is None:
+        return ""
+    spec = area.spec or ""
+    if len(spec) > 2000:
+        spec = spec[:2000] + "\n…(truncated)"
+    scope = ", ".join(area.scope_paths or []) or "(none)"
+    lines = [
+        "Type: area",
+        f"uid: {area.uid}",
+        f"Key: {area.key}",
+        f"Title: {area.title or '(untitled)'}",
+        f"Kind: {getattr(area, 'kind', '')}",
+        f"Scope paths: {scope}",
+        f"Spec:\n{spec or '(no spec yet)'}",
+    ]
+    return "\n".join(lines)
+
+
 async def _context_snapshot(context: dict[str, str] | None) -> str:
     subject_type_raw = (context or {}).get("subject_type", "").strip()
     subject_uid = (context or {}).get("subject_uid", "").strip()
     if not subject_type_raw or not subject_uid:
         return ""
     try:
+        if subject_type_raw == "area":
+            return await _area_snapshot(subject_uid)
+
         from domains.comments.schemas import CommentSubjectType
         from domains.comments.subjects import get_subject, subject_snapshot
 

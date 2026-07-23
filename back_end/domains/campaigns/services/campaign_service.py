@@ -16,6 +16,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from domains.campaigns.models import (
+    CAMPAIGN_KINDS,
     CAMPAIGN_TEMPLATES,
     Campaign,
     is_legal_status_transition,
@@ -34,6 +35,11 @@ def to_dto(c: Campaign) -> CampaignDTO:
         title=c.title or "",
         status=c.status or "planning",
         template=c.template or "rotation",
+        kind=str(getattr(c, "kind", "subsystem") or "subsystem"),
+        selection=str(getattr(c, "selection", "all") or "all"),
+        coverage_keys=list(getattr(c, "coverage_keys", []) or []),
+        parent_uid=str(getattr(c, "parent_uid", "") or ""),
+        child_uids=list(getattr(c, "child_uids", []) or []),
         effort=c.effort or "",
         lens_keys=list(c.lens_keys or []),
         k=int(getattr(c, "k", 3) or 3),
@@ -261,22 +267,53 @@ async def _plan_areas(
     )
 
 
+async def _enabled_lenses(kind: str, lens_keys: list[str]) -> list[dict]:
+    """The lens dicts a plan of `kind` runs against.
+
+    Built from the enabled lens catalog as {key, global_agent_key, enabled} —
+    NO scope (dropped from planning; a global lens is one carrying a
+    global_agent_key). Empty `lens_keys` falls back to
+    lens_service.default_lens_keys(kind); a non-empty selection is the
+    intersection with the enabled set. A `global` kind keeps only lenses
+    that name a global agent (their sweep is the whole point)."""
+    from domains.lenses.services import lens_service
+
+    catalog = [
+        {
+            "key": lens.key,
+            "global_agent_key": lens.global_agent_key or "",
+            "enabled": True,
+        }
+        for lens in await lens_service.list_lenses(enabled_only=True)
+    ]
+    keys = list(lens_keys) or lens_service.default_lens_keys(kind)
+    wanted = set(keys)
+    lenses = [lens for lens in catalog if lens["key"] in wanted]
+    if kind == "global":
+        lenses = [lens for lens in lenses if lens["global_agent_key"]]
+    return lenses
+
+
 async def _plan_parts(
     repository_uid: str,
     *,
-    template: str,
+    kind: str,
+    coverage_keys: list[str],
+    selection: str,
     lens_keys: list[str],
     k: int,
-    area_prefix: str = "",
 ) -> tuple[list[dict], str, str, dict]:
-    """(part list, degraded_reason, source, plan_summary) for the given
-    plan inputs.
+    """(part list, degraded_reason, source, plan_summary) for a kind-aware
+    plan.
 
     The ONE plan builder — create() and launch()'s replan both go through
-    here so the two can never drift. plan_summary is the plan's own
-    explanation (how the map's areas became this part list); its shape is
-    stable across sources so the UI can always narrate it."""
-    from domains.lenses.services import lens_service
+    here so the two can never drift. Branches on `kind`:
+      - subsystem: tree partition → filter_by_keys → bundle_siblings →
+        build_plan_by_kind (rotation fetches path_recency).
+      - feature: feature areas → filter_by_keys → build_plan_by_kind.
+      - global: one part per global lens (no partition needed).
+    plan_summary is the plan's own explanation; its shape is stable across
+    sources so the UI can always narrate it (adds total_runs + by_kind)."""
     from domains.repositories.models import Repository
     from domains.runs.services.audit_selection import coverage_recency_for
 
@@ -284,72 +321,70 @@ async def _plan_parts(
     if repo is None:
         raise HTTPException(status_code=404, detail=f"Repository {repository_uid} not found")
 
-    areas, degraded_reason, _total, source, feature_areas, _health, map_stats = (
-        await _plan_areas(repository_uid, repo)
-    )
-    if area_prefix:
-        # Only meaningful for area-map plans — docs-derived areas carry no
-        # area_key, so a prefix empties them (legal: zero area parts).
-        areas = planner.filter_by_prefix(areas, area_prefix)
-        feature_areas = planner.filter_by_prefix(feature_areas, area_prefix)
-        if not areas and not feature_areas:
-            note = f"area_prefix {area_prefix!r} matched no areas"
-            degraded_reason = (
-                f"{degraded_reason}; {note}" if degraded_reason else note
+    lenses = await _enabled_lenses(kind, lens_keys)
+
+    if kind == "global":
+        # A global sweep needs no partition — one part per global lens.
+        parts = planner.build_plan_by_kind("global", [], lenses)
+        source = "global"
+        degraded_reason = ""
+        map_stats = _map_stats(None)
+        areas: list[dict] = []
+    else:
+        (
+            areas,
+            degraded_reason,
+            _total,
+            source,
+            feature_areas,
+            _health,
+            map_stats,
+        ) = await _plan_areas(repository_uid, repo)
+        if kind == "feature":
+            feature_areas = planner.filter_by_keys(feature_areas, coverage_keys)
+            if coverage_keys and not feature_areas:
+                note = f"coverage_keys {coverage_keys!r} matched no feature areas"
+                degraded_reason = (
+                    f"{degraded_reason}; {note}" if degraded_reason else note
+                )
+            parts = planner.build_plan_by_kind(
+                "feature", [], lenses, selection=selection, feature_areas=feature_areas
             )
-    if source == "area-map":
-        # Undersized sibling leaves share one run — the map stays
-        # fine-grained while parts stay worth a dispatch. Rotation ranks
-        # the bundles (a bundle's recency is its union's stalest path).
-        areas = planner.bundle_siblings(areas)
-
-    lenses = [
-        {
-            "key": lens.key,
-            "scope": lens.scope or "local",
-            "global_agent_key": lens.global_agent_key or "",
-            "enabled": bool(lens.enabled),
-        }
-        for lens in await lens_service.list_lenses(enabled_only=True)
-    ]
-    if lens_keys:
-        # The selection narrows LOCAL lenses only — the campaign dialog only
-        # offers locals, so filtering globals out would silently strip every
-        # global sweep from dialog-created full campaigns. Global lenses
-        # always survive; templates that emit no globals ignore them anyway.
-        wanted = set(lens_keys)
-        lenses = [
-            lens
-            for lens in lenses
-            if lens["scope"] == "global" or lens["key"] in wanted
-        ]
-
-    path_recency = None
-    if template == "rotation":
-        path_recency = await coverage_recency_for(repository_uid)
-    parts = planner.build_plan(
-        template,
-        areas,
-        lenses,
-        k=k,
-        path_recency=path_recency,
-        focus_lens=lens_keys[0] if template == "focused" and lens_keys else None,
-        feature_areas=feature_areas,
-    )
-    if area_prefix:
-        # Global sweeps stay whole-repo agents; the scope hint steers them
-        # toward the slice this campaign actually covers (part_dispatch).
-        union = sorted(
-            {p for a in areas for p in (a.get("scope_paths") or [])}
-        )
-        for part in parts:
-            if (part.get("kind") or "area") == "global":
-                part["scope_hint"] = union
+            areas = feature_areas
+        else:  # subsystem
+            areas = planner.filter_by_keys(areas, coverage_keys)
+            if coverage_keys and not areas:
+                note = f"coverage_keys {coverage_keys!r} matched no areas"
+                degraded_reason = (
+                    f"{degraded_reason}; {note}" if degraded_reason else note
+                )
+            if source == "area-map":
+                # Undersized sibling leaves share one run — the map stays
+                # fine-grained while parts stay worth a dispatch. Rotation
+                # ranks the bundles (a bundle's recency is its union's
+                # stalest path).
+                areas = planner.bundle_siblings(areas)
+            path_recency = None
+            if selection == "rotation":
+                path_recency = await coverage_recency_for(repository_uid)
+            parts = planner.build_plan_by_kind(
+                "subsystem",
+                areas,
+                lenses,
+                selection=selection,
+                k=k,
+                path_recency=path_recency,
+            )
 
     # The plan's own explanation — how the map's rows became this part list.
     # Map-level counts stay whole-map; part counts describe the actual plan.
     # bundled_leaves = leaves sharing a part with siblings (multi-key parts).
     area_parts = [p for p in parts if p["kind"] == "area"]
+    by_kind = {
+        "area": sum(1 for p in parts if p["kind"] == "area"),
+        "feature": sum(1 for p in parts if p["kind"] == "feature"),
+        "global": sum(1 for p in parts if p["kind"] == "global"),
+    }
     plan_summary = {
         "source": source,
         **map_stats,
@@ -357,11 +392,14 @@ async def _plan_parts(
         "bundled_leaves": sum(
             len(p["area_keys"]) for p in area_parts if len(p["area_keys"]) > 1
         ),
-        "feature_parts": sum(1 for p in parts if p["kind"] == "feature"),
-        "global_parts": sum(1 for p in parts if p["kind"] == "global"),
+        "feature_parts": by_kind["feature"],
+        "global_parts": by_kind["global"],
+        "total_runs": len(parts),
+        "by_kind": by_kind,
         "oversized": [str(a.get("title") or "") for a in areas if a.get("oversized")],
         "degraded": degraded_reason,
-        "area_prefix": area_prefix,
+        "coverage_keys": list(coverage_keys),
+        "selection": selection,
     }
     return parts, degraded_reason, source, plan_summary
 
@@ -414,6 +452,50 @@ async def preview_areas(repository_uid: str, *, area_prefix: str = "") -> dict:
     }
 
 
+def _resolve_kind(req: CreateCampaignRequest) -> tuple[str, list[str], str, list[str]]:
+    """(kind, coverage_keys, selection, lens_keys) from the request.
+
+    A non-empty `req.kind` is the new path — used verbatim. An empty kind is
+    the legacy `template` path, translated: rotation→subsystem/rotation,
+    focused→subsystem with only the first lens, full→batch, anything
+    else→subsystem. `coverage_keys` defaults to [req.area_prefix] when unset
+    but a prefix is given (legacy scoping)."""
+    lens_keys = list(req.lens_keys or [])
+    coverage_keys = list(req.coverage_keys or [])
+    if not coverage_keys and (req.area_prefix or "").strip():
+        coverage_keys = [(req.area_prefix or "").strip()]
+
+    kind = (req.kind or "").strip()
+    if kind:
+        if kind not in CAMPAIGN_KINDS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"invalid kind {req.kind!r}; valid: {sorted(CAMPAIGN_KINDS)}",
+            )
+        selection = (req.selection or "all").strip() or "all"
+        return kind, coverage_keys, selection, lens_keys
+
+    # Legacy template path.
+    template = (req.template or "rotation").strip()
+    if template not in CAMPAIGN_TEMPLATES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"invalid template {req.template!r}; valid: {sorted(CAMPAIGN_TEMPLATES)}",
+        )
+    if template == "rotation":
+        return "subsystem", coverage_keys, "rotation", lens_keys
+    if template == "focused":
+        if not lens_keys:
+            raise HTTPException(
+                status_code=422,
+                detail="focused campaigns need lens_keys[0] as the focus lens",
+            )
+        return "subsystem", coverage_keys, "all", [lens_keys[0]]
+    if template == "full":
+        return "batch", coverage_keys, "all", lens_keys
+    return "subsystem", coverage_keys, "all", lens_keys
+
+
 async def create(
     repository_uid: str,
     req: CreateCampaignRequest,
@@ -422,39 +504,45 @@ async def create(
     trigger_provenance: str = "manual",
 ) -> Campaign:
     """Plan a campaign (status=planning — launch is the separate go signal)."""
-    template = (req.template or "rotation").strip()
-    if template not in CAMPAIGN_TEMPLATES:
-        raise HTTPException(
-            status_code=422,
-            detail=f"invalid template {req.template!r}; valid: {sorted(CAMPAIGN_TEMPLATES)}",
-        )
-    if template == "focused" and not req.lens_keys:
-        raise HTTPException(
-            status_code=422, detail="focused campaigns need lens_keys[0] as the focus lens"
+    kind, coverage_keys, selection, lens_keys = _resolve_kind(req)
+
+    if kind == "batch":
+        # A batch fans out into three child campaigns — batch.py owns the
+        # parent+children creation (lazy import to avoid a circular import).
+        from domains.campaigns.services import batch
+
+        return await batch.create_batch(
+            repository_uid,
+            req,
+            created_by=created_by,
+            trigger_provenance=trigger_provenance or "manual",
         )
 
     # Clamp k up front so the stored value and the plan (and any launch-time
     # replan) are built from the same number.
     k = max(int(req.k or 3), 1)
-    area_prefix = (req.area_prefix or "").strip()
     parts, degraded_reason, source, plan_summary = await _plan_parts(
         repository_uid,
-        template=template,
-        lens_keys=list(req.lens_keys or []),
+        kind=kind,
+        coverage_keys=coverage_keys,
+        selection=selection,
+        lens_keys=lens_keys,
         k=k,
-        area_prefix=area_prefix,
     )
 
     c = Campaign(
         uid=uuid4().hex,
         repository_uid=repository_uid,
-        title=req.title or f"{template.capitalize()} audit campaign",
+        title=req.title or f"{kind.capitalize()} audit campaign",
         status="planning",
-        template=template,
+        template=(req.template or "rotation").strip(),
+        kind=kind,
+        selection=selection,
+        coverage_keys=coverage_keys,
         effort=(req.effort or "").strip(),
-        lens_keys=list(req.lens_keys or []),
+        lens_keys=lens_keys,
         k=k,
-        area_prefix=area_prefix,
+        area_prefix=(req.area_prefix or "").strip(),
         parts=parts,
         plan_summary=plan_summary,
         max_parallel=max(int(req.max_parallel or 2), 1),
@@ -474,7 +562,7 @@ async def create(
         subject_type="Campaign",
         actor_uid=created_by,
         repository_uid=repository_uid,
-        payload={"template": template, "parts": len(parts), "source": source, **({"degraded": degraded_reason} if degraded_reason else {})},
+        payload={"kind": kind, "parts": len(parts), "source": source, **({"degraded": degraded_reason} if degraded_reason else {})},
     )
     return c
 
@@ -497,10 +585,11 @@ async def _replan(c: Campaign) -> None:
     try:
         parts, degraded_reason, _source, plan_summary = await _plan_parts(
             c.repository_uid,
-            template=c.template or "rotation",
+            kind=str(getattr(c, "kind", "subsystem") or "subsystem"),
+            coverage_keys=list(getattr(c, "coverage_keys", []) or []),
+            selection=str(getattr(c, "selection", "all") or "all"),
             lens_keys=list(c.lens_keys or []),
             k=int(getattr(c, "k", 3) or 3),
-            area_prefix=str(getattr(c, "area_prefix", "") or ""),
         )
     except Exception as exc:  # noqa: BLE001 — launch must not fail on replan
         logger.warning(
@@ -531,13 +620,90 @@ async def launch(uid: str, *, actor_uid: str = "") -> Campaign:
     """planning → running; the celery tick starts dispatching parts.
 
     The stored plan is a snapshot from creation time — replan first so the
-    campaign runs against today's docs and tree, not a stale partition."""
+    campaign runs against today's docs and tree, not a stale partition.
+
+    A batch parent owns no parts of its own — it launches its children and
+    moves to running via batch.launch_batch instead of the normal replan."""
     c = await get(uid)
+    if str(getattr(c, "kind", "subsystem") or "subsystem") == "batch":
+        from domains.campaigns.services import batch
+
+        await batch.launch_batch(c)
+        return c
     if (c.status or "planning") == "planning":
         await _replan(c)
     await _transition(c, "running")
     await record_event(c, "launched", by=actor_uid)
     return c
+
+
+async def preview_plan(repository_uid: str, req: CreateCampaignRequest) -> dict:
+    """The plan a campaign WOULD produce, computed live, never persisted —
+    backs the new-campaign dialog's run-count preview. Runs the SAME
+    kind-aware planning path as create() (minus batch, which has no single
+    plan) and reports the shape a launch would dispatch."""
+    kind, coverage_keys, selection, lens_keys = _resolve_kind(req)
+    if kind == "batch":
+        # A batch has no single plan — preview each child kind and total.
+        from domains.lenses.services import lens_service
+
+        by_kind: dict[str, int] = {"area": 0, "feature": 0, "global": 0}
+        areas_all: list[dict] = []
+        uncovered = 0
+        oversized: list[str] = []
+        degraded = ""
+        for child_kind in ("subsystem", "feature", "global"):
+            parts, child_degraded, _source, summary = await _plan_parts(
+                repository_uid,
+                kind=child_kind,
+                coverage_keys=coverage_keys,
+                selection=selection,
+                lens_keys=list(lens_service.default_lens_keys(child_kind)),
+                k=max(int(req.k or 3), 1),
+            )
+            for key, val in summary["by_kind"].items():
+                by_kind[key] += val
+            oversized.extend(summary.get("oversized") or [])
+            if child_degraded and not degraded:
+                degraded = child_degraded
+        return {
+            "total_runs": sum(by_kind.values()),
+            "by_kind": by_kind,
+            "areas": areas_all,
+            "uncovered_files": uncovered,
+            "oversized": oversized,
+            "degraded": degraded,
+            "source": "batch",
+        }
+
+    k = max(int(req.k or 3), 1)
+    parts, degraded_reason, source, plan_summary = await _plan_parts(
+        repository_uid,
+        kind=kind,
+        coverage_keys=coverage_keys,
+        selection=selection,
+        lens_keys=lens_keys,
+        k=k,
+    )
+    areas = [
+        {
+            "title": p.get("title") or "",
+            "kind": p.get("kind") or "area",
+            "scope_paths": list(p.get("scope_paths") or []),
+            "area_keys": list(p.get("area_keys") or []),
+            "file_count": p.get("file_count"),
+        }
+        for p in parts
+    ]
+    return {
+        "total_runs": plan_summary["total_runs"],
+        "by_kind": plan_summary["by_kind"],
+        "areas": areas,
+        "uncovered_files": 0,
+        "oversized": list(plan_summary.get("oversized") or []),
+        "degraded": degraded_reason,
+        "source": source,
+    }
 
 
 async def cancel(uid: str, *, reason: str = "", actor_uid: str = "") -> Campaign:

@@ -250,8 +250,24 @@ async def tick_campaigns() -> dict:
     finalized = 0
     errors = 0
     try:
+        from domains.campaigns.services import batch
+
         for c in await Campaign.nodes.filter(status="running"):
             ticked += 1
+            # Batch parents own no parts — they roll their children up instead
+            # of dispatching. aggregate_batch is a no-op until all children
+            # are terminal, then it finalizes the parent.
+            if str(getattr(c, "kind", "") or "") == "batch":
+                try:
+                    if await batch.aggregate_batch(c):
+                        finalized += 1
+                except Exception as exc:  # noqa: BLE001 — one batch never stalls the rest
+                    errors += 1
+                    logger.warning(
+                        f"campaign {c.uid}: batch aggregate failed: {type(exc).__name__}: {exc}",
+                        extra={"tag": "campaigns"},
+                    )
+                continue
             try:
                 d, f = await _tick_one(c)
                 dispatched += d

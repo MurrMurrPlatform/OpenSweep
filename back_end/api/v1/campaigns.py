@@ -54,6 +54,22 @@ async def list_campaigns(
     ]
 
 
+@router.post(
+    "/repositories/{repository_uid}/campaign-plan-preview",
+    operation_id="opensweep_campaign_plan_preview",
+)
+async def preview_campaign_plan(
+    repository_uid: str,
+    req: CreateCampaignRequest,
+    user: UserDTO = Depends(get_current_user),
+):
+    """The plan a campaign WOULD produce — computed live, nothing persisted.
+    Returns total_runs, by_kind, areas, uncovered_files, oversized, degraded,
+    and source so the new-campaign dialog can show a live run-count preview."""
+    await require_repo_in_org(repository_uid, user.org_uid)
+    return await campaign_service.preview_plan(repository_uid, req)
+
+
 @router.get(
     "/repositories/{repository_uid}/campaign-areas",
     response_model=CampaignAreasPreview,

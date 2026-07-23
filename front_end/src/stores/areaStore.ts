@@ -9,6 +9,7 @@ import type {
   AreaEditStatus,
   GenerateSpecsResponse,
   MapAreasResponse,
+  ReviseSpecResponse,
   UpdateAreaRequest,
   UpdateAreaResponse,
 } from '@/types/api'
@@ -122,6 +123,12 @@ export const useAreaStore = defineStore('areas', () => {
     return apiPost<GenerateSpecsResponse>(`/repositories/${repoUid}/sweep/generate-specs`)
   }
 
+  /** Dispatch an AI run that revises the area's spec given a free-text instruction.
+   *  The run proposes an AreaEdit that lands in the pending-edits review queue. */
+  async function reviseSpec(uid: string, instruction: string): Promise<ReviseSpecResponse> {
+    return apiPost<ReviseSpecResponse>(`/areas/${uid}/revise-spec`, { instruction })
+  }
+
   return {
     areas,
     edits,
@@ -138,6 +145,7 @@ export const useAreaStore = defineStore('areas', () => {
     bulkReject,
     mapNow,
     generateSpecs,
+    reviseSpec,
     resetAll,
   }
 })

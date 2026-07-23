@@ -8,16 +8,19 @@ import {
   BookOpen,
   ChevronDown,
   ChevronRight,
+  FolderTree,
   Layers,
   Pencil,
   Sparkles,
   Trash2,
+  X,
 } from 'lucide-vue-next'
 import { useAreaStore } from '@/stores/areaStore'
 import { useRepositoryStore } from '@/stores/repositoryStore'
 import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
 import { areaKindHelp, areaKindVariant, areaStaleTitle } from '@/lib/areas'
+import { buildTreeRows } from '@/lib/treeRows'
 import { formatRelativeTime } from '@/lib/utils'
 import AreaEditDialog from '@/components/areas/AreaEditDialog.vue'
 import AreaEditReviewCard from '@/components/areas/AreaEditReviewCard.vue'
@@ -26,9 +29,11 @@ import { PageHeader } from '@/components/ui/page-header'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ErrorState } from '@/components/ui/error-state'
+import { Textarea } from '@/components/ui/textarea'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -193,6 +198,11 @@ const featureRollup = computed(() => {
   }
 })
 
+/** Sub-feature list rendered as a hierarchy. */
+const subFeatureTreeRows = computed(() =>
+  buildTreeRows(detail.value?.sub_features ?? [], (f) => f.key),
+)
+
 const expandedSpecs = ref<Set<string>>(new Set())
 function toggleSpec(key: string) {
   const next = new Set(expandedSpecs.value)
@@ -200,6 +210,34 @@ function toggleSpec(key: string) {
   else next.add(key)
   expandedSpecs.value = next
 }
+
+/** Depth-based left padding for sub-feature tree rows (matches AreasView). */
+function indentSubFeature(depth: number) {
+  return { paddingLeft: `${12 + depth * 20}px` }
+}
+
+/** Whether any other sub-feature is nested under this key. */
+function hasSubFeatureChildren(key: string): boolean {
+  return (detail.value?.sub_features ?? []).some((f) => f.key.startsWith(key + '/'))
+}
+
+const collapsedSubFeatureKeys = ref<Set<string>>(new Set())
+function toggleSubFeatureCollapse(key: string) {
+  const next = new Set(collapsedSubFeatureKeys.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  collapsedSubFeatureKeys.value = next
+}
+
+const visibleSubFeatureRows = computed(() =>
+  subFeatureTreeRows.value.filter((row) => {
+    const segments = row.key.split('/')
+    for (let i = 1; i < segments.length; i++) {
+      if (collapsedSubFeatureKeys.value.has(segments.slice(0, i).join('/'))) return false
+    }
+    return true
+  }),
+)
 
 const generatingSpecs = ref(false)
 async function generateSpecs() {
@@ -220,6 +258,64 @@ async function generateSpecs() {
     else toast.error('Couldn’t generate specs', msg)
   } finally {
     generatingSpecs.value = false
+  }
+}
+
+// ── Inline spec editor ───────────────────────────────────────────────────────
+
+const specEditing = ref(false)
+const specDraft = ref('')
+const specSaving = ref(false)
+
+function startSpecEdit() {
+  specDraft.value = area.value?.spec ?? ''
+  specEditing.value = true
+}
+
+function cancelSpecEdit() {
+  specEditing.value = false
+  specDraft.value = ''
+}
+
+async function saveSpec() {
+  const a = area.value
+  if (!a || specSaving.value) return
+  specSaving.value = true
+  try {
+    const { area: saved, warnings } = await areaStore.patchArea(a.uid, { spec: specDraft.value })
+    toastPatch('Spec saved', saved.key, warnings)
+    specEditing.value = false
+    specDraft.value = ''
+    await refresh()
+  } catch (e: unknown) {
+    toast.error("Couldn't save spec", e instanceof Error ? e.message : String(e))
+  } finally {
+    specSaving.value = false
+  }
+}
+
+// ── Revise with AI ────────────────────────────────────────────────────────────
+
+const reviseInstruction = ref('')
+const revising = ref(false)
+
+async function reviseSpec() {
+  const a = area.value
+  const instruction = reviseInstruction.value.trim()
+  if (!a || !instruction || revising.value) return
+  revising.value = true
+  try {
+    const result = await areaStore.reviseSpec(a.uid, instruction)
+    reviseInstruction.value = ''
+    toast.success(
+      'AI revision dispatched',
+      `Run ${result.run_uid.slice(0, 8)} — a pending edit will appear in the review queue when it finishes.`,
+    )
+  } catch (e: unknown) {
+    const msg = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
+    toast.error("Couldn't dispatch revision", msg)
+  } finally {
+    revising.value = false
   }
 }
 
@@ -298,16 +394,62 @@ async function confirmDelete() {
 
       <!-- ── Spec ────────────────────────────────────────────────────────── -->
       <Card>
-        <CardHeader class="pb-2">
+        <CardHeader class="flex-row flex-wrap items-center justify-between gap-2 space-y-0 pb-2">
           <CardTitle class="text-base">{{ detail.is_feature_parent ? 'Charter (optional)' : 'Spec' }}</CardTitle>
+          <Button v-if="!specEditing" variant="ghost" size="sm" @click="startSpecEdit">
+            <Pencil class="h-3.5 w-3.5" /> Edit
+          </Button>
         </CardHeader>
-        <CardContent>
-          <MarkdownView v-if="area.spec" :model-value="area.spec" preview-only />
-          <p v-else class="text-sm text-muted-foreground">
-            {{ detail.is_feature_parent
-              ? 'No charter — a parent feature groups its sub-features; each sub-feature carries its own spec below.'
-              : 'No spec yet — edit the area to record what to check here.' }}
-          </p>
+        <CardContent class="space-y-3">
+          <!-- Inline editor -->
+          <template v-if="specEditing">
+            <Textarea
+              v-model="specDraft"
+              class="min-h-40 font-mono text-xs"
+              placeholder="Spec markdown…"
+            />
+            <div class="flex items-center gap-2">
+              <Button size="sm" :loading="specSaving" @click="saveSpec">Save</Button>
+              <Button variant="ghost" size="sm" :disabled="specSaving" @click="cancelSpecEdit">
+                <X class="h-3.5 w-3.5" /> Cancel
+              </Button>
+            </div>
+          </template>
+          <template v-else>
+            <MarkdownView v-if="area.spec" :model-value="area.spec" preview-only />
+            <p v-else class="text-sm text-muted-foreground">
+              {{ detail.is_feature_parent
+                ? 'No charter — a parent feature groups its sub-features; each sub-feature carries its own spec below.'
+                : 'No spec yet — click Edit to add one, or use Revise with AI below.' }}
+            </p>
+          </template>
+
+          <!-- Revise with AI -->
+          <div v-if="!specEditing" class="border-t border-border pt-3">
+            <p class="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <Sparkles class="h-3.5 w-3.5" /> Revise with AI
+            </p>
+            <div class="flex gap-2">
+              <Input
+                v-model="reviseInstruction"
+                placeholder="e.g. make criterion 2 more concrete"
+                class="text-sm"
+                @keydown.enter.prevent="reviseSpec"
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                :disabled="!reviseInstruction.trim() || revising"
+                :loading="revising"
+                @click="reviseSpec"
+              >
+                Revise
+              </Button>
+            </div>
+            <p class="mt-1.5 text-xs text-muted-foreground">
+              Dispatches an AI run that proposes a revised spec as a pending edit for your review.
+            </p>
+          </div>
         </CardContent>
       </Card>
 
@@ -351,41 +493,68 @@ async function confirmDelete() {
             No sub-features under this feature yet.
           </p>
           <ul v-else class="divide-y divide-border">
-            <li v-for="leaf in detail.sub_features" :key="leaf.uid" class="px-4 py-2">
-              <div class="flex flex-wrap items-center gap-2">
-                <RouterLink
-                  :to="{ name: 'area-detail', params: { uid: leaf.uid } }"
-                  class="min-w-0 truncate text-sm font-medium hover:underline"
-                >
-                  {{ leaf.title || leaf.key }}
-                </RouterLink>
-                <span class="truncate font-mono text-[10px] text-muted-foreground">{{ leaf.key }}</span>
-                <span
-                  v-if="leaf.stale"
-                  class="h-2 w-2 shrink-0 rounded-full bg-amber-500"
-                  title="Code changed under this sub-feature's scope since its last review"
-                />
-                <Badge v-if="!leaf.has_spec" variant="warn" class="px-1.5 text-[10px]" title="No spec — audit skipped until one exists">no spec</Badge>
-                <Badge
-                  :variant="leaf.coverage_count > 0 ? 'success' : 'secondary'"
-                  class="ml-auto px-1.5 text-[10px]"
-                  :title="`${leaf.coverage_count} coverage stamp${leaf.coverage_count === 1 ? '' : 's'}`"
-                >
-                  {{ leaf.coverage_count > 0 ? `covered ×${leaf.coverage_count}` : 'not covered' }}
-                </Badge>
-                <button
-                  v-if="leaf.spec"
-                  type="button"
-                  class="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-                  @click="toggleSpec(leaf.key)"
-                >
-                  <component :is="expandedSpecs.has(leaf.key) ? ChevronDown : ChevronRight" class="h-3.5 w-3.5" />
-                  spec
-                </button>
-              </div>
-              <div v-if="leaf.spec && expandedSpecs.has(leaf.key)" class="mt-2 rounded-md border border-border p-3">
-                <MarkdownView :model-value="leaf.spec" preview-only />
-              </div>
+            <li v-for="row in visibleSubFeatureRows" :key="`${row.type}:${row.key}`">
+              <!-- Implicit group header derived from key segments -->
+              <button
+                v-if="row.type === 'group'"
+                type="button"
+                class="flex w-full items-center gap-1.5 bg-muted/40 py-1.5 pr-3 text-left text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground"
+                :style="indentSubFeature(row.depth)"
+                :title="collapsedSubFeatureKeys.has(row.key) ? 'Expand' : 'Collapse'"
+                @click="toggleSubFeatureCollapse(row.key)"
+              >
+                <component :is="collapsedSubFeatureKeys.has(row.key) ? ChevronRight : ChevronDown" class="h-3.5 w-3.5 shrink-0" />
+                <FolderTree class="h-3.5 w-3.5 shrink-0" />
+                <span class="truncate font-mono">{{ row.name }}/</span>
+              </button>
+
+              <template v-else-if="row.type === 'leaf'">
+                <div class="py-2 pr-4" :style="indentSubFeature(row.depth)">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <button
+                      v-if="hasSubFeatureChildren(row.key)"
+                      type="button"
+                      class="shrink-0 rounded-sm p-1 text-muted-foreground hover:text-foreground"
+                      :title="collapsedSubFeatureKeys.has(row.key) ? 'Expand children' : 'Collapse children'"
+                      @click="toggleSubFeatureCollapse(row.key)"
+                    >
+                      <component :is="collapsedSubFeatureKeys.has(row.key) ? ChevronRight : ChevronDown" class="h-3.5 w-3.5" />
+                    </button>
+                    <RouterLink
+                      :to="{ name: 'area-detail', params: { uid: row.item.uid } }"
+                      class="min-w-0 truncate text-sm font-medium hover:underline"
+                    >
+                      {{ row.item.title || row.item.key }}
+                    </RouterLink>
+                    <span class="truncate font-mono text-[10px] text-muted-foreground">{{ row.item.key }}</span>
+                    <span
+                      v-if="row.item.stale"
+                      class="h-2 w-2 shrink-0 rounded-full bg-amber-500"
+                      title="Code changed under this sub-feature's scope since its last review"
+                    />
+                    <Badge v-if="!row.item.has_spec" variant="warn" class="px-1.5 text-[10px]" title="No spec — audit skipped until one exists">no spec</Badge>
+                    <Badge
+                      :variant="row.item.coverage_count > 0 ? 'success' : 'secondary'"
+                      class="ml-auto px-1.5 text-[10px]"
+                      :title="`${row.item.coverage_count} coverage stamp${row.item.coverage_count === 1 ? '' : 's'}`"
+                    >
+                      {{ row.item.coverage_count > 0 ? `covered ×${row.item.coverage_count}` : 'not covered' }}
+                    </Badge>
+                    <button
+                      v-if="row.item.spec"
+                      type="button"
+                      class="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                      @click="toggleSpec(row.item.key)"
+                    >
+                      <component :is="expandedSpecs.has(row.item.key) ? ChevronDown : ChevronRight" class="h-3.5 w-3.5" />
+                      spec
+                    </button>
+                  </div>
+                  <div v-if="row.item.spec && expandedSpecs.has(row.item.key)" class="mt-2 rounded-md border border-border p-3">
+                    <MarkdownView :model-value="row.item.spec" preview-only />
+                  </div>
+                </div>
+              </template>
             </li>
           </ul>
         </CardContent>

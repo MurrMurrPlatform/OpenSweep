@@ -4,8 +4,8 @@
 docs' watch scopes under one invariant — EVERY FILE IS OWNED BY EXACTLY
 ONE AREA, the doc page with the most specific matching watch prefix —
 then right-sizes the result (split oversized, merge tiny same-branch,
-sweep uncovered paths into a remainder area). `build_plan` turns areas +
-lenses into the campaign's part list per template. Both are pure so the
+sweep uncovered paths into a remainder area). `build_plan_by_kind` turns
+areas + lenses into the campaign's part list per kind. Both are pure so the
 whole planning surface is unit-testable; campaign_service supplies the
 loaded docs/tree/lenses.
 """
@@ -529,6 +529,26 @@ def filter_by_prefix(areas: list[dict], area_prefix: str) -> list[dict]:
     ]
 
 
+def filter_by_keys(areas: list[dict], keys: list[str]) -> list[dict]:
+    """The areas at or under ANY key in `keys` in the key hierarchy. Pure.
+
+    Empty `keys` keeps everything. Areas with an empty area_key
+    (docs-derived, remainder) have no place in the hierarchy, so they only
+    survive an empty keys list. Boundary via child_key_prefix_of — "backend"
+    never captures "backend-jobs".
+    """
+    ks = [k for k in (str(k or "").strip() for k in keys) if k]
+    if not ks:
+        return list(areas)
+
+    def _match(key: str) -> bool:
+        return bool(key) and any(
+            key == k or child_key_prefix_of(k, key) for k in ks
+        )
+
+    return [a for a in areas if _match(str(a.get("area_key") or ""))]
+
+
 def _area_recency(
     area: dict, path_recency: dict[str, datetime | None]
 ) -> datetime | None:
@@ -576,77 +596,61 @@ def _part(idx: int, kind: str, title: str, area: dict | None, lens_keys: list[st
     return part
 
 
-def build_plan(
-    template: str,
+def build_plan_by_kind(
+    kind: str,
     areas: list[dict],
     lenses: list[dict],
     *,
+    selection: str = "all",
     k: int = 3,
-    path_recency: dict[str, datetime | None] | None = None,
-    focus_lens: str | None = None,
+    path_recency: dict | None = None,
     feature_areas: list[dict] | None = None,
 ) -> list[dict]:
-    """Areas + lenses → the campaign's ordered part list.
+    """Kind-dispatched plan builder. Additive alongside the existing build_plan.
 
-    - full:     every area (all enabled local lenses) + one feature part per
-                `feature_areas` LEAF (implementation-gaps lens) + one global
-                part per enabled global lens.
-    - rotation: the k least-recently-covered areas (never-covered first,
-                scored by `path_recency` over their scope paths) + one feature
-                part per STALE feature leaf (implementation-gaps); no globals.
-    - focused:  every area with just `focus_lens`, plus one feature part per
-                STALE feature leaf (implementation-gaps), plus that lens's
-                global sweep when it names a global agent.
-
-    Feature leaves join every scope now — full audits all of them; rotation
-    and focused audit the ones the unified staleness axis flags (`stale` on
-    the feature dict, set from area_is_stale). Parts get idx assigned
-    sequentially, areas before features before globals.
+    kind="subsystem": one kind="area" part per area, lens_keys = all enabled
+        lenses. selection filters: all=every area; stale=areas where
+        area.get("stale"); rotation=k least-recently-covered via _area_recency.
+    kind="feature": one kind="feature" part per leaf in feature_areas, lens_keys
+        = all enabled lenses. selection: all=every leaf; stale/rotation=stale
+        leaves only.
+    kind="global": one kind="global" part per enabled lens (each expected to
+        carry a global_agent_key).
+    kind="batch": returns [] (handled by batch.py).
     """
-    enabled = [dict(lens) for lens in lenses if lens.get("enabled", True)]
-    local = [lens for lens in enabled if (lens.get("scope") or "local") == "local"]
-    global_ = [lens for lens in enabled if lens.get("scope") == "global"]
-    local_keys = [str(lens["key"]) for lens in local]
-    features = list(feature_areas or [])
-    stale_features = [fa for fa in features if fa.get("stale")]
+    enabled = [lens for lens in lenses if lens.get("enabled", True)]
+    enabled_keys = [str(lens["key"]) for lens in enabled]
 
-    def _global_part(lens: dict) -> dict:
+    def _global_part_bk(lens: dict) -> dict:
         return _part(0, "global", f"Global sweep — {lens['key']}", None, [str(lens["key"])])
 
-    def _feature_parts(feats: list[dict]) -> list[dict]:
-        return [
-            _part(0, "feature", fa["title"], fa, ["implementation-gaps"])
-            for fa in feats
-        ]
+    parts: list[dict]
 
-    picked: list[dict]
-    feature_parts: list[dict]
-    globals_out: list[dict]
-    if template == "rotation":
-        recency = path_recency or {}
-        scored = [(i, _area_recency(a, recency)) for i, a in enumerate(areas)]
-        _EPOCH = datetime.min
-        scored.sort(key=lambda pair: (pair[1] is not None, pair[1] or _EPOCH, pair[0]))
-        picked = [
-            _part(0, "area", areas[i]["title"], areas[i], local_keys)
-            for i, _ in scored[: max(k, 0)]
-        ]
-        feature_parts = _feature_parts(stale_features)
-        globals_out = []
-    elif template == "focused":
-        focus = str(focus_lens or "")
-        picked = [_part(0, "area", a["title"], a, [focus]) for a in areas]
-        feature_parts = _feature_parts(stale_features)
-        lens = next((lens for lens in enabled if str(lens.get("key")) == focus), None)
-        globals_out = (
-            [_global_part(lens)] if lens is not None and lens.get("global_agent_key") else []
-        )
-    else:  # full
-        picked = [_part(0, "area", a["title"], a, local_keys) for a in areas]
-        feature_parts = _feature_parts(features)
-        globals_out = [_global_part(lens) for lens in global_]
+    if kind == "subsystem":
+        if selection == "stale":
+            candidate_areas = [a for a in areas if a.get("stale")]
+        elif selection == "rotation":
+            recency = path_recency or {}
+            scored = [(i, _area_recency(a, recency)) for i, a in enumerate(areas)]
+            _EPOCH = datetime.min
+            scored.sort(key=lambda pair: (pair[1] is not None, pair[1] or _EPOCH, pair[0]))
+            candidate_areas = [areas[i] for i, _ in scored[: max(k, 0)]]
+        else:  # all
+            candidate_areas = list(areas)
+        parts = [_part(0, "area", a["title"], a, enabled_keys) for a in candidate_areas]
 
-    parts = picked + feature_parts + globals_out
+    elif kind == "feature":
+        leaves = list(feature_areas or [])
+        if selection in ("stale", "rotation"):
+            leaves = [fa for fa in leaves if fa.get("stale")]
+        parts = [_part(0, "feature", fa["title"], fa, enabled_keys) for fa in leaves]
+
+    elif kind == "global":
+        parts = [_global_part_bk(lens) for lens in enabled]
+
+    else:  # batch (and any unknown kind)
+        return []
+
     for idx, part in enumerate(parts):
         part["idx"] = idx
     return parts

@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { apiDelete, apiGet, apiPost } from '@/services/api'
-import type { CampaignAreasPreview, CampaignDTO, CreateCampaignRequest } from '@/types/api'
+import type { CampaignAreasPreview, CampaignDTO, CampaignPlanPreview, CreateCampaignRequest } from '@/types/api'
 
 export const useCampaignStore = defineStore('campaigns', () => {
   const list = ref<CampaignDTO[]>([])
@@ -48,5 +48,11 @@ export const useCampaignStore = defineStore('campaigns', () => {
     list.value = list.value.filter((x) => x.uid !== uid)
   }
 
-  return { list, fetchForRepo, get, fetchAreas, create, launch, cancel, remove }
+  /** Live plan preview — what would dispatch if a campaign were launched now.
+   *  Calls the same pure planner path as create() but persists nothing. */
+  async function previewPlan(repository_uid: string, req: CreateCampaignRequest): Promise<CampaignPlanPreview> {
+    return apiPost<CampaignPlanPreview>(`/repositories/${repository_uid}/campaign-plan-preview`, req)
+  }
+
+  return { list, fetchForRepo, get, fetchAreas, create, previewPlan, launch, cancel, remove }
 })

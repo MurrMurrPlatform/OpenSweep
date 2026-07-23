@@ -17,6 +17,8 @@ import { useCurrentRepo } from '@/composables/useCurrentRepo'
 import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
 import { AREA_KIND_HELP, areaStaleTitle } from '@/lib/areas'
+import { buildTreeRows } from '@/lib/treeRows'
+import type { TreeRow } from '@/lib/treeRows'
 import AreaEditReviewCard from '@/components/areas/AreaEditReviewCard.vue'
 import { MarkdownView } from '@/components/ui/markdown'
 import { PageHeader } from '@/components/ui/page-header'
@@ -141,6 +143,11 @@ const subsystems = computed(() => sortedAreas.value.filter((a) => a.kind === 'su
 const features = computed(() => sortedAreas.value.filter((a) => a.kind === 'feature'))
 const ignored = computed(() => sortedAreas.value.filter((a) => a.kind === 'ignore'))
 
+/** Feature areas rendered as a hierarchy (shared tree helper). */
+const featureTreeRows = computed<TreeRow<AreaDTO>[]>(() =>
+  buildTreeRows(features.value, (a) => a.key),
+)
+
 /** area_key → file_count, from the preview (best-effort rollups). */
 const fileCountByKey = computed<Map<string, number | null>>(() => {
   const m = new Map<string, number | null>()
@@ -218,9 +225,23 @@ function toggleCollapse(key: string) {
   collapsedKeys.value = next
 }
 
+const collapsedFeatureKeys = ref<Set<string>>(new Set())
+
+function toggleFeatureCollapse(key: string) {
+  const next = new Set(collapsedFeatureKeys.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  collapsedFeatureKeys.value = next
+}
+
 /** A row (group or area) has children when any subsystem key nests under it. */
 function hasChildren(key: string): boolean {
   return subsystems.value.some((a) => a.key.startsWith(key + '/'))
+}
+
+/** A feature row has children when any other feature key nests under it. */
+function hasFeatureChildren(key: string): boolean {
+  return features.value.some((a) => a.key.startsWith(key + '/'))
 }
 
 /** Rows whose ancestor prefix is collapsed are hidden. */
@@ -229,6 +250,17 @@ const visiblePartitionRows = computed(() =>
     const segments = row.key.split('/')
     for (let i = 1; i < segments.length; i++) {
       if (collapsedKeys.value.has(segments.slice(0, i).join('/'))) return false
+    }
+    return true
+  }),
+)
+
+/** Feature tree rows with collapsed ancestors filtered out. */
+const visibleFeatureTreeRows = computed(() =>
+  featureTreeRows.value.filter((row) => {
+    const segments = row.key.split('/')
+    for (let i = 1; i < segments.length; i++) {
+      if (collapsedFeatureKeys.value.has(segments.slice(0, i).join('/'))) return false
     }
     return true
   }),
@@ -622,7 +654,7 @@ async function confirmResolveAll() {
         </Card>
         </TabsContent>
 
-        <!-- ── Features: cross-cutting spec overlays ─────────────────────── -->
+        <!-- ── Features: cross-cutting spec overlays (hierarchical tree) ──── -->
         <TabsContent value="features" class="mt-3">
         <Card>
           <CardHeader class="flex-row items-center justify-between space-y-0">
@@ -639,51 +671,79 @@ async function confirmResolveAll() {
               No feature areas — cross-cutting overlays the agent proposes land here.
             </div>
             <ul v-else class="divide-y divide-border">
-              <li v-for="a in features" :key="a.uid">
-                <RouterLink
-                  :to="{ name: 'area-detail', params: { uid: a.uid } }"
-                  class="flex items-start gap-2 border-l-2 border-l-primary/60 py-2 pl-2.5 pr-3 transition-colors hover:bg-accent/50"
-                  :class="{ 'opacity-60': !a.enabled }"
+              <li v-for="row in visibleFeatureTreeRows" :key="`${row.type}:${row.key}`">
+                <!-- Implicit parent: a group header derived from key segments -->
+                <button
+                  v-if="row.type === 'group'"
+                  type="button"
+                  class="flex w-full items-center gap-1.5 bg-muted/40 py-1.5 pr-3 text-left text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground"
+                  :style="indent(row.depth)"
+                  :title="collapsedFeatureKeys.has(row.key) ? 'Expand' : 'Collapse'"
+                  @click="toggleFeatureCollapse(row.key)"
                 >
-                  <button
-                    type="button"
-                    class="mt-0.5 rounded-sm p-1 text-muted-foreground hover:text-foreground"
-                    :title="a.spec ? 'Toggle spec preview' : 'No spec yet'"
-                    :class="!a.spec && 'opacity-40'"
-                    @click.stop.prevent="a.spec && toggleSpec(a.uid)"
+                  <component :is="collapsedFeatureKeys.has(row.key) ? ChevronRight : ChevronDown" class="h-3.5 w-3.5 shrink-0" />
+                  <FolderTree class="h-3.5 w-3.5 shrink-0" />
+                  <span class="truncate font-mono">{{ row.name }}/</span>
+                </button>
+
+                <template v-else-if="row.type === 'leaf'">
+                  <RouterLink
+                    :to="{ name: 'area-detail', params: { uid: row.item.uid } }"
+                    class="flex items-start gap-2 border-l-2 border-l-primary/60 py-2 pr-3 transition-colors hover:bg-accent/50"
+                    :class="{ 'opacity-60': !row.item.enabled }"
+                    :style="indent(row.depth)"
                   >
-                    <component :is="expandedSpecs.has(a.uid) ? ChevronDown : ChevronRight" class="h-3.5 w-3.5" />
-                  </button>
-                  <div class="min-w-0 flex-1">
-                    <div class="flex flex-wrap items-center gap-1.5">
-                      <span class="truncate text-sm font-medium">{{ a.title || a.key }}</span>
-                      <Badge variant="info" class="px-1.5 text-[10px]">feature</Badge>
-                      <Badge v-if="!a.enabled" variant="outline" class="px-1.5 text-[10px]">disabled</Badge>
-                      <span
-                        v-if="a.stale"
-                        class="h-2 w-2 shrink-0 rounded-full bg-amber-500"
-                        :title="areaStaleTitle(a)"
-                      />
-                      <Badge v-if="a.pending_edits > 0" variant="warn" class="px-1.5 text-[10px]" title="Pending agent edits">
-                        {{ a.pending_edits }}
-                      </Badge>
-                      <span
-                        v-if="a.scope_paths.length"
-                        class="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground"
-                        :title="a.scope_paths.join('\n')"
-                      >
-                        spans {{ a.scope_paths.length }} path{{ a.scope_paths.length === 1 ? '' : 's' }}
-                      </span>
+                    <button
+                      v-if="hasFeatureChildren(row.key)"
+                      type="button"
+                      class="mt-0.5 rounded-sm p-1 text-muted-foreground hover:text-foreground"
+                      :title="collapsedFeatureKeys.has(row.key) ? 'Expand children' : 'Collapse children'"
+                      @click.stop.prevent="toggleFeatureCollapse(row.key)"
+                    >
+                      <component :is="collapsedFeatureKeys.has(row.key) ? ChevronRight : ChevronDown" class="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      v-else
+                      type="button"
+                      class="mt-0.5 rounded-sm p-1 text-muted-foreground hover:text-foreground"
+                      :title="row.item.spec ? 'Toggle spec preview' : 'No spec yet'"
+                      :class="!row.item.spec && 'opacity-40'"
+                      @click.stop.prevent="row.item.spec && toggleSpec(row.item.uid)"
+                    >
+                      <component :is="expandedSpecs.has(row.item.uid) ? ChevronDown : ChevronRight" class="h-3.5 w-3.5" />
+                    </button>
+                    <div class="min-w-0 flex-1">
+                      <div class="flex flex-wrap items-center gap-1.5">
+                        <span class="truncate text-sm font-medium">{{ row.item.title || row.item.key }}</span>
+                        <Badge variant="info" class="px-1.5 text-[10px]">feature</Badge>
+                        <Badge v-if="!row.item.enabled" variant="outline" class="px-1.5 text-[10px]">disabled</Badge>
+                        <span
+                          v-if="row.item.stale"
+                          class="h-2 w-2 shrink-0 rounded-full bg-amber-500"
+                          :title="areaStaleTitle(row.item)"
+                        />
+                        <Badge v-if="row.item.pending_edits > 0" variant="warn" class="px-1.5 text-[10px]" title="Pending agent edits">
+                          {{ row.item.pending_edits }}
+                        </Badge>
+                        <span
+                          v-if="row.item.scope_paths.length"
+                          class="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground"
+                          :title="row.item.scope_paths.join('\n')"
+                        >
+                          spans {{ row.item.scope_paths.length }} path{{ row.item.scope_paths.length === 1 ? '' : 's' }}
+                        </span>
+                      </div>
+                      <div class="truncate font-mono text-[10px] text-muted-foreground">{{ row.item.key }}</div>
                     </div>
-                    <div class="truncate font-mono text-[10px] text-muted-foreground">{{ a.key }}</div>
+                  </RouterLink>
+                  <div
+                    v-if="expandedSpecs.has(row.item.uid) && row.item.spec"
+                    class="mb-2 mr-3 rounded-md border border-border p-3"
+                    :style="{ marginLeft: `${36 + row.depth * 20}px` }"
+                  >
+                    <MarkdownView :model-value="row.item.spec" preview-only />
                   </div>
-                </RouterLink>
-                <div
-                  v-if="expandedSpecs.has(a.uid) && a.spec"
-                  class="mb-2 ml-9 mr-3 rounded-md border border-border p-3"
-                >
-                  <MarkdownView :model-value="a.spec" preview-only />
-                </div>
+                </template>
               </li>
             </ul>
           </CardContent>

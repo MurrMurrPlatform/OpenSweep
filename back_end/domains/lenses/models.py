@@ -5,16 +5,16 @@ A lens is one named discipline of scrutiny ("bugs", "security",
 what evidence a finding needs, and that "checked, nothing found" is a
 valid verdict.
 
-- `scope="local"` lenses compose into per-area run checklists
-  (lens_service.lens_checklist): an area run works its lenses one at a
-  time and reports a verdict per lens through complete_run's
-  lens_verdicts.
-- `scope="global"` lenses back whole-repo sweep agents — cross-cutting
-  concerns (architecture, implementation gaps) that cannot be judged one
-  area at a time. `global_agent_key` names the seeded variant slug
-  (opensweep://library/<slug>) dispatched for them; area runs escalate
-  out-of-scope observations to these via `escalate:<lens-key>` finding
-  tags instead of investigating them.
+Local lenses compose into per-area run checklists (lens_service.lens_checklist):
+an area run works its lenses one at a time and reports a verdict per lens
+through complete_run's lens_verdicts.
+
+Global lenses back whole-repo sweep agents — cross-cutting concerns
+(architecture, implementation gaps) that cannot be judged one area at a time.
+`global_agent_key` names the seeded variant slug (opensweep://library/<slug>)
+dispatched for them; area runs escalate out-of-scope observations to these via
+`escalate:<lens-key>` finding tags instead of investigating them. A lens is
+global iff `bool(global_agent_key)`.
 
 Seeded rows (`provenance="system"`) carry a `seed_checksum` with the same
 UPSERT/SYNC/FORCE semantics as the prompt library (services/seed_lenses.py
@@ -30,15 +30,12 @@ from neomodel import (
     StringProperty,
 )
 
-LENS_SCOPES = {"local", "global"}
-
 
 class Lens(AsyncStructuredNode):
     uid = StringProperty(unique_index=True, required=True)
     key = StringProperty(unique_index=True, required=True)
 
     title = StringProperty(default="")
-    scope = StringProperty(default="local", index=True)  # local | global
     body = StringProperty(default="")  # the prompt snippet
     tags = JSONProperty(default=[])
     # Pre-pass inputs the lens wants injected into its briefing

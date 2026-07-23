@@ -26,6 +26,21 @@ class Campaign(AsyncStructuredNode):
     # planning | running | finalizing | done | failed | cancelled
     status = StringProperty(default="planning", index=True)
 
+    # subsystem | feature | global | batch — the campaign shape/kind.
+    kind = StringProperty(default="subsystem", index=True)
+
+    # Which files/areas to select: all | stale | rotation.
+    selection = StringProperty(default="all")
+
+    # The area keys this campaign covers (empty = whole map).
+    coverage_keys = JSONProperty(default=[])
+
+    # Batch wiring: parent campaign uid (empty for non-batch).
+    parent_uid = StringProperty(default="")
+
+    # Batch wiring: child campaign uids (empty for non-batch).
+    child_uids = JSONProperty(default=[])
+
     # full | rotation | focused — how the plan was built (planner.build_plan).
     template = StringProperty(default="rotation")
 
@@ -82,6 +97,10 @@ class Campaign(AsyncStructuredNode):
 CAMPAIGN_STATUSES = {"planning", "running", "finalizing", "done", "failed", "cancelled"}
 
 CAMPAIGN_TEMPLATES = {"full", "rotation", "focused"}
+
+CAMPAIGN_KINDS = {"subsystem", "feature", "global", "batch"}
+
+CAMPAIGN_SELECTIONS = {"all", "stale", "rotation"}
 
 PART_STATES = {"pending", "running", "done", "failed"}
 

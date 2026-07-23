@@ -7,7 +7,7 @@ unsized leaves (degraded tree), and remainder areas always stand alone.
 
 from datetime import UTC, datetime, timedelta
 
-from domains.campaigns.services.planner import build_plan, bundle_siblings
+from domains.campaigns.services.planner import build_plan_by_kind, bundle_siblings
 
 NOW = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
 
@@ -180,10 +180,11 @@ def test_rotation_ranks_bundles_by_their_stalest_union_path():
         "stale/f.py": NOW - timedelta(days=30),
         # "never" was never covered → the fe bundle ranks first.
     }
-    parts = build_plan(
-        "rotation",
+    parts = build_plan_by_kind(
+        "subsystem",
         bundles,
-        [{"key": "bugs", "scope": "local", "global_agent_key": "", "enabled": True}],
+        [{"key": "bugs", "global_agent_key": "", "enabled": True}],
+        selection="rotation",
         k=2,
         path_recency=recency,
     )
@@ -196,9 +197,9 @@ def test_rotation_ranks_bundles_by_their_stalest_union_path():
 
 def test_docs_derived_parts_have_empty_area_keys():
     docs_area = {"title": "API", "scope_paths": ["src"], "doc_uids": ["d1"], "file_count": 9}
-    parts = build_plan(
-        "full",
+    parts = build_plan_by_kind(
+        "subsystem",
         [docs_area],
-        [{"key": "bugs", "scope": "local", "global_agent_key": "", "enabled": True}],
+        [{"key": "bugs", "global_agent_key": "", "enabled": True}],
     )
     assert parts[0]["area_keys"] == []

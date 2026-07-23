@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 
-from domains.campaigns.services.planner import build_plan, normalize_areas
+from domains.campaigns.services.planner import build_plan_by_kind, normalize_areas
 
 NOW = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
 
@@ -21,22 +21,6 @@ def _matched(area, paths):
     from domains.repositories.services.path_matching import watches_path
 
     return {p for p in paths if watches_path(area["scope_paths"], p)}
-
-
-def _lens(key, *, scope="local", global_agent_key="", enabled=True):
-    return {
-        "key": key,
-        "scope": scope,
-        "global_agent_key": global_agent_key,
-        "enabled": enabled,
-    }
-
-
-LENSES = [
-    _lens("bugs"),
-    _lens("security"),
-    _lens("architecture-review", scope="global", global_agent_key="architecture-review"),
-]
 
 
 # ── normalize_areas ──────────────────────────────────────────────────────────
@@ -239,61 +223,237 @@ def test_degraded_mode_still_dedups_identical_prefixes():
     assert len(areas) == 3
 
 
-# ── build_plan templates ─────────────────────────────────────────────────────
+# ── filter_by_keys ──────────────────────────────────────────────────────────
 
 
-def _areas(n):
-    return [
-        {"title": f"a{i}", "scope_paths": [f"a{i}"], "doc_uids": [f"d{i}"], "file_count": 60}
-        for i in range(n)
+def test_filter_by_keys_multi_select():
+    areas = [
+        {"area_key": "backend/delivery/convergence", "title": "a"},
+        {"area_key": "backend/runs", "title": "b"},
+        {"area_key": "frontend/views", "title": "c"},
+        {"area_key": "", "title": "remainder"},
     ]
+    from domains.campaigns.services import planner
+
+    got = {a["title"] for a in planner.filter_by_keys(areas, ["backend/delivery", "frontend/views"])}
+    assert got == {"a", "c"}
+    assert len(planner.filter_by_keys(areas, [])) == 4  # empty = all
 
 
-def test_full_plan_covers_all_areas_plus_globals():
-    parts = build_plan("full", _areas(3), LENSES)
-    areas = [p for p in parts if p["kind"] == "area"]
-    globals_ = [p for p in parts if p["kind"] == "global"]
-    assert len(areas) == 3 and len(globals_) == 1
-    assert all(p["lens_keys"] == ["bugs", "security"] for p in areas)
-    assert globals_[0]["lens_keys"] == ["architecture-review"]
-    # idx sequential, areas before globals, all pending.
-    assert [p["idx"] for p in parts] == list(range(4))
-    assert all(p["state"] == "pending" and p["run_uid"] == "" for p in parts)
-    # Docs-derived areas carry no area key — parts get the [] default.
-    assert all(p["area_keys"] == [] for p in parts)
+# ── build_plan_by_kind ───────────────────────────────────────────────────────
 
 
-def test_disabled_lenses_are_excluded():
-    lenses = [_lens("bugs"), _lens("security", enabled=False)]
-    parts = build_plan("full", _areas(1), lenses)
-    assert parts[0]["lens_keys"] == ["bugs"]
+def _bpk_lens(key, *, enabled=True, global_agent_key=""):
+    return {"key": key, "enabled": enabled, "global_agent_key": global_agent_key}
 
 
-def test_rotation_picks_least_recently_covered_never_covered_first():
-    recency = {
-        "a0/f.py": NOW - timedelta(days=1),  # freshest
-        "a1/f.py": NOW - timedelta(days=30),  # stalest covered
-        # a2 never covered
+def _bpk_area(key, title=None, *, stale=False, scope_paths=None):
+    k = key or "area"
+    return {
+        "area_key": key,
+        "title": title or k,
+        "scope_paths": scope_paths or [k],
+        "doc_uids": [],
+        "file_count": 10,
+        "stale": stale,
     }
-    parts = build_plan("rotation", _areas(3), LENSES, k=2, path_recency=recency)
-    assert [p["title"] for p in parts] == ["a2", "a1"]
-    assert all(p["kind"] == "area" for p in parts)  # no globals in rotation
 
 
-def test_rotation_without_recency_takes_first_k():
-    parts = build_plan("rotation", _areas(5), LENSES, k=3)
-    assert [p["title"] for p in parts] == ["a0", "a1", "a2"]
+def _bpk_feature(title, *, stale=False):
+    return {
+        "title": title,
+        "scope_paths": [title],
+        "doc_uids": [],
+        "file_count": 5,
+        "stale": stale,
+    }
 
 
-def test_focused_uses_only_the_focus_lens():
-    parts = build_plan("focused", _areas(2), LENSES, focus_lens="security")
-    assert all(p["lens_keys"] == ["security"] for p in parts)
-    assert all(p["kind"] == "area" for p in parts)  # security has no global part
+# subsystem/all ----------------------------------------------------------------
 
 
-def test_focused_on_a_global_lens_adds_its_sweep():
-    parts = build_plan("focused", _areas(2), LENSES, focus_lens="architecture-review")
-    globals_ = [p for p in parts if p["kind"] == "global"]
-    assert len(globals_) == 1
-    assert globals_[0]["lens_keys"] == ["architecture-review"]
-    assert globals_[0]["idx"] == 2  # after the areas
+def test_build_plan_by_kind_subsystem_all_one_part_per_area_all_enabled_lenses():
+    areas = [_bpk_area("backend/a"), _bpk_area("backend/b")]
+    lenses = [_bpk_lens("bugs"), _bpk_lens("security"), _bpk_lens("sec2", enabled=False)]
+    parts = build_plan_by_kind("subsystem", areas, lenses, selection="all")
+    assert [p["kind"] for p in parts] == ["area", "area"]
+    assert parts[0]["lens_keys"] == ["bugs", "security"]
+    assert parts[1]["lens_keys"] == ["bugs", "security"]
+
+
+def test_build_plan_by_kind_subsystem_all_idx_sequential():
+    areas = [_bpk_area("a"), _bpk_area("b"), _bpk_area("c")]
+    lenses = [_bpk_lens("bugs")]
+    parts = build_plan_by_kind("subsystem", areas, lenses, selection="all")
+    assert [p["idx"] for p in parts] == [0, 1, 2]
+
+
+def test_build_plan_by_kind_subsystem_all_no_area_no_parts():
+    parts = build_plan_by_kind("subsystem", [], [_bpk_lens("bugs")], selection="all")
+    assert parts == []
+
+
+def test_build_plan_by_kind_subsystem_all_disabled_lens_excluded():
+    areas = [_bpk_area("x")]
+    lenses = [_bpk_lens("bugs", enabled=False)]
+    parts = build_plan_by_kind("subsystem", areas, lenses, selection="all")
+    assert parts[0]["lens_keys"] == []
+
+
+# subsystem/stale --------------------------------------------------------------
+
+
+def test_build_plan_by_kind_subsystem_stale_filters_to_stale_areas():
+    areas = [_bpk_area("a", stale=False), _bpk_area("b", stale=True), _bpk_area("c", stale=True)]
+    lenses = [_bpk_lens("bugs")]
+    parts = build_plan_by_kind("subsystem", areas, lenses, selection="stale")
+    assert len(parts) == 2
+    assert {p["title"] for p in parts} == {"b", "c"}
+
+
+def test_build_plan_by_kind_subsystem_stale_empty_when_none_stale():
+    areas = [_bpk_area("a", stale=False)]
+    parts = build_plan_by_kind("subsystem", areas, [_bpk_lens("bugs")], selection="stale")
+    assert parts == []
+
+
+# subsystem/rotation -----------------------------------------------------------
+
+
+def test_build_plan_by_kind_subsystem_rotation_picks_k_least_recently_covered():
+    recency = {
+        "a0/f.py": NOW - timedelta(days=1),   # freshest
+        "a1/f.py": NOW - timedelta(days=30),  # stalest covered
+        # a2 never covered → comes first
+    }
+    areas = [
+        _bpk_area("a0", scope_paths=["a0"]),
+        _bpk_area("a1", scope_paths=["a1"]),
+        _bpk_area("a2", scope_paths=["a2"]),
+    ]
+    lenses = [_bpk_lens("bugs")]
+    parts = build_plan_by_kind("subsystem", areas, lenses, selection="rotation", k=2,
+                               path_recency=recency)
+    assert len(parts) == 2
+    assert parts[0]["title"] == "a2"  # never covered → first
+    assert parts[1]["title"] == "a1"  # stalest covered → second
+
+
+def test_build_plan_by_kind_subsystem_rotation_without_recency_takes_first_k():
+    areas = [_bpk_area(f"area-{i}") for i in range(5)]
+    lenses = [_bpk_lens("bugs")]
+    parts = build_plan_by_kind("subsystem", areas, lenses, selection="rotation", k=3)
+    assert len(parts) == 3
+    assert [p["title"] for p in parts] == ["area-0", "area-1", "area-2"]
+
+
+def test_build_plan_by_kind_subsystem_rotation_k_larger_than_areas():
+    areas = [_bpk_area("x"), _bpk_area("y")]
+    parts = build_plan_by_kind("subsystem", areas, [_bpk_lens("bugs")], selection="rotation", k=10)
+    assert len(parts) == 2
+
+
+def test_build_plan_by_kind_subsystem_rotation_idx_sequential():
+    areas = [_bpk_area(f"area-{i}") for i in range(3)]
+    lenses = [_bpk_lens("bugs")]
+    parts = build_plan_by_kind("subsystem", areas, lenses, selection="rotation", k=3)
+    assert [p["idx"] for p in parts] == [0, 1, 2]
+
+
+# feature/all ------------------------------------------------------------------
+
+
+def test_build_plan_by_kind_feature_all_one_part_per_leaf():
+    leaves = [_bpk_feature("Auth"), _bpk_feature("Search")]
+    lenses = [_bpk_lens("implementation-gaps")]
+    parts = build_plan_by_kind("feature", [], lenses, selection="all", feature_areas=leaves)
+    assert [p["kind"] for p in parts] == ["feature", "feature"]
+    assert {p["title"] for p in parts} == {"Auth", "Search"}
+
+
+def test_build_plan_by_kind_feature_all_idx_sequential():
+    leaves = [_bpk_feature(f"F{i}") for i in range(4)]
+    parts = build_plan_by_kind("feature", [], [_bpk_lens("implementation-gaps")],
+                               selection="all", feature_areas=leaves)
+    assert [p["idx"] for p in parts] == [0, 1, 2, 3]
+
+
+def test_build_plan_by_kind_feature_all_no_feature_areas_is_empty():
+    parts = build_plan_by_kind("feature", [], [_bpk_lens("implementation-gaps")],
+                               selection="all", feature_areas=None)
+    assert parts == []
+
+
+# feature/stale ----------------------------------------------------------------
+
+
+def test_build_plan_by_kind_feature_stale_filters_to_stale_leaves():
+    leaves = [_bpk_feature("A", stale=False), _bpk_feature("B", stale=True)]
+    parts = build_plan_by_kind("feature", [], [_bpk_lens("implementation-gaps")],
+                               selection="stale", feature_areas=leaves)
+    assert len(parts) == 1
+    assert parts[0]["title"] == "B"
+
+
+def test_build_plan_by_kind_feature_rotation_same_as_stale():
+    # rotation for feature falls back to stale semantics
+    leaves = [_bpk_feature("X", stale=True), _bpk_feature("Y", stale=False)]
+    parts = build_plan_by_kind("feature", [], [_bpk_lens("implementation-gaps")],
+                               selection="rotation", feature_areas=leaves)
+    assert len(parts) == 1
+    assert parts[0]["title"] == "X"
+
+
+def test_build_plan_by_kind_feature_lens_keys_from_passed_lenses():
+    leaves = [_bpk_feature("Checkout")]
+    lenses = [_bpk_lens("impl-gaps"), _bpk_lens("security")]
+    parts = build_plan_by_kind("feature", [], lenses, selection="all", feature_areas=leaves)
+    assert parts[0]["lens_keys"] == ["impl-gaps", "security"]
+
+
+# global -----------------------------------------------------------------------
+
+
+def test_build_plan_by_kind_global_one_part_per_enabled_lens():
+    lenses = [
+        _bpk_lens("arch", global_agent_key="arch"),
+        _bpk_lens("sec-global", global_agent_key="sec-global"),
+    ]
+    parts = build_plan_by_kind("global", [], lenses, selection="all")
+    assert [p["kind"] for p in parts] == ["global", "global"]
+    assert {p["lens_keys"][0] for p in parts} == {"arch", "sec-global"}
+
+
+def test_build_plan_by_kind_global_disabled_lens_excluded():
+    lenses = [
+        _bpk_lens("arch", global_agent_key="arch"),
+        _bpk_lens("sec", global_agent_key="sec", enabled=False),
+    ]
+    parts = build_plan_by_kind("global", [], lenses, selection="all")
+    assert len(parts) == 1
+    assert parts[0]["lens_keys"] == ["arch"]
+
+
+def test_build_plan_by_kind_global_idx_sequential():
+    lenses = [_bpk_lens(f"g{i}", global_agent_key=f"g{i}") for i in range(3)]
+    parts = build_plan_by_kind("global", [], lenses, selection="all")
+    assert [p["idx"] for p in parts] == [0, 1, 2]
+
+
+def test_build_plan_by_kind_global_part_title_contains_key():
+    lenses = [_bpk_lens("architecture-review", global_agent_key="architecture-review")]
+    parts = build_plan_by_kind("global", [], lenses, selection="all")
+    assert "architecture-review" in parts[0]["title"]
+
+
+# batch ------------------------------------------------------------------------
+
+
+def test_build_plan_by_kind_batch_is_empty():
+    assert build_plan_by_kind("batch", [], [], selection="all") == []
+
+
+def test_build_plan_by_kind_batch_ignores_all_inputs():
+    areas = [_bpk_area("x")]
+    lenses = [_bpk_lens("bugs")]
+    assert build_plan_by_kind("batch", areas, lenses, selection="all") == []

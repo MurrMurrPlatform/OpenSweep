@@ -134,6 +134,39 @@ def test_seeded_weekly_rotation_campaign_binding_shape():
     assert RUN_CAMPAIGN_KEY == "run-campaign"
     assert ROTATION_CAMPAIGN_WEEKLY_TITLE == "Weekly rotation campaign"
     src = inspect.getsource(seed_audit_agents)
-    # Seeded DISABLED on the Monday 07:00 cron with the rotation target.
+    # Seeded DISABLED on the Monday 07:00 cron with the kind-based rotation target.
     assert '"cron:0 7 * * 1"' in src
-    assert '{"template": "rotation", "k": 3}' in src
+    assert '"kind": "subsystem"' in src
+    assert '"selection": "rotation"' in src
+
+
+async def test_kind_based_target_reaches_campaign_request(seams):
+    """A binding target with kind/selection passes them through to the request."""
+    seams["sa"].target = {"kind": "subsystem", "selection": "rotation", "k": 3}
+    result = await schedule_scanner.scan_and_dispatch(now=NOW)
+    assert result.dispatched == 1
+    assert result.errors == []
+
+    create = seams["create"]
+    assert create["req"].kind == "subsystem"
+    assert create["req"].selection == "rotation"
+    assert create["req"].k == 3
+    # No legacy template key in this new-style target.
+    assert create["req"].template == "rotation"  # schema default, not from target
+
+
+async def test_kind_based_seed_target_plans_and_launches(seams):
+    """The seeded {"kind":"subsystem","selection":"rotation","k":3} target works
+    end-to-end through the scanner: creates a campaign and launches it."""
+    from domains.agents.services.scheduled_agent_service import (
+        ROTATION_CAMPAIGN_WEEKLY_TITLE,
+    )
+
+    seams["sa"].target = {"kind": "subsystem", "selection": "rotation", "k": 3}
+    seams["sa"].title = ROTATION_CAMPAIGN_WEEKLY_TITLE
+
+    result = await schedule_scanner.scan_and_dispatch(now=NOW)
+    assert result.dispatched == 1
+    assert seams["launched"] == "campaign1"
+    assert seams["create"]["req"].kind == "subsystem"
+    assert seams["create"]["req"].selection == "rotation"

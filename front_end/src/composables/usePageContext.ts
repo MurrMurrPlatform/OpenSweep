@@ -17,6 +17,7 @@ const DETAIL_ROUTES: Record<string, { type: CommentSubjectType; label: string }>
   'pull-request-detail': { type: 'pull_request', label: 'this pull request' },
   'run-detail': { type: 'run', label: 'this run' },
   'scheduled-agent-detail': { type: 'scheduled_agent', label: 'this scheduled agent' },
+  'area-detail': { type: 'area', label: 'this area' },
 }
 
 /**

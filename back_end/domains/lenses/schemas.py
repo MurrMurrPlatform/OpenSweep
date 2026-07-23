@@ -10,7 +10,6 @@ class LensDTO(BaseModel):
     uid: str
     key: str
     title: str = ""
-    scope: str = "local"
     body: str = ""
     tags: list[str] = Field(default_factory=list)
     wants: list[str] = Field(default_factory=list)
@@ -22,7 +21,7 @@ class LensDTO(BaseModel):
 
 
 class UpdateLensRequest(BaseModel):
-    """Org tuning of a lens. Structure (key, scope, global_agent_key, wants)
+    """Org tuning of a lens. Structure (key, global_agent_key, wants)
     stays platform-owned; the tunable surface is the prose and its labels."""
 
     title: Optional[str] = None

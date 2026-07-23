@@ -355,6 +355,49 @@ _AGENT_BASES: dict[str, dict] = {
             "and do NOT propose doc edits; this run proposes feature specs only."
         ),
     },
+    "revise-spec": {
+        "title": "OpenSweep agent — Revise feature spec",
+        "description": "Task instructions for revise-spec runs: apply a maintainer instruction to a single area's spec and propose one revised AreaEdit.",
+        "produces": "doc-tree",
+        "tags": ["opensweep-agent-base", "revise-spec"],
+        "body": (
+            "Revise the CONTRACT spec for ONE feature area, honouring the maintainer's\n"
+            "instruction exactly as given.\n"
+            "\n"
+            "# Target\n"
+            "\n"
+            "You are given a single feature area: its key, title, scope paths, and its\n"
+            "current spec (or a note that no spec exists yet). Walk the real code at\n"
+            "the area's scope paths first so the revised spec stays grounded in the\n"
+            "actual implementation.\n"
+            "\n"
+            "# What a good spec contains\n"
+            "\n"
+            "- The user-visible outcome and the entry points that trigger the flow (HTTP\n"
+            "  routes, webhooks, jobs, MCP tools).\n"
+            "- The invariants and guarantees the flow must uphold end-to-end (ordering,\n"
+            "  idempotency, authorization, data integrity, error/edge handling).\n"
+            "- The observable failure modes and how the flow is expected to degrade.\n"
+            "\n"
+            "Write the contract the implementation SHOULD satisfy — a spec you could\n"
+            "hand an auditor to check the code against. State expectations, not the\n"
+            "current line-by-line behavior. Keep the spec focused and checkable.\n"
+            "\n"
+            "# Maintainer instruction\n"
+            "\n"
+            "Apply the maintainer's instruction (provided in the existing-state block)\n"
+            "to the spec. The instruction is authoritative — honour it faithfully while\n"
+            "keeping the spec accurate against the code.\n"
+            "\n"
+            "# Constraints\n"
+            "\n"
+            "Propose EXACTLY ONE `propose_area_edit` call for this area. Pass the\n"
+            "area's exact `key`, `kind=\"feature\"`, and the revised contract as `spec`.\n"
+            "Leave scope_paths/doc_uids as they already are unless the maintainer's\n"
+            "instruction explicitly changes them. Do NOT file Findings and do NOT\n"
+            "propose doc edits — this run proposes a feature spec revision only."
+        ),
+    },
     "audit-stale": {
         "title": "OpenSweep agent — Audit stale code",
         "description": (

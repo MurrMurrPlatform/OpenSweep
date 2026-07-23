@@ -9,7 +9,7 @@ from domains.campaigns.services import campaign_service
 from domains.campaigns.services.planner import (
     REMAINDER_TITLE,
     areas_from_map,
-    build_plan,
+    build_plan_by_kind,
     filter_by_prefix,
 )
 
@@ -31,11 +31,6 @@ def _lens(key, *, scope="local", global_agent_key="", enabled=True):
         "enabled": enabled,
     }
 
-
-LENSES = [
-    _lens("bugs"),
-    _lens("architecture-review", scope="global", global_agent_key="architecture-review"),
-]
 
 TREE = (
     [f"be/api/f{i}.py" for i in range(3)]
@@ -180,13 +175,12 @@ FEATURE = {
 }
 
 
-def test_full_plan_appends_feature_parts_between_areas_and_globals():
-    parts = build_plan(
-        "full", [_map_area("backend", ["be"])], LENSES, feature_areas=[FEATURE]
+def test_feature_kind_plan_carries_leaf_metadata():
+    parts = build_plan_by_kind(
+        "feature", [], [_lens("implementation-gaps")], feature_areas=[FEATURE]
     )
-    assert [p["kind"] for p in parts] == ["area", "feature", "global"]
-    assert [p["idx"] for p in parts] == [0, 1, 2]
-    feat = parts[1]
+    assert [p["kind"] for p in parts] == ["feature"]
+    feat = parts[0]
     assert feat["lens_keys"] == ["implementation-gaps"]
     assert feat["title"] == "Checkout"
     assert feat["area_keys"] == ["features/checkout"]
@@ -196,38 +190,24 @@ def test_full_plan_appends_feature_parts_between_areas_and_globals():
     assert feat["state"] == "pending" and feat["run_uid"] == ""
 
 
-def test_rotation_and_focused_skip_fresh_feature_leaves():
-    # A feature leaf that is NOT stale is not re-audited by rotation/focused —
-    # only `full` audits every leaf. (Fresh = no `stale` flag.)
-    areas = [_map_area("backend", ["be"])]
-    plans = [
-        build_plan("rotation", areas, LENSES, k=3, feature_areas=[FEATURE]),
-        build_plan("focused", areas, LENSES, focus_lens="bugs", feature_areas=[FEATURE]),
-    ]
-    for parts in plans:
-        assert all(p["kind"] != "feature" for p in parts)
-
-
-def test_rotation_and_focused_emit_stale_feature_leaves():
-    # Stale feature leaves (unified staleness axis) ARE re-audited in every
-    # scope now — one implementation-gaps feature part each.
-    areas = [_map_area("backend", ["be"])]
+def test_feature_stale_selection_skips_fresh_leaves():
+    # selection stale/rotation audits only the leaves the staleness axis flags.
     stale = {**FEATURE, "stale": True}
     fresh = {**FEATURE, "title": "Fresh", "area_key": "features/fresh", "stale": False}
-    for template, kwargs in [
-        ("rotation", {"k": 3}),
-        ("focused", {"focus_lens": "bugs"}),
-    ]:
-        parts = build_plan(
-            template, areas, LENSES, feature_areas=[stale, fresh], **kwargs
+    for selection in ("stale", "rotation"):
+        parts = build_plan_by_kind(
+            "feature",
+            [],
+            [_lens("implementation-gaps")],
+            selection=selection,
+            feature_areas=[stale, fresh],
         )
         feats = [p for p in parts if p["kind"] == "feature"]
         assert [p["area_keys"] for p in feats] == [["features/checkout"]]
-        assert feats[0]["lens_keys"] == ["implementation-gaps"]
 
 
 def test_area_parts_carry_their_area_keys():
-    parts = build_plan("full", [_map_area("backend", ["be"])], [_lens("bugs")])
+    parts = build_plan_by_kind("subsystem", [_map_area("backend", ["be"])], [_lens("bugs")])
     assert parts[0]["area_keys"] == ["backend"]
 
 
@@ -240,13 +220,13 @@ def test_bundled_areas_carry_all_their_keys():
         "area_keys": ["backend/a", "backend/b"],
         "oversized": False,
     }
-    parts = build_plan("full", [bundle], [_lens("bugs")])
+    parts = build_plan_by_kind("subsystem", [bundle], [_lens("bugs")])
     assert parts[0]["area_keys"] == ["backend/a", "backend/b"]
 
 
 def test_docs_derived_areas_get_empty_area_keys():
     docs_area = {"title": "t", "scope_paths": ["s"], "doc_uids": [], "file_count": 1}
-    parts = build_plan("full", [docs_area], [_lens("bugs")])
+    parts = build_plan_by_kind("subsystem", [docs_area], [_lens("bugs")])
     assert parts[0]["area_keys"] == []
 
 
@@ -335,13 +315,13 @@ def test_empty_key_areas_survive_only_the_empty_prefix():
     assert filter_by_prefix(areas, "anything") == []
 
 
-# ── _plan_parts: prefix slicing + scope_hint decoration ──────────────────────
+# ── _plan_parts: coverage slicing + plan_summary (kind-aware) ────────────────
 
 
 @pytest.fixture
 def plan_seams(monkeypatch):
     """Repository lookup, _plan_areas, and the lens catalog stubbed;
-    build_plan + filter_by_prefix run for real."""
+    build_plan_by_kind + filter_by_keys + bundle_siblings run for real."""
     import domains.lenses.services.lens_service as lens_service_mod
     import domains.repositories.models as repo_models
 
@@ -385,6 +365,9 @@ def plan_seams(monkeypatch):
             SimpleNamespace(key="bugs", scope="local", global_agent_key="", enabled=True),
             SimpleNamespace(key="perf", scope="local", global_agent_key="", enabled=True),
             SimpleNamespace(
+                key="implementation-gaps", scope="local", global_agent_key="", enabled=True
+            ),
+            SimpleNamespace(
                 key="architecture-review",
                 scope="global",
                 global_agent_key="architecture-review",
@@ -393,70 +376,105 @@ def plan_seams(monkeypatch):
         ]
 
     monkeypatch.setattr(lens_service_mod, "list_lenses", fake_list_lenses)
+    # Deterministic per-kind defaults so a [] lens selection is predictable.
+    monkeypatch.setattr(
+        lens_service_mod,
+        "default_lens_keys",
+        lambda kind: {
+            "subsystem": ["bugs", "perf"],
+            "feature": ["implementation-gaps"],
+            "global": ["architecture-review"],
+        }.get(kind, []),
+    )
     return state
 
 
-async def test_area_prefix_slices_the_plan_and_decorates_globals(plan_seams):
+async def test_subsystem_coverage_keys_slice_and_bundle_the_plan(plan_seams):
     plan_seams.areas = [
         _map_area("backend/api", ["be/api"]),
         _map_area("backend/core", ["be/core"]),
         _map_area("frontend", ["fe"]),
     ]
-    plan_seams.features = [
-        {**FEATURE, "area_key": "backend/api/checkout"},
-        {**FEATURE, "title": "Theming", "area_key": "frontend/theming"},
-    ]
     parts, degraded, source, _summary = await campaign_service._plan_parts(
-        "repo1", template="full", lens_keys=[], k=3, area_prefix="backend"
+        "repo1",
+        kind="subsystem",
+        coverage_keys=["backend"],
+        selection="all",
+        lens_keys=[],
+        k=3,
     )
     assert source == "area-map" and degraded == ""
     # The two undersized backend siblings (10 files each) bundle into one
-    # area part carrying both keys.
-    assert [p["area_keys"] for p in parts if p["kind"] == "area"] == [
-        ["backend/api", "backend/core"]
-    ]
-    assert [p["area_keys"] for p in parts if p["kind"] == "feature"] == [
-        ["backend/api/checkout"]
-    ]
-    globals_ = [p for p in parts if p["kind"] == "global"]
-    assert len(globals_) == 1
-    # The global sweep is steered to the slice's union scope.
-    assert globals_[0]["scope_hint"] == ["be/api", "be/core"]
+    # area part carrying both keys; frontend is filtered out.
+    assert [p["area_keys"] for p in parts] == [["backend/api", "backend/core"]]
+    assert all(p["kind"] == "area" for p in parts)
+    # Empty lens_keys fell back to the subsystem default lenses.
+    assert parts[0]["lens_keys"] == ["bugs", "perf"]
 
 
-async def test_prefix_that_matches_nothing_is_legal_but_noted(plan_seams):
+async def test_coverage_keys_matching_nothing_is_legal_but_noted(plan_seams):
     plan_seams.areas = [_map_area("backend", ["be"])]
     parts, degraded, source, _summary = await campaign_service._plan_parts(
-        "repo1", template="full", lens_keys=[], k=3, area_prefix="nope"
+        "repo1",
+        kind="subsystem",
+        coverage_keys=["nope"],
+        selection="all",
+        lens_keys=[],
+        k=3,
     )
     assert source == "area-map"
-    assert [p["kind"] for p in parts] == ["global"]  # zero area parts is legal
-    assert "area_prefix 'nope' matched no areas" in degraded
+    assert parts == []  # zero area parts is legal
+    assert "coverage_keys ['nope'] matched no areas" in degraded
 
 
-async def test_no_prefix_leaves_global_parts_undecorated(plan_seams):
-    plan_seams.areas = [_map_area("backend", ["be"])]
-    parts, _degraded, _source, _summary = await campaign_service._plan_parts(
-        "repo1", template="full", lens_keys=[], k=3
-    )
-    assert all("scope_hint" not in p for p in parts)
-
-
-# ── _plan_parts: lens selection + plan_summary ───────────────────────────────
-
-
-async def test_lens_selection_narrows_locals_but_never_drops_globals(plan_seams):
-    """The campaign dialog only offers LOCAL lenses — a selection must
-    narrow those while every enabled global lens keeps its sweep part
-    (regression: full campaigns silently lost all global sweeps)."""
-    plan_seams.areas = [_map_area("backend", ["be"])]
-    parts, _degraded, _source, _summary = await campaign_service._plan_parts(
-        "repo1", template="full", lens_keys=["bugs"], k=3
-    )
-    assert [p["lens_keys"] for p in parts if p["kind"] == "area"] == [["bugs"]]
-    assert [p["lens_keys"] for p in parts if p["kind"] == "global"] == [
-        ["architecture-review"]
+async def test_feature_kind_plans_only_feature_parts(plan_seams):
+    plan_seams.features = [
+        {**FEATURE, "area_key": "features/checkout"},
+        {**FEATURE, "title": "Theming", "area_key": "features/theming"},
     ]
+    parts, _degraded, source, summary = await campaign_service._plan_parts(
+        "repo1",
+        kind="feature",
+        coverage_keys=[],
+        selection="all",
+        lens_keys=[],
+        k=3,
+    )
+    assert source == "area-map"
+    assert all(p["kind"] == "feature" for p in parts)
+    assert [p["area_keys"] for p in parts] == [["features/checkout"], ["features/theming"]]
+    # Feature default lens.
+    assert parts[0]["lens_keys"] == ["implementation-gaps"]
+    assert summary["total_runs"] == 2 and summary["by_kind"]["feature"] == 2
+
+
+async def test_global_kind_plans_one_part_per_global_lens(plan_seams):
+    parts, _degraded, source, summary = await campaign_service._plan_parts(
+        "repo1",
+        kind="global",
+        coverage_keys=[],
+        selection="all",
+        lens_keys=[],
+        k=3,
+    )
+    assert source == "global"
+    assert [p["kind"] for p in parts] == ["global"]
+    assert parts[0]["lens_keys"] == ["architecture-review"]
+    assert summary["total_runs"] == 1 and summary["by_kind"]["global"] == 1
+
+
+async def test_lens_selection_intersects_enabled_lenses(plan_seams):
+    plan_seams.areas = [_map_area("backend", ["be"])]
+    parts, _degraded, _source, _summary = await campaign_service._plan_parts(
+        "repo1",
+        kind="subsystem",
+        coverage_keys=[],
+        selection="all",
+        lens_keys=["bugs", "does-not-exist"],
+        k=3,
+    )
+    # Only the enabled lens survives the intersection.
+    assert parts[0]["lens_keys"] == ["bugs"]
 
 
 async def test_plan_summary_narrates_an_area_map_plan(plan_seams):
@@ -465,7 +483,6 @@ async def test_plan_summary_narrates_an_area_map_plan(plan_seams):
         _map_area("backend/core", ["be/core"]),
         {**_map_area("frontend", ["fe"]), "file_count": 400, "oversized": True},
     ]
-    plan_seams.features = [FEATURE]
     plan_seams.map_stats = {
         "map_areas": 8,
         "leaves": 3,
@@ -475,7 +492,12 @@ async def test_plan_summary_narrates_an_area_map_plan(plan_seams):
         "ignored": 2,
     }
     _parts, _degraded, _source, summary = await campaign_service._plan_parts(
-        "repo1", template="full", lens_keys=[], k=3
+        "repo1",
+        kind="subsystem",
+        coverage_keys=[],
+        selection="all",
+        lens_keys=[],
+        k=3,
     )
     assert summary == {
         "source": "area-map",
@@ -487,11 +509,14 @@ async def test_plan_summary_narrates_an_area_map_plan(plan_seams):
         "ignored": 2,
         "area_parts": 2,  # backend bundle + frontend
         "bundled_leaves": 2,  # backend/api + backend/core share one part
-        "feature_parts": 1,
-        "global_parts": 1,
+        "feature_parts": 0,
+        "global_parts": 0,
+        "total_runs": 2,
+        "by_kind": {"area": 2, "feature": 0, "global": 0},
         "oversized": ["frontend"],
         "degraded": "",
-        "area_prefix": "",
+        "coverage_keys": [],
+        "selection": "all",
     }
 
 
@@ -501,7 +526,12 @@ async def test_plan_summary_keeps_its_shape_for_docs_plans(plan_seams):
         {"title": "API", "scope_paths": ["src/api"], "doc_uids": ["d1"], "file_count": 60}
     ]
     _parts, _degraded, _source, summary = await campaign_service._plan_parts(
-        "repo1", template="full", lens_keys=[], k=3
+        "repo1",
+        kind="subsystem",
+        coverage_keys=[],
+        selection="all",
+        lens_keys=[],
+        k=3,
     )
     assert summary == {
         "source": "docs",
@@ -514,8 +544,11 @@ async def test_plan_summary_keeps_its_shape_for_docs_plans(plan_seams):
         "area_parts": 1,
         "bundled_leaves": 0,
         "feature_parts": 0,
-        "global_parts": 1,
+        "global_parts": 0,
+        "total_runs": 1,
+        "by_kind": {"area": 1, "feature": 0, "global": 0},
         "oversized": [],
         "degraded": "",
-        "area_prefix": "",
+        "coverage_keys": [],
+        "selection": "all",
     }

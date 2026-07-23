@@ -21,7 +21,6 @@ def to_dto(lens: Lens) -> LensDTO:
         uid=lens.uid,
         key=lens.key,
         title=lens.title or "",
-        scope=lens.scope or "local",
         body=lens.body or "",
         tags=list(lens.tags or []),
         wants=list(lens.wants or []),
@@ -34,14 +33,13 @@ def to_dto(lens: Lens) -> LensDTO:
 
 
 async def list_lenses(*, enabled_only: bool = False) -> list[Lens]:
-    """All lenses, stable order (scope then key) so checklists render
-    deterministically."""
+    """All lenses, stable order (by key) so checklists render deterministically."""
     nodes = [
         lens
         for lens in await Lens.nodes.all()
         if not enabled_only or lens.enabled
     ]
-    nodes.sort(key=lambda lens: (lens.scope or "local", lens.key or ""))
+    nodes.sort(key=lambda lens: (lens.key or ""))
     return nodes
 
 
@@ -71,6 +69,20 @@ async def update(
         payload={"key": lens.key, "fields": sorted(fields.keys())},
     )
     return to_dto(lens)
+
+
+DEFAULT_LENSES_BY_KIND: dict[str, tuple[str, ...]] = {
+    "subsystem": (
+        "bugs", "security", "performance", "error-handling",
+        "legacy-patterns", "refactor-opportunities", "simplification", "test-gaps",
+    ),
+    "feature": ("implementation-gaps",),
+    "global": ("architecture-review", "implementation-gaps"),
+}
+
+
+def default_lens_keys(kind: str) -> list[str]:
+    return list(DEFAULT_LENSES_BY_KIND.get(kind, ()))
 
 
 # Closing instruction of every checklist: local runs stay in their lane and

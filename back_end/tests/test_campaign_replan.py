@@ -35,7 +35,10 @@ def _campaign(**overrides):
         "repository_uid": "repo1",
         "title": "t",
         "status": "planning",
-        "template": "full",
+        "template": "rotation",
+        "kind": "subsystem",
+        "selection": "all",
+        "coverage_keys": [],
         "effort": "",
         "lens_keys": ["bugs"],
         "k": 3,
@@ -70,15 +73,16 @@ def seams(monkeypatch):
 
 def _plan_stub(monkeypatch, result=None, *, error=None, captured=None):
     async def fake_plan_parts(
-        repository_uid, *, template, lens_keys, k, area_prefix=""
+        repository_uid, *, kind, coverage_keys, selection, lens_keys, k
     ):
         if captured is not None:
             captured.update(
                 repository_uid=repository_uid,
-                template=template,
+                kind=kind,
+                coverage_keys=coverage_keys,
+                selection=selection,
                 lens_keys=lens_keys,
                 k=k,
-                area_prefix=area_prefix,
             )
         if error is not None:
             raise error
@@ -110,10 +114,11 @@ async def test_launch_replaces_parts_and_records_event_when_plan_changed(
     # Replan reuses the campaign's stored inputs — create and launch can't drift.
     assert captured == {
         "repository_uid": "repo1",
-        "template": "full",
+        "kind": "subsystem",
+        "coverage_keys": [],
+        "selection": "all",
         "lens_keys": ["bugs"],
         "k": 3,
-        "area_prefix": "",
     }
 
 
@@ -128,15 +133,15 @@ async def test_launch_stays_silent_when_plan_unchanged(seams, monkeypatch):
     assert [e["type"] for e in seams.events] == ["launched"]
 
 
-async def test_replan_passes_the_stored_area_prefix_through(seams, monkeypatch):
-    seams.campaign = _campaign(area_prefix="backend")
+async def test_replan_passes_the_stored_coverage_keys_through(seams, monkeypatch):
+    seams.campaign = _campaign(coverage_keys=["backend"])
     captured = {}
     _plan_stub(monkeypatch, ([_part(0)], "", "area-map", {}), captured=captured)
 
     out = await campaign_service.launch("c1")
 
-    assert captured["area_prefix"] == "backend"
-    assert out.area_prefix == "backend"  # DTO passthrough
+    assert captured["coverage_keys"] == ["backend"]
+    assert out.coverage_keys == ["backend"]  # DTO passthrough
 
 
 async def test_degraded_replan_keeps_existing_parts(seams, monkeypatch):

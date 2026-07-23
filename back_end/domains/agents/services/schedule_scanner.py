@@ -124,6 +124,9 @@ async def scan_and_dispatch(*, now: datetime | None = None) -> ScanResult:
                     sa.repository_uid,
                     CreateCampaignRequest(
                         template=str(tgt.get("template") or "rotation"),
+                        kind=str(tgt.get("kind") or ""),
+                        coverage_keys=[str(x) for x in (tgt.get("coverage_keys") or [])],
+                        selection=str(tgt.get("selection") or ""),
                         k=int(tgt.get("k") or 3),
                         lens_keys=[str(k) for k in (tgt.get("lens_keys") or [])],
                         effort=str(tgt.get("effort") or ""),

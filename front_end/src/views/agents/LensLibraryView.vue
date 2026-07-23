@@ -45,12 +45,12 @@ const sections = computed(() => [
   {
     label: 'Local lenses',
     hint: 'Compose into per-area checklists inside campaign parts.',
-    items: lenses.list.filter((l) => l.scope === 'local'),
+    items: lenses.list.filter((l) => !l.global_agent_key),
   },
   {
     label: 'Global lenses',
     hint: 'Back whole-repo sweep agents for cross-cutting concerns.',
-    items: lenses.list.filter((l) => l.scope !== 'local'),
+    items: lenses.list.filter((l) => !!l.global_agent_key),
   },
 ])
 
@@ -144,7 +144,7 @@ async function save() {
                   <div class="flex flex-wrap items-center gap-2">
                     <span class="font-medium">{{ l.title || l.key }}</span>
                     <Badge variant="outline" class="font-mono text-[10px]">{{ l.key }}</Badge>
-                    <Badge :variant="l.scope === 'global' ? 'info' : 'secondary'">{{ l.scope }}</Badge>
+                    <Badge :variant="l.global_agent_key ? 'info' : 'secondary'">{{ l.global_agent_key ? 'global' : 'local' }}</Badge>
                     <Badge v-if="l.global_agent_key" variant="outline" class="font-mono text-[10px]">
                       {{ l.global_agent_key }}
                     </Badge>
@@ -172,7 +172,7 @@ async function save() {
         <SheetHeader>
           <SheetTitle>{{ editing?.title || editing?.key }}</SheetTitle>
           <SheetDescription>
-            <span class="font-mono">{{ editing?.key }}</span> · {{ editing?.scope }} lens
+            <span class="font-mono">{{ editing?.key }}</span> · {{ editing?.global_agent_key ? 'global' : 'local' }} lens
           </SheetDescription>
         </SheetHeader>
 

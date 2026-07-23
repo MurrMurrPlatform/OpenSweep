@@ -74,6 +74,13 @@ class MapAreasResult:
 
 
 @dataclass
+class ReviseSpecResult:
+    run_uid: str = ""
+    errors: list[str] = field(default_factory=list)
+    summary: str = ""
+
+
+@dataclass
 class AuditResult:
     repository_uid: str
     doc_count: int
@@ -273,6 +280,80 @@ async def run_generate_specs(
         },
     )
 
+    return result
+
+
+async def revise_area_spec(
+    *,
+    repository_uid: str,
+    area_uid: str,
+    instruction: str,
+    triggered_by: str = "",
+) -> ReviseSpecResult:
+    """Dispatch a one-shot LLM run that revises a single area's spec.
+
+    Reads the area's current spec + scope paths, injects the maintainer's
+    instruction, and proposes exactly ONE AreaEdit (proposed_spec) via
+    `propose_area_edit` — mirroring `run_generate_specs` but scoped to a
+    single area with a user instruction.
+
+    Raises LifecycleError if the area does not exist.
+    """
+    area = await Area.nodes.get_or_none(uid=area_uid)
+    if area is None:
+        raise LifecycleError(f"area {area_uid} not found")
+
+    result = ReviseSpecResult()
+
+    try:
+        paths = ", ".join(str(p) for p in (area.scope_paths or [])) or "(no scope paths)"
+        current_spec = (area.spec or "").strip() or "(no spec yet)"
+        existing_state_listing = (
+            f"# Target area\n\n"
+            f"key: {area.key}\n"
+            f"title: {area.title or area.key}\n"
+            f"scope_paths: {paths}\n\n"
+            f"# Current spec\n\n"
+            f"{current_spec}\n\n"
+            f"# Maintainer instruction\n\n"
+            f"{instruction}"
+        )
+
+        from domains.agents.services.composition import compose_agent_intent
+
+        composed = await compose_agent_intent(
+            repository_uid=repository_uid,
+            agent_key="revise-spec",
+            structural=_GENERATE_SPECS_TOOLING_CONTRACT,
+            existing_state_listing=existing_state_listing,
+        )
+        run = await trigger_run(
+            repository_uid=repository_uid,
+            intent=composed.text,
+            playbook="ask",
+            title=f"Revise spec — {area.key}",
+            stage="discover",
+            agent_uid=composed.agent_uid,
+            agent_rev=composed.agent_rev,
+            composed_degraded=composed.composed_degraded,
+            degraded_layers=composed.degraded_layers,
+            trigger=RunTrigger.MANUAL,
+            triggered_by=triggered_by or "revise-spec",
+        )
+        result.run_uid = run.uid
+    except LifecycleError as exc:
+        msg = f"revise-spec: {exc}"
+        logger.warning(f"sweep: dispatch failed — {msg}")
+        result.errors.append(msg)
+    except Exception as exc:  # noqa: BLE001
+        msg = f"revise-spec: {type(exc).__name__}: {exc}"
+        logger.warning(f"sweep: unexpected — {msg}")
+        result.errors.append(msg)
+
+    result.summary = (
+        f"Revise spec: {'1 LLM run dispatched' if result.run_uid else 'no run dispatched'} "
+        f"for area {area.key}"
+    )
     return result
 
 
