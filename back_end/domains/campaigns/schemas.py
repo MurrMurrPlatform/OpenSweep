@@ -1,7 +1,6 @@
 """Campaign DTOs."""
 
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -12,6 +11,15 @@ class CampaignDTO(BaseModel):
     title: str = ""
     status: str = "planning"
     template: str = "rotation"
+    # subsystem | feature | global | batch
+    kind: str = "subsystem"
+    # all | stale | rotation
+    selection: str = "all"
+    # Area keys this campaign covers (empty = whole map)
+    coverage_keys: list[str] = Field(default_factory=list)
+    # Batch wiring
+    parent_uid: str = ""
+    child_uids: list[str] = Field(default_factory=list)
     effort: str = ""
     lens_keys: list[str] = Field(default_factory=list)
     # Rotation only: how many areas each pass covers.
@@ -32,11 +40,17 @@ class CampaignDTO(BaseModel):
     # area_prefix}. {} on campaigns planned before this field existed.
     plan_summary: dict = Field(default_factory=dict)
     events: list[dict] = Field(default_factory=list)
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class CreateCampaignRequest(BaseModel):
+    # "" = legacy template path; "subsystem"|"feature"|"global"|"batch" = new kind path.
+    kind: str = ""
+    # Which areas/files to target: "" = default; "all"|"stale"|"rotation".
+    selection: str = ""
+    # Area keys to restrict to (empty = whole map).
+    coverage_keys: list[str] = Field(default_factory=list)
     template: str = "rotation"
     # Empty = every enabled lens; "focused" reads its focus lens from the
     # first entry.
@@ -59,7 +73,7 @@ class CampaignAreaPreview(BaseModel):
     title: str = ""
     scope_paths: list[str] = Field(default_factory=list)
     doc_uids: list[str] = Field(default_factory=list)
-    file_count: Optional[int] = None
+    file_count: int | None = None
     # Area-map source only: the Area's key ("" for docs-derived/remainder).
     area_key: str = ""
     # "subsystem" tiles the tree; "feature" overlays it (implementation-gaps).
