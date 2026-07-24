@@ -57,16 +57,15 @@ class ProviderRuntime:
 
 
 def _codex_home(provider: LLMProvider) -> str:
-    """Deterministic worker-private CODEX_HOME for this provider.
-
-    One dir per provider, reused (auth.json overwritten) across invocations —
-    the previous mkdtemp-per-invocation leaked an OAuth-blob-bearing dir on
-    every codex turn and nothing ever deleted them (audit #21).
-    """
+    """Deterministic worker-private CODEX_HOME for this provider AT ITS CURRENT
+    credential revision. The revision is part of the path so a rotated-revision
+    server never overwrites the auth.json a still-running old-revision server is
+    using (the app-server registry keeps one server per (uid, revision))."""
     uid = "".join(
         c for c in (getattr(provider, "uid", "") or "") if c.isalnum() or c in "-_"
     ) or "default"
-    return os.path.join(tempfile.gettempdir(), f"{_CODEX_HOME_PREFIX}{uid}")
+    rev = int(getattr(provider, "credential_revision", 0) or 0)
+    return os.path.join(tempfile.gettempdir(), f"{_CODEX_HOME_PREFIX}{uid}-r{rev}")
 
 
 def apply_runtime_to_env(runtime: ProviderRuntime, env: dict[str, str]) -> dict[str, str]:

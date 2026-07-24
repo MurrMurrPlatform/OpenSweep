@@ -34,3 +34,13 @@ async def test_acquire_reuses_one_server_per_subscription(monkeypatch):
     assert c is not a and len(spawned) == 2
     await r.shutdown_all()
     assert a.closed and c.closed
+
+
+def test_codex_home_is_revision_scoped():
+    from types import SimpleNamespace
+    from domains.llm_providers.services.runtime_env import _codex_home
+    p0 = SimpleNamespace(uid="p1", credential_revision=0)
+    p1 = SimpleNamespace(uid="p1", credential_revision=1)
+    assert _codex_home(p0) != _codex_home(p1)
+    assert _codex_home(p0).endswith("opensweep-codex-p1-r0")
+    assert _codex_home(p1).endswith("opensweep-codex-p1-r1")
