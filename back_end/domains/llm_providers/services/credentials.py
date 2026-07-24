@@ -33,6 +33,9 @@ async def encrypt_plaintext_provider_secrets() -> int:
     if not secretbox.configured():
         return 0
     changed = 0
+    # Deliberate all-orgs pass: key rotation re-seals EVERY provider's secret,
+    # so this is not org-scoped (unlike llm_provider_service reads). Do not
+    # convert to a per-org filter.
     for provider in await LLMProvider.nodes.all():
         current = (provider.credential_secret or "").strip()
         if not current:

@@ -103,6 +103,10 @@ class _Nodes:
     async def all(self):
         return list(_STORE)
 
+    async def filter(self, **kw):
+        """Filter by keyword arguments — supports org_uid."""
+        return [n for n in _STORE if all(getattr(n, k, None) == v for k, v in kw.items())]
+
     async def get_or_none(self, **kw):
         for n in _STORE:
             if all(getattr(n, k, None) == v for k, v in kw.items()):

@@ -342,8 +342,8 @@ async def select_provider(
 
 
 async def _deactivate_others(active_uid: str, scope: str) -> None:
-    for p in await LLMProvider.nodes.all():
-        if p.uid != active_uid and _scope(p) == scope and bool(getattr(p, "active", False)):
+    for p in await LLMProvider.nodes.filter(org_uid=scope):
+        if p.uid != active_uid and bool(getattr(p, "active", False)):
             p.active = False
             await p.save()
 
@@ -355,7 +355,7 @@ async def _ensure_one_active(scope: str) -> None:
     (fallback_priority, label, uid), not store order."""
     if await _scope_active(scope) is not None:
         return
-    nodes = [p for p in await LLMProvider.nodes.all() if _scope(p) == scope]
+    nodes = list(await LLMProvider.nodes.filter(org_uid=scope))
     candidate = choose_provider(nodes)
     if candidate is None:
         # Every enabled provider in scope is unreachable — still promote by the
