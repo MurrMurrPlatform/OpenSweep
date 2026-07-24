@@ -20,7 +20,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g \
         @anthropic-ai/claude-code \
-        @openai/codex@0.144.6 \
+        @openai/codex@0.145.0 \
         opencode-ai \
         mcp-remote \
     && npm cache clean --force
