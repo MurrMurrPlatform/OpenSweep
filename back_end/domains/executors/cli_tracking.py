@@ -117,6 +117,12 @@ class _CLITrackingAdapter(ExecutorAdapter):
             # In-memory only — per-stage workflow override, never saved.
             provider.model = req.model_override
 
+        # App-server path (opt-in): the persistent per-subscription app-server
+        # owns the credential + its refresh, so this run does NOT take the per-run
+        # lease — that's what lets many runs on one subscription run concurrently.
+        if self.provider_kind == "codex_subscription" and codex_cli.app_server_enabled(provider):
+            return await self._run_via_app_server(req, provider, started)
+
         # Codex subscriptions serialize per credential and durably persist any
         # rotation codex performs across the run's passes (inert for opencode and
         # for bind-mount codex — see codex_credential.codex_credential_txn). Held
@@ -402,6 +408,41 @@ class _CLITrackingAdapter(ExecutorAdapter):
             error=last_inv.error or "",
             summary=f"{self.name.value} finished in {wall:.1f}s",
             outcome=outcome or extract_outcome({"summary": (envelope or {}).get("summary")}),
+        )
+
+    async def _run_via_app_server(self, req: DispatchRequest, provider: LLMProvider, started: float) -> DispatchResult:
+        timeout = resolve_wall_ceiling(req, provider.kind)
+        instruction = _instruction(req, timeout)
+        system_prompt = _SYSTEM_PROMPT
+        if code_graph_available(req.repository_local_path or ""):
+            system_prompt = _SYSTEM_PROMPT + "\n" + CODE_GRAPH_PROMPT
+        await record_input(req.run_uid, system_prompt=system_prompt, instruction=instruction)
+        append_event(req.run_uid, "user_message", text=instruction)
+
+        def _on_delta(text: str) -> None:
+            append_event(req.run_uid, "assistant_text", text=text)
+
+        try:
+            res = await codex_cli.run_via_app_server(
+                provider, instruction=f"{system_prompt}\n\n{instruction}",
+                working_dir=req.repository_local_path or "", run_uid=req.run_uid,
+                model=provider.model or "", on_delta=_on_delta,
+                timeout_s=float(timeout) if timeout else None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return DispatchResult(status=RunStatus.FAILED, error=f"app-server: {exc}"[:500],
+                                  summary=f"{self.name.value} failed (app-server)")
+        wall = time.monotonic() - started
+        usage = {"wall_seconds": round(wall, 2), "provider_kind": provider.kind,
+                 "transport": "app-server", **(res.usage or {})}
+        if res.error:
+            return DispatchResult(status=RunStatus.FAILED, error=res.error[:500], usage=usage,
+                                  summary=f"{self.name.value} failed (app-server)")
+        # complete_run via MCP stamps completed_at (same as exec path); lifecycle finalizes.
+        completed = await _completed_via_mcp(req.run_uid)
+        return DispatchResult(
+            status=RunStatus.AWAITING_INPUT if completed else RunStatus.RUNNING,
+            usage=usage, summary=f"{self.name.value} finished (app-server)",
         )
 
 
