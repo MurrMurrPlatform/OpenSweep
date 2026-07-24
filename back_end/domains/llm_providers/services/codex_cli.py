@@ -19,12 +19,23 @@ from __future__ import annotations
 import json
 import os
 
-from domains.llm_providers.services.codex_app_server_registry import REGISTRY
+from domains.llm_providers.services.codex_app_server_registry import REGISTRY, long_lived_loop
 from domains.executors.mcp_bridge import codex_mcp_config_object
 
 # ── argv assembly ─────────────────────────────────────────────────────────────
 
 def app_server_enabled(provider) -> bool:
+    """Opt-in, and only where a persistent app-server is actually safe.
+
+    The session holds the credential lease for the server's lifetime, which
+    requires an event loop that outlives a single run. In a Celery worker each
+    run gets its own `asyncio.run`, and its teardown would force-release the
+    lease out from under a still-live codex process — see
+    `codex_app_server_registry.long_lived_loop`. Those runs stay on the `exec`
+    path (per-run lease), which is safe by construction.
+    """
+    if not long_lived_loop():
+        return False
     if os.environ.get("OPENSWEEP_CODEX_APP_SERVER") == "1":
         return True
     extra = getattr(provider, "extra_args", "") or ""
@@ -37,12 +48,46 @@ def app_server_enabled(provider) -> bool:
 async def run_via_app_server(provider, *, instruction: str, working_dir: str, run_uid: str,
                              model: str = "", on_delta=None, timeout_s=None):
     """Run one codex turn through the per-subscription app-server. Returns a
-    codex_app_server.TurnResult. Streams deltas via on_delta."""
-    client = await REGISTRY.acquire(provider)
+    codex_app_server.TurnResult. Streams deltas via on_delta.
+
+    The session owns the credential lease for its lifetime (see
+    codex_app_server_registry), so concurrent runs on one subscription share the
+    server instead of serializing. Raises HTTPException when another process
+    holds the lease — the caller pauses the run for retry.
+    """
+    session = await acquire_app_server(provider)
+    try:
+        return await run_turn_on(session, instruction=instruction, working_dir=working_dir,
+                                 run_uid=run_uid, model=model, on_delta=on_delta,
+                                 timeout_s=timeout_s)
+    finally:
+        await release_app_server(session)
+
+
+async def acquire_app_server(provider):
+    """Take (or join) this subscription's app-server session. Raises
+    HTTPException when another process holds the credential lease.
+
+    Split from `run_turn_on` so a caller can find out whether it got the
+    subscription BEFORE it writes anything to the transcript — a run that pauses
+    for retry must not leave a half-written turn behind to duplicate later."""
+    return await REGISTRY.acquire(provider)
+
+
+async def release_app_server(session) -> None:
+    await REGISTRY.release(session)
+
+
+async def run_turn_on(session, *, instruction: str, working_dir: str, run_uid: str,
+                      model: str = "", on_delta=None, timeout_s=None):
     config = codex_mcp_config_object(run_uid=run_uid, workspace_path=working_dir)
-    thread_id = await client.start_thread(cwd=working_dir, model=model or "", config=config)
-    return await client.run_turn(thread_id=thread_id, text=instruction, model=model or "",
-                                 on_delta=on_delta, timeout_s=timeout_s)
+    thread_id = await session.client.start_thread(
+        cwd=working_dir, model=model or "", config=config,
+    )
+    return await session.client.run_turn(
+        thread_id=thread_id, text=instruction, model=model or "",
+        on_delta=on_delta, timeout_s=timeout_s,
+    )
 
 
 SANDBOX_BYPASS_FLAG = "--dangerously-bypass-approvals-and-sandbox"

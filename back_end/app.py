@@ -438,6 +438,15 @@ async def lifespan(app: FastAPI):
     logger.info("OpenSweep started")
     yield
     logger.info("Shutting down OpenSweep...")
+    # Release any codex subscription this process is holding via a live
+    # app-server (writes back a rotated token, frees the lease for other
+    # processes). Inert when the app-server path is off. Never blocks shutdown.
+    try:
+        from domains.llm_providers.services.codex_app_server_registry import REGISTRY
+
+        await REGISTRY.shutdown_all()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"codex app-server shutdown skipped: {exc}")
 
 
 # ── Routers ─────────────────────────────────────────────────────────────────

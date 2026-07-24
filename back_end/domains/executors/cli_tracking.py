@@ -118,10 +118,15 @@ class _CLITrackingAdapter(ExecutorAdapter):
             provider.model = req.model_override
 
         # App-server path (opt-in): the persistent per-subscription app-server
-        # owns the credential + its refresh, so this run does NOT take the per-run
-        # lease — that's what lets many runs on one subscription run concurrently.
+        # holds the credential lease for ITS lifetime, so this run does not take a
+        # per-run lease — many runs share the one server, each on its own codex
+        # thread. Falls through to the shared busy handler below when the lease
+        # is held by another process.
         if self.provider_kind == "codex_subscription" and codex_cli.app_server_enabled(provider):
-            return await self._run_via_app_server(req, provider, started)
+            try:
+                return await self._run_via_app_server(req, provider, started)
+            except HTTPException as exc:
+                return self._paused_busy(req, exc)
 
         # Codex subscriptions serialize per credential and durably persist any
         # rotation codex performs across the run's passes (inert for opencode and
@@ -135,20 +140,23 @@ class _CLITrackingAdapter(ExecutorAdapter):
             async with codex_credential.codex_credential_txn(provider):
                 return await self._run_passes(req, provider, started)
         except HTTPException as exc:
-            # Another codex run holds this subscription's exclusive lease past the
-            # wait budget. Treat it like a quota pause (a state, not a failure):
-            # PAUSED_QUOTA is resumable, so the run is re-dispatched later instead
-            # of failing hard — mirrors the turn path returning a retryable 503.
-            logger.info(
-                f"{self.name.value} run {req.run_uid}: codex subscription busy "
-                f"({getattr(exc, 'detail', exc)}) — pausing for retry",
-                extra={"tag": "codex"},
-            )
-            return DispatchResult(
-                status=RunStatus.PAUSED_QUOTA,
-                error="codex subscription busy — another run holds the credential lease",
-                summary=f"{self.name.value} paused: codex subscription busy — will retry",
-            )
+            return self._paused_busy(req, exc)
+
+    def _paused_busy(self, req: DispatchRequest, exc: HTTPException) -> DispatchResult:
+        """Another codex run holds this subscription's exclusive lease past the
+        wait budget. Treat it like a quota pause (a state, not a failure):
+        PAUSED_QUOTA is resumable, so the run is re-dispatched later instead of
+        failing hard — mirrors the turn path returning a retryable 503."""
+        logger.info(
+            f"{self.name.value} run {req.run_uid}: codex subscription busy "
+            f"({getattr(exc, 'detail', exc)}) — pausing for retry",
+            extra={"tag": "codex"},
+        )
+        return DispatchResult(
+            status=RunStatus.PAUSED_QUOTA,
+            error="codex subscription busy — another run holds the credential lease",
+            summary=f"{self.name.value} paused: codex subscription busy — will retry",
+        )
 
     async def _run_passes(
         self, req: DispatchRequest, provider: LLMProvider, started: float
@@ -416,6 +424,12 @@ class _CLITrackingAdapter(ExecutorAdapter):
         system_prompt = _SYSTEM_PROMPT
         if code_graph_available(req.repository_local_path or ""):
             system_prompt = _SYSTEM_PROMPT + "\n" + CODE_GRAPH_PROMPT
+
+        # Claim the subscription BEFORE writing any transcript entry: an
+        # HTTPException here pauses the run for retry, and a half-written turn
+        # would be duplicated on every re-dispatch.
+        session = await codex_cli.acquire_app_server(provider)
+
         await record_input(req.run_uid, system_prompt=system_prompt, instruction=instruction)
         append_event(req.run_uid, "user_message", text=instruction)
 
@@ -423,8 +437,8 @@ class _CLITrackingAdapter(ExecutorAdapter):
             append_event(req.run_uid, "assistant_text", text=text)
 
         try:
-            res = await codex_cli.run_via_app_server(
-                provider, instruction=f"{system_prompt}\n\n{instruction}",
+            res = await codex_cli.run_turn_on(
+                session, instruction=f"{system_prompt}\n\n{instruction}",
                 working_dir=req.repository_local_path or "", run_uid=req.run_uid,
                 model=provider.model or "", on_delta=_on_delta,
                 timeout_s=float(timeout) if timeout else None,
@@ -432,6 +446,8 @@ class _CLITrackingAdapter(ExecutorAdapter):
         except Exception as exc:  # noqa: BLE001
             return DispatchResult(status=RunStatus.FAILED, error=f"app-server: {exc}"[:500],
                                   summary=f"{self.name.value} failed (app-server)")
+        finally:
+            await codex_cli.release_app_server(session)
         wall = time.monotonic() - started
         usage = {"wall_seconds": round(wall, 2), "provider_kind": provider.kind,
                  "transport": "app-server", **(res.usage or {})}

@@ -8,7 +8,7 @@ due; Doc freshness is driven by GitHub push webhooks, not a beat tick.
 import ssl
 
 from celery import Celery
-from celery.signals import worker_process_init, worker_ready
+from celery.signals import worker_process_init, worker_process_shutdown, worker_ready
 
 from redis_config import get_redis_url
 
@@ -124,6 +124,24 @@ def init_worker(**_kwargs):
     # stamped usage["dispatch_runtime"]="worker" so the worker_ready sweep
     # below can fail exactly its own orphans after a restart.
     set_role(WORKER)
+
+
+@worker_process_shutdown.connect
+def release_codex_subscriptions(**_kwargs):
+    """A prefork child exiting must hand back any codex subscription its
+    app-server holds — otherwise the lease sits until its TTL expires and the
+    next run on that subscription needlessly pauses. Inert when the app-server
+    path is off; best-effort by design (the TTL is the backstop)."""
+    try:
+        from domains.llm_providers.services.codex_app_server_registry import (
+            shutdown_all_blocking,
+        )
+
+        shutdown_all_blocking()
+    except Exception as exc:  # noqa: BLE001
+        from logging_config import logger
+
+        logger.warning(f"codex app-server release on shutdown skipped: {exc}")
 
 
 @worker_ready.connect

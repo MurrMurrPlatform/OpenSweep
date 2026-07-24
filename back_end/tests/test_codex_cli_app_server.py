@@ -37,8 +37,11 @@ async def test_run_via_app_server_starts_thread_runs_turn_and_streams(monkeypatc
             if on_delta: on_delta("hel"); on_delta("lo")
             calls["thread_id"] = thread_id; calls["text"] = text
             return TurnResult(text="hello", usage={"input_tokens": 2})
-    async def fake_acquire(provider): return _Client()
+    session = SimpleNamespace(uid="p1", client=_Client())
+    async def fake_acquire(provider): return session
+    async def fake_release(s): calls["released"] = s is session
     monkeypatch.setattr(codex_cli.REGISTRY, "acquire", fake_acquire)
+    monkeypatch.setattr(codex_cli.REGISTRY, "release", fake_release)
     monkeypatch.setattr(codex_cli, "codex_mcp_config_object",
                         lambda **kw: {"mcp_servers": {"opensweep": {}}})
 
@@ -50,3 +53,5 @@ async def test_run_via_app_server_starts_thread_runs_turn_and_streams(monkeypatc
     assert res.text == "hello" and "".join(seen) == "hello"
     assert calls["cwd"] == "/ws" and calls["text"] == "do it"
     assert calls["config"] == {"mcp_servers": {"opensweep": {}}}
+    # the session is handed back so its idle timer (and the credential lease) can release
+    assert calls["released"] is True

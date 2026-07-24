@@ -26,12 +26,39 @@ def main():
             tid = params["threadId"]
             send({"id": mid, "result": {"turn": {"id": f"turn_{tid}", "status": "inProgress"}}})
             text = params["input"][0]["text"]
+            if text.startswith("HANG"):
+                # Accepted, but never completed — models a turn in flight when
+                # the server dies (see the EOF test).
+                continue
             reply = f"echo:{text}"
             for ch in (reply[:3], reply[3:]):  # two deltas
                 send({"method": "item/agentMessage/delta", "params": {"threadId": tid, "delta": ch}})
             send({"method": "turn/completed", "params": {"threadId": tid, "usage": {"input_tokens": 1}}})
         elif method == "boom/error":
             send({"id": mid, "error": {"code": -32000, "message": "boom"}})
+        elif method == "hang/request":
+            # Accepted, but never replied — models a REQUEST stuck in _pending
+            # (as opposed to "HANG" turn text above, which models a stuck turn).
+            continue
+        elif method == "stderr/spew":
+            # A handful of recognizable stderr lines — enough for a test to
+            # assert they were actually drained (and logged) rather than left
+            # to accumulate. (A real reproduction of the pipe-fill deadlock
+            # needs 10s of MB given asyncio's own internal buffering ahead of
+            # any explicit reader, which makes it slow and machine-dependent —
+            # asserting the drain happens is the reliable regression signal.)
+            for i in range(3):
+                print(f"spew-line-{i}", file=sys.stderr)
+            sys.stderr.flush()
+            send({"id": mid, "result": {}})
+        elif method == "huge/line":
+            # A single JSON-RPC line bigger than the client's 16MB readline
+            # limit — no embedded newline until the very end.
+            send({"id": mid, "result": {"payload": "x" * (20 * 1024 * 1024)}})
+        elif method == "bad/id":
+            # Malformed message: unhashable "id" (a list) — dict.pop(obj["id"])
+            # raises TypeError in a naive read loop.
+            send({"id": ["bad"], "result": {}})
         else:
             if mid is not None:
                 send({"id": mid, "result": {}})

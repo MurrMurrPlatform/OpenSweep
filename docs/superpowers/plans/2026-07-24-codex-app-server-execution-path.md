@@ -22,12 +22,76 @@
 - **Phase 4c (public, small):** first-class API-key codex provider (seed an API-key `auth.json` — no OAuth, no lease, parallel by construction).
 - **Retiring `_codex_delta_feeder` / `exec` entirely:** kept as the default path until 4a is proven in production.
 
-### Phase 4b activation gates (from the 4a final whole-branch review)
-Before the flag is turned ON in production, these must be addressed (the 4a code is dormant/default-OFF, so they don't block the 4a merge):
-- **[FIXED in 4a, commit 915fa47]** ~~CODEX_HOME keyed by uid only → a rotated-rev server clobbers a live server's auth.json.~~ `_codex_home` is now `(uid, credential_revision)`-scoped.
-- **Delta callback runs on the client read-loop** (`codex_app_server.run_turn.handle` → `on_delta` → `cli_tracking._on_delta` → `append_event`). If `append_event` blocks or raises, it stalls/silently-drops for ALL concurrent threads on that shared process. 4b: confirm `append_event` is non-blocking+total, or hand deltas off via a per-turn queue instead of calling user code on the read loop.
-- **EOF doesn't fail in-flight turn futures** — only pending *request* futures are failed on read-loop EOF. A `run_turn` with `timeout_s=None` + a server crash hangs forever. The executor always passes a wall ceiling (so `timeout_s` is set), but 4b should also resolve in-flight turn `done` futures on EOF.
-- **Registry lifecycle:** idle-timeout shutdown, rotation write-back (CAS-persist the app-server's refreshed auth.json to the sealed credential via `codex_credential`), and `_locks` pruning — all deferred here, required for a long-lived fleet.
+### Phase 4b — DONE. The flag is safe to turn on.
+
+**The problem 4b had to solve.** 4a spawned one app-server *per worker process*.
+Production runs Celery `--pool=prefork --concurrency=10`, so ten processes would
+each spawn their own app-server against one sealed credential, and each would
+perform its own OAuth refresh of a **single-use rotating** refresh token — the
+exact "access token could not be refreshed" race the whole effort fixed.
+
+**The fix: the app-server session *is* the lease holder.** A session enters
+`codex_credential.codex_credential_txn` when it spawns the server and holds it
+open for the server's whole lifetime. That reuses the existing durable Neo4j
+lease — same TTL renewal, same compare-and-swap write-back — so:
+
+- exactly one process anywhere touches an auth.json at a time (OpenAI's "one
+  auth.json per runner, no concurrent sharing" rule);
+- **within** that holder, many runs share the server concurrently, each on its
+  own codex thread. That is the win over the exec path, which had to serialize
+  whole runs to stay safe;
+- a process that cannot get the lease raises the same `HTTPException` the exec
+  path raises, and `cli_tracking._paused_busy` turns it into a resumable
+  `PAUSED_QUOTA` — never a hard failure.
+
+No new transport and no new service. (`codex app-server --listen unix://` +
+`proxy` were evaluated for cross-process sharing and rejected: the socket
+accepts a connection and then returns nothing, and `daemon` needs codex's
+standalone installer, which our npm-based image doesn't use.)
+
+**Activation gates — all closed:**
+- **[FIXED in 4a, 915fa47]** ~~CODEX_HOME keyed by uid only.~~ `_codex_home` is `(uid, credential_revision)`-scoped.
+- **Delta callback off the read loop.** The notification handler now only `put_nowait`s onto the turn's own queue; `run_turn` drains it on the caller's task. A slow or raising transcript writer can no longer stall or drop deltas for the other turns sharing the process.
+- **EOF fails in-flight turns.** The read loop wakes every in-flight turn queue (not just pending *request* futures) on EOF/close, so a server crash surfaces as an error instead of hanging a turn that has no wall ceiling.
+- **Registry lifecycle.** Refcounted sessions with idle-timeout shutdown (`OPENSWEEP_CODEX_APP_SERVER_IDLE_SECONDS`, default 120s), rotation write-back on close (via the txn exit), `_locks` pruned on shutdown, dead-server and rotated-credential recycling, plus release hooks on Celery `worker_process_shutdown` and FastAPI shutdown so a restart doesn't strand a lease until TTL.
+
+**Turning it on:** add `OPENSWEEP_CODEX_APP_SERVER = "1"` to `extra_env` in the
+(gitignored) `deployment/terraform/terraform.tfvars` in the cloud repo and
+`terraform apply` — Coolify injects the .env into every service.
+
+**Gated to long-lived-loop processes — and why that is not optional.** A code
+review caught (with a repro) that the session CANNOT live in a Celery worker.
+Every worker run is its own task calling `asyncio.run`
+(`tasks/dispatch_runs.dispatch_run`), and `asyncio.run`'s teardown calls
+`loop.shutdown_asyncgens()`, which **force-finalizes the parked
+`codex_credential_txn` generator** — releasing the lease while the codex process
+is still alive and still able to refresh the rotating token. Another prefork
+child would then take the free lease and spawn a second app-server on the same
+auth.json: precisely the race this design exists to prevent. So
+`codex_cli.app_server_enabled` returns False unless
+`codex_app_server_registry.long_lived_loop()` holds (`get_role() != WORKER`), and
+`acquire` independently discards any session whose creating loop is not the
+running one. Worker runs stay on the `exec` path (per-run lease), safe by
+construction.
+
+**What it buys, honestly.** Backend-dispatched runs (uvicorn `--workers 1` — the
+Ask / Area Map / action surfaces, which dispatch in-process via
+`lifecycle._launch_dispatch`) share one long-lived loop, so they get full
+concurrency on a single subscription. Worker-dispatched runs (scheduled agents,
+campaign ticks) are unchanged. Extending the win to the worker needs either a
+persistent per-child event loop instead of `asyncio.run` per task, or codex work
+routed to a dedicated single-process queue — a deployment/topology change,
+deliberately out of scope here.
+
+**Other review findings fixed in this pass:** the idle-close path self-cancelled
+its own task and stranded the lease; `close()` never failed in-flight *requests*
+(a caller in `start_thread` could hang forever); the child's stderr pipe was
+never drained (a long-lived server would deadlock once it filled); `_read_loop`
+had no exception guard, so an oversized line or malformed `id` killed the reader
+while `alive` kept reporting True; `shutdown_all` could miss a session still
+being spawned, and clearing `_locks` could let two coroutines into the same
+critical section; transcript inputs were written before the subscription was
+claimed, duplicating the instruction on every paused retry.
 
 ---
 
