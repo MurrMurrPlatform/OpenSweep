@@ -29,8 +29,7 @@ def app_server_enabled(provider) -> bool:
         return True
     extra = getattr(provider, "extra_args", "") or ""
     try:
-        import json as _json
-        return bool(_json.loads(extra).get("app_server")) if extra.strip().startswith("{") else False
+        return bool(json.loads(extra).get("app_server")) if extra.strip().startswith("{") else False
     except Exception:  # noqa: BLE001
         return False
 

@@ -170,21 +170,27 @@ def write_claude_mcp_config(
 def codex_mcp_config_object(*, run_uid: str, workspace_path: str = "") -> dict:
     """The per-run MCP servers as a nested config dict for app-server
     `thread/start.config` — same servers as the exec path's `-c` overrides
-    (codex_mcp_overrides), just structured instead of flat."""
-    import json as _json
+    (codex_mcp_overrides), just structured. Each override is a dotted-key TOML
+    line (`mcp_servers.opensweep.command="npx"`), so parse with tomllib — it
+    handles strings, arrays, AND inline tables (code-graph's env) correctly,
+    unlike json."""
+    import tomllib
     cfg: dict = {}
     for override in codex_mcp_overrides(run_uid=run_uid, workspace_path=workspace_path):
-        key, _, raw = override.partition("=")
         try:
-            value = _json.loads(raw)          # json.dumps output is the source; round-trips
-        except _json.JSONDecodeError:
-            value = raw.strip('"')
-        node = cfg
-        parts = key.split(".")
-        for p in parts[:-1]:
-            node = node.setdefault(p, {})
-        node[parts[-1]] = value
+            parsed = tomllib.loads(override)
+        except tomllib.TOMLDecodeError:
+            continue  # a malformed override is skipped, not fatal (a run without one MCP beats no run)
+        _deep_merge(cfg, parsed)
     return cfg
+
+
+def _deep_merge(dst: dict, src: dict) -> None:
+    for k, v in src.items():
+        if isinstance(v, dict) and isinstance(dst.get(k), dict):
+            _deep_merge(dst[k], v)
+        else:
+            dst[k] = v
 
 
 def claude_env(*, run_uid: str, oauth_token: str = "") -> dict[str, str]:
