@@ -167,6 +167,26 @@ def write_claude_mcp_config(
     return str(config_path)
 
 
+def codex_mcp_config_object(*, run_uid: str, workspace_path: str = "") -> dict:
+    """The per-run MCP servers as a nested config dict for app-server
+    `thread/start.config` — same servers as the exec path's `-c` overrides
+    (codex_mcp_overrides), just structured instead of flat."""
+    import json as _json
+    cfg: dict = {}
+    for override in codex_mcp_overrides(run_uid=run_uid, workspace_path=workspace_path):
+        key, _, raw = override.partition("=")
+        try:
+            value = _json.loads(raw)          # json.dumps output is the source; round-trips
+        except _json.JSONDecodeError:
+            value = raw.strip('"')
+        node = cfg
+        parts = key.split(".")
+        for p in parts[:-1]:
+            node = node.setdefault(p, {})
+        node[parts[-1]] = value
+    return cfg
+
+
 def claude_env(*, run_uid: str, oauth_token: str = "") -> dict[str, str]:
     """Env vars for a `claude` subprocess invocation.
 
