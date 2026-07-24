@@ -24,3 +24,17 @@ async def test_request_raises_appservererror_on_error_response():
         assert exc.value.code == -32000 and "boom" in exc.value.message
     finally:
         await c.close()
+
+
+async def test_start_thread_and_run_turn_streams_and_completes():
+    c = await AppServerClient.spawn(argv=_FAKE, env={})
+    try:
+        await c.initialize()
+        tid = await c.start_thread(cwd="/tmp/x")
+        deltas = []
+        res = await c.run_turn(thread_id=tid, text="hi", on_delta=deltas.append)
+        assert "".join(deltas) == "echo:hi"       # streamed
+        assert res.text == "echo:hi" and res.error is None
+        assert res.usage.get("input_tokens") == 1
+    finally:
+        await c.close()

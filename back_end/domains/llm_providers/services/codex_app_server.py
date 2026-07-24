@@ -6,8 +6,16 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Callable
+from dataclasses import dataclass, field
 
 from infrastructure.process_tree import kill_tree, process_group_kwargs
+
+
+@dataclass
+class TurnResult:
+    text: str = ""
+    usage: dict = field(default_factory=dict)
+    error: str | None = None
 
 
 class AppServerError(Exception):
@@ -95,6 +103,59 @@ class AppServerClient:
         })
         await self.notify("initialized")
         return result
+
+    async def start_thread(self, *, cwd: str, sandbox: str = "danger-full-access",
+                           approval: str = "never", model: str = "",
+                           config: dict | None = None) -> str:
+        params: dict = {"cwd": cwd, "sandbox": sandbox, "approvalPolicy": approval}
+        if model:
+            params["model"] = model
+        if config:
+            params["config"] = config
+        result = await self.request("thread/start", params)
+        return (result.get("thread") or {}).get("id") or ""
+
+    async def run_turn(self, *, thread_id: str, text: str, model: str = "",
+                       on_delta: Callable[[str], None] | None = None,
+                       timeout_s: float | None = None) -> TurnResult:
+        done: asyncio.Future = asyncio.get_running_loop().create_future()
+        parts: list[str] = []
+        state: dict = {"usage": {}, "error": None}
+
+        def handle(obj: dict):
+            m = obj.get("method"); p = obj.get("params") or {}
+            if p.get("threadId") not in (thread_id, None):
+                return
+            if m == "item/agentMessage/delta":
+                d = p.get("delta") or ""
+                if d:
+                    parts.append(d)
+                    if on_delta:
+                        on_delta(d)
+            elif m in ("error", "thread/realtimeError"):
+                state["error"] = json.dumps(p)[:500]
+                if not done.done():
+                    done.set_result(True)
+            elif m == "turn/completed":
+                state["usage"] = p.get("usage") or {}
+                if not done.done():
+                    done.set_result(True)
+
+        self.on_notification(handle)
+        params: dict = {"threadId": thread_id, "input": [{"type": "text", "text": text}]}
+        if model:
+            params["model"] = model
+        await self.request("turn/start", params)
+        try:
+            if timeout_s is None:
+                await done
+            else:
+                await asyncio.wait_for(done, timeout=timeout_s)
+        except TimeoutError:
+            state["error"] = f"turn timed out after {timeout_s}s"
+        finally:
+            self._handlers.remove(handle)
+        return TurnResult(text="".join(parts), usage=state["usage"], error=state["error"])
 
     async def close(self) -> None:
         self._reader.cancel()
