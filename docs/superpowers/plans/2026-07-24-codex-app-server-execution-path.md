@@ -22,6 +22,13 @@
 - **Phase 4c (public, small):** first-class API-key codex provider (seed an API-key `auth.json` — no OAuth, no lease, parallel by construction).
 - **Retiring `_codex_delta_feeder` / `exec` entirely:** kept as the default path until 4a is proven in production.
 
+### Phase 4b activation gates (from the 4a final whole-branch review)
+Before the flag is turned ON in production, these must be addressed (the 4a code is dormant/default-OFF, so they don't block the 4a merge):
+- **[FIXED in 4a, commit 915fa47]** ~~CODEX_HOME keyed by uid only → a rotated-rev server clobbers a live server's auth.json.~~ `_codex_home` is now `(uid, credential_revision)`-scoped.
+- **Delta callback runs on the client read-loop** (`codex_app_server.run_turn.handle` → `on_delta` → `cli_tracking._on_delta` → `append_event`). If `append_event` blocks or raises, it stalls/silently-drops for ALL concurrent threads on that shared process. 4b: confirm `append_event` is non-blocking+total, or hand deltas off via a per-turn queue instead of calling user code on the read loop.
+- **EOF doesn't fail in-flight turn futures** — only pending *request* futures are failed on read-loop EOF. A `run_turn` with `timeout_s=None` + a server crash hangs forever. The executor always passes a wall ceiling (so `timeout_s` is set), but 4b should also resolve in-flight turn `done` futures on EOF.
+- **Registry lifecycle:** idle-timeout shutdown, rotation write-back (CAS-persist the app-server's refreshed auth.json to the sealed credential via `codex_credential`), and `_locks` pruning — all deferred here, required for a long-lived fleet.
+
 ---
 
 ## File Structure
