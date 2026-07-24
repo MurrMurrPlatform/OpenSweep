@@ -105,7 +105,11 @@ def build_codex_turn_argv(
 ) -> list[str]:
     """`config_overrides` are `-c key=value` TOML overrides — how per-run MCP
     servers (the code graph) reach codex, which has no --mcp-config flag."""
-    argv = ["codex", "exec", "--skip-git-repo-check", "--json"]
+    from domains.llm_providers.services.llm_executor import with_codex_sandbox_bypass
+
+    # Bypass codex's OS sandbox + approval prompts — OpenSweep already isolates
+    # the turn (same flag/rationale as the run path).
+    argv = with_codex_sandbox_bypass(["codex", "exec", "--skip-git-repo-check", "--json"])
     for override in config_overrides or []:
         argv += ["-c", override]
     if model:

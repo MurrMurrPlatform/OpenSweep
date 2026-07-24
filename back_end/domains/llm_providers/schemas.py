@@ -174,7 +174,10 @@ KIND_CATALOG: dict[LLMProviderKind, dict] = {
         "tagline": "Uses your ChatGPT subscription — no API bill",
         "featured": 2,
         "transport": "local CLI",
-        "default_cli": 'codex exec --skip-git-repo-check --json {{instruction_q}}',
+        "default_cli": (
+            "codex exec --dangerously-bypass-approvals-and-sandbox "
+            "--skip-git-repo-check --json {{instruction_q}}"
+        ),
         "needs_api_key": False,
         "needs_base_url": False,
         "needs_credential": True,

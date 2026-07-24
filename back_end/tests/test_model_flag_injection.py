@@ -11,7 +11,13 @@ import shlex
 import pytest
 
 from domains.llm_providers.schemas import default_cli_template
-from domains.llm_providers.services.llm_executor import _render_template, with_model_flag
+from domains.llm_providers.services.llm_executor import (
+    _render_template,
+    with_codex_sandbox_bypass,
+    with_model_flag,
+)
+
+_BYPASS = "--dangerously-bypass-approvals-and-sandbox"
 
 
 def test_claude_gets_model_appended_when_template_lacks_placeholder():
@@ -66,6 +72,38 @@ def test_codex_short_model_flag_is_respected():
 def test_other_kinds_pass_through():
     argv = ["opencode", "run", "hi"]
     assert with_model_flag(argv, kind="opencode", model="x", template="opencode run {{instruction_q}}") == argv
+
+
+# ── with_codex_sandbox_bypass — codex must not run its own OS sandbox ──────────
+# OpenSweep already isolates the run; codex's landlock/seccomp sandbox can't
+# create a namespace in the worker container (every shell command fails) and its
+# approval policy auto-cancels MCP tool calls. The bypass flag fixes both.
+
+
+def test_bypass_inserted_right_after_exec():
+    argv = ["codex", "exec", "--skip-git-repo-check", "--json", "prompt"]
+    out = with_codex_sandbox_bypass(argv)
+    assert out[:3] == ["codex", "exec", _BYPASS]
+    assert out[3:] == ["--skip-git-repo-check", "--json", "prompt"]
+
+
+def test_bypass_is_idempotent():
+    argv = ["codex", "exec", _BYPASS, "--json", "prompt"]
+    assert with_codex_sandbox_bypass(argv) == argv
+
+
+def test_bypass_defers_to_an_explicit_sandbox_flag():
+    argv = ["codex", "exec", "--sandbox", "read-only", "prompt"]
+    assert with_codex_sandbox_bypass(argv) == argv
+
+
+def test_bypass_inert_without_exec_subcommand():
+    argv = ["codex", "login"]
+    assert with_codex_sandbox_bypass(argv) == argv
+
+
+def test_seeded_codex_template_carries_the_bypass():
+    assert _BYPASS in default_cli_template("codex_subscription")
 
 
 # ── Seeded template quoting — argv-flag injection hardening ────────────────
