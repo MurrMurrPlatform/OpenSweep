@@ -63,23 +63,19 @@ class AppServerClient:
                     except Exception:  # noqa: BLE001 — a handler must not kill the loop
                         pass
 
-    async def _send(self, method: str, params: dict | None, *, want_id: bool) -> int | None:
-        msg: dict = {"method": method}
-        mid = None
-        if want_id:
-            self._id += 1
-            mid = self._id
-            msg["id"] = mid
-        if params is not None:
-            msg["params"] = params
+    async def _write(self, msg: dict) -> None:
         self._proc.stdin.write((json.dumps(msg) + "\n").encode())
         await self._proc.stdin.drain()
-        return mid
 
     async def request(self, method: str, params: dict | None = None) -> dict:
-        mid = await self._send(method, params, want_id=True)
-        fut: asyncio.Future = asyncio.get_event_loop().create_future()
-        self._pending[mid] = fut
+        self._id += 1
+        mid = self._id
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._pending[mid] = fut          # register BEFORE writing
+        msg: dict = {"method": method, "id": mid}
+        if params is not None:
+            msg["params"] = params
+        await self._write(msg)
         resp = await fut
         if "error" in resp:
             err = resp["error"]
@@ -87,7 +83,10 @@ class AppServerClient:
         return resp.get("result") or {}
 
     async def notify(self, method: str, params: dict | None = None) -> None:
-        await self._send(method, params, want_id=False)
+        msg: dict = {"method": method}
+        if params is not None:
+            msg["params"] = params
+        await self._write(msg)
 
     async def initialize(self, *, name: str = "opensweep", version: str = "0.1.0") -> dict:
         result = await self.request("initialize", {
