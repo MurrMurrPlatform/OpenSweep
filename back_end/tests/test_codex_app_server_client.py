@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import pytest
 from domains.llm_providers.services.codex_app_server import AppServerClient, AppServerError
@@ -36,5 +37,21 @@ async def test_start_thread_and_run_turn_streams_and_completes():
         assert "".join(deltas) == "echo:hi"       # streamed
         assert res.text == "echo:hi" and res.error is None
         assert res.usage.get("input_tokens") == 1
+    finally:
+        await c.close()
+
+
+async def test_concurrent_turns_stay_on_their_own_thread():
+    c = await AppServerClient.spawn(argv=_FAKE, env={})
+    try:
+        await c.initialize()
+        ta = await c.start_thread(cwd="/a")
+        tb = await c.start_thread(cwd="/b")
+        ra, rb = await asyncio.gather(
+            c.run_turn(thread_id=ta, text="AAA"),
+            c.run_turn(thread_id=tb, text="BBB"),
+        )
+        assert ra.text == "echo:AAA"
+        assert rb.text == "echo:BBB"
     finally:
         await c.close()

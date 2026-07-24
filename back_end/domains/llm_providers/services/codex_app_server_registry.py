@@ -24,7 +24,10 @@ def _seed_codex_home(provider) -> dict:
 
 
 def _key(provider) -> tuple[str, int]:
-    return ((provider.uid or "").strip(), int(getattr(provider, "credential_revision", 0) or 0))
+    uid = (provider.uid or "").strip()
+    if not uid:
+        raise ValueError("codex app-server registry: provider.uid is required")
+    return (uid, int(getattr(provider, "credential_revision", 0) or 0))
 
 
 class AppServerRegistry:
@@ -55,7 +58,8 @@ class AppServerRegistry:
 
     async def shutdown(self, provider) -> None:
         key = _key(provider)
-        client = self._clients.pop(key, None)
+        async with self._lock(key):
+            client = self._clients.pop(key, None)
         if client is not None:
             await client.close()
 

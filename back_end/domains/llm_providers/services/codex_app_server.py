@@ -124,7 +124,14 @@ class AppServerClient:
 
         def handle(obj: dict):
             m = obj.get("method"); p = obj.get("params") or {}
-            if p.get("threadId") not in (thread_id, None):
+            tid = p.get("threadId")
+            if m in ("error", "thread/realtimeError"):
+                if tid in (thread_id, None):          # thread-scoped OR global error
+                    state["error"] = json.dumps(p)[:500]
+                    if not done.done():
+                        done.set_result(True)
+                return
+            if tid != thread_id:                       # strict: ignore other threads
                 return
             if m == "item/agentMessage/delta":
                 d = p.get("delta") or ""
@@ -132,10 +139,6 @@ class AppServerClient:
                     parts.append(d)
                     if on_delta:
                         on_delta(d)
-            elif m in ("error", "thread/realtimeError"):
-                state["error"] = json.dumps(p)[:500]
-                if not done.done():
-                    done.set_result(True)
             elif m == "turn/completed":
                 state["usage"] = p.get("usage") or {}
                 if not done.done():
