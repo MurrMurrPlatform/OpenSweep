@@ -1,5 +1,12 @@
-"""One `codex app-server` process per subscription, and — critically — **one
-credential holder platform-wide**.
+"""One `codex app-server` process per subscription, and — critically — **exactly
+one holder of any given subscription across the whole platform**.
+
+Nothing is shared between tenants: an `LLMProvider` belongs to one org, the lock
+node is `CodexCredLock {id: provider.uid}` (one per subscription, not one
+global), and a session is keyed by that provider — so every org runs on its own
+server, its own CODEX_HOME, and its own lease. "Across the platform" describes
+where each per-subscription lock is *enforced* (Neo4j, so every process and node
+honours it) — not a subscription shared platform-wide.
 
 Phase 4a spawned an app-server per worker process. That is unsafe under the
 production Celery worker (`--pool=prefork --concurrency=10`): ten processes each
