@@ -115,9 +115,27 @@ class AppServerRegistry:
 
     @staticmethod
     def _uid(provider) -> str:
+        """The session key: the provider's uid.
+
+        Tenancy: an LLMProvider belongs to exactly one org, and `resolve_provider`
+        only ever hands a run its OWN org's provider (`get_active_provider("")`
+        returns None and legacy unowned rows are invisible to everyone). Keying on
+        the provider therefore gives each org its own app-server, its own
+        CODEX_HOME, and its own credential lease — two orgs can never share a
+        codex process or subscription.
+
+        The org check below makes that invariant explicit rather than inherited:
+        this is the one place where a mis-scoped provider would put two tenants on
+        a single long-lived process, so it refuses instead of assuming.
+        """
         uid = (getattr(provider, "uid", "") or "").strip()
         if not uid:
             raise ValueError("codex app-server registry: provider.uid is required")
+        if not (getattr(provider, "org_uid", "") or "").strip():
+            raise ValueError(
+                f"codex app-server registry: provider {uid} has no org — refusing to "
+                f"back a shared app-server with an unowned subscription"
+            )
         return uid
 
     async def acquire(self, provider) -> AppServerSession:

@@ -33,8 +33,8 @@ class _FakeClient:
         self.alive = False
 
 
-def _provider(uid="p1", rev=0, secret="sealed-x"):
-    return SimpleNamespace(uid=uid, kind="codex_subscription",
+def _provider(uid="p1", rev=0, secret="sealed-x", org_uid="org-a"):
+    return SimpleNamespace(uid=uid, kind="codex_subscription", org_uid=org_uid,
                            credential_secret=secret, credential_revision=rev)
 
 
@@ -252,3 +252,31 @@ async def test_acquire_is_refused_while_shutting_down(harness):
 
     assert harness.registry._sessions == {}
     assert harness.lease["enters"] == harness.lease["exits"]
+
+
+# ── Tenancy ─────────────────────────────────────────────────────────────────
+
+
+async def test_each_org_gets_its_own_app_server_and_lease(harness):
+    """One app-server now serves many threads, so a shared session would put two
+    tenants on one codex process and one ChatGPT subscription. Providers are
+    org-owned and the session is keyed by provider, so the orgs stay apart."""
+    a = await harness.registry.acquire(_provider(uid="prov-a", org_uid="org-a"))
+    b = await harness.registry.acquire(_provider(uid="prov-b", org_uid="org-b"))
+
+    assert a is not b
+    assert a.client is not b.client
+    assert len(harness.spawned) == 2
+    # Two independent credential leases — neither org can block or consume the
+    # other's subscription.
+    assert harness.lease["enters"] == 2
+
+
+async def test_provider_without_an_org_is_refused(harness):
+    """Defence in depth: an unowned (legacy) provider is already unreachable via
+    resolve_provider, but it must never back a long-lived shared server."""
+    with pytest.raises(ValueError, match="no org"):
+        await harness.registry.acquire(_provider(org_uid=""))
+
+    assert harness.registry._sessions == {}
+    assert harness.lease["enters"] == 0
