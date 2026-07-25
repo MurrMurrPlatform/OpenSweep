@@ -117,16 +117,20 @@ class _CLITrackingAdapter(ExecutorAdapter):
             # In-memory only — per-stage workflow override, never saved.
             provider.model = req.model_override
 
-        # App-server path (opt-in): the persistent per-subscription app-server
-        # holds the credential lease for ITS lifetime, so this run does not take a
-        # per-run lease — many runs share the one server, each on its own codex
-        # thread. Falls through to the shared busy handler below when the lease
-        # is held by another process.
+        # App-server path (opt-in): a TRANSPORT swap only — the run still goes
+        # through _run_passes, so envelope tool_calls, the continuation pass and
+        # quota handling all apply. The persistent session holds the credential
+        # lease for ITS lifetime, so this run takes no per-run lease; that is what
+        # lets many runs share one server, each on its own codex thread.
         if self.provider_kind == "codex_subscription" and codex_cli.app_server_enabled(provider):
             try:
-                return await self._run_via_app_server(req, provider, started)
+                session = await codex_cli.acquire_app_server(provider)
             except HTTPException as exc:
                 return self._paused_busy(req, exc)
+            try:
+                return await self._run_passes(req, provider, started, session=session)
+            finally:
+                await codex_cli.release_app_server(session)
 
         # Codex subscriptions serialize per credential and durably persist any
         # rotation codex performs across the run's passes (inert for opencode and
@@ -159,8 +163,12 @@ class _CLITrackingAdapter(ExecutorAdapter):
         )
 
     async def _run_passes(
-        self, req: DispatchRequest, provider: LLMProvider, started: float
+        self, req: DispatchRequest, provider: LLMProvider, started: float, session=None
     ) -> DispatchResult:
+        """The run pipeline. `session` swaps the codex TRANSPORT to the persistent
+        app-server; everything else — envelope extraction, executing the agent's
+        tool_calls, the continuation pass, quota handling, the raw transcript —
+        is identical, because that is what makes a run a run."""
         timeout = resolve_wall_ceiling(req, provider.kind)
         instruction = _instruction(req, timeout)
         # Both CLIs get the code-graph MCP server over the workspace clone —
@@ -182,7 +190,23 @@ class _CLITrackingAdapter(ExecutorAdapter):
         # agent_message text, not the raw envelope/reasoning noise. opencode
         # streams plain text, which passes through as the raw tail.
         is_codex = self.provider_kind == "codex_subscription"
-        codex_feed = _codex_delta_feeder() if is_codex else None
+        # The app-server streams plain agent text, not `exec --json` events, so
+        # it needs the raw-tail passthrough rather than the JSONL feeder.
+        use_app_server = session is not None
+        codex_feed = _codex_delta_feeder() if (is_codex and not use_app_server) else None
+
+        async def _invoke(*, instruction: str, timeout_seconds, on_chunk):
+            if use_app_server:
+                return await codex_cli.invoke_via_app_server(
+                    session, provider, system_prompt=system_prompt, instruction=instruction,
+                    timeout_seconds=timeout_seconds, working_dir=req.repository_local_path,
+                    on_chunk=on_chunk, run_uid=req.run_uid,
+                )
+            return await invoke_provider(
+                provider, system_prompt=system_prompt, instruction=instruction,
+                timeout_seconds=timeout_seconds, working_dir=req.repository_local_path,
+                on_chunk=on_chunk, run_uid=req.run_uid, extra_cli_args=reasoning_cli_args,
+            )
         streamed_len = {"stdout": 0}
         recorder = StreamRecorder(
             run_uid=req.run_uid,
@@ -207,15 +231,8 @@ class _CLITrackingAdapter(ExecutorAdapter):
         reasoning_cli_args = reasoning_args(req.reasoning, provider.kind).get("cli_config") or []
 
         try:
-            inv = await invoke_provider(
-                provider,
-                system_prompt=system_prompt,
-                instruction=instruction,
-                timeout_seconds=timeout,
-                working_dir=req.repository_local_path,
-                on_chunk=_on_chunk,
-                run_uid=req.run_uid,
-                extra_cli_args=reasoning_cli_args,
+            inv = await _invoke(
+                instruction=instruction, timeout_seconds=timeout, on_chunk=_on_chunk,
             )
         finally:
             await recorder.close()
@@ -292,25 +309,28 @@ class _CLITrackingAdapter(ExecutorAdapter):
                     repository_uid=req.repository_uid,
                     label=f"live {self.name.value} continuation transcript",
                 )
-                # Continuation only runs for codex — parse its JSONL the same way.
-                cont_feed = _codex_delta_feeder()
+                # Continuation only runs for codex — same transport, same parsing
+                # as the first pass (JSONL for exec, plain text for app-server).
+                cont_feed = _codex_delta_feeder() if not use_app_server else None
+                cont_streamed = {"stdout": 0}
 
                 async def _on_cont_chunk(stream: str, text: str) -> None:
                     if stream == "stdout":
-                        for delta in cont_feed(text):
-                            append_event(req.run_uid, "assistant_text", text=delta)
+                        if cont_feed is not None:
+                            for delta in cont_feed(text):
+                                append_event(req.run_uid, "assistant_text", text=delta)
+                        else:
+                            delta = text[cont_streamed["stdout"]:]
+                            if delta:
+                                cont_streamed["stdout"] = len(text)
+                                append_event(req.run_uid, "assistant_text", text=delta)
                     await cont_recorder.record_total(stream, text)
 
                 try:
-                    cont_inv = await invoke_provider(
-                        provider,
-                        system_prompt=system_prompt,
+                    cont_inv = await _invoke(
                         instruction=cont_prompt,
                         timeout_seconds=int(remaining_wall) if remaining_wall is not None else None,
-                        working_dir=req.repository_local_path,
                         on_chunk=_on_cont_chunk,
-                        run_uid=req.run_uid,
-                        extra_cli_args=reasoning_cli_args,
                     )
                 finally:
                     await cont_recorder.close()
@@ -417,50 +437,6 @@ class _CLITrackingAdapter(ExecutorAdapter):
             summary=f"{self.name.value} finished in {wall:.1f}s",
             outcome=outcome or extract_outcome({"summary": (envelope or {}).get("summary")}),
         )
-
-    async def _run_via_app_server(self, req: DispatchRequest, provider: LLMProvider, started: float) -> DispatchResult:
-        timeout = resolve_wall_ceiling(req, provider.kind)
-        instruction = _instruction(req, timeout)
-        system_prompt = _SYSTEM_PROMPT
-        if code_graph_available(req.repository_local_path or ""):
-            system_prompt = _SYSTEM_PROMPT + "\n" + CODE_GRAPH_PROMPT
-
-        # Claim the subscription BEFORE writing any transcript entry: an
-        # HTTPException here pauses the run for retry, and a half-written turn
-        # would be duplicated on every re-dispatch.
-        session = await codex_cli.acquire_app_server(provider)
-
-        await record_input(req.run_uid, system_prompt=system_prompt, instruction=instruction)
-        append_event(req.run_uid, "user_message", text=instruction)
-
-        def _on_delta(text: str) -> None:
-            append_event(req.run_uid, "assistant_text", text=text)
-
-        try:
-            res = await codex_cli.run_turn_on(
-                session, instruction=f"{system_prompt}\n\n{instruction}",
-                working_dir=req.repository_local_path or "", run_uid=req.run_uid,
-                model=provider.model or "", on_delta=_on_delta,
-                timeout_s=float(timeout) if timeout else None,
-            )
-        except Exception as exc:  # noqa: BLE001
-            return DispatchResult(status=RunStatus.FAILED, error=f"app-server: {exc}"[:500],
-                                  summary=f"{self.name.value} failed (app-server)")
-        finally:
-            await codex_cli.release_app_server(session)
-        wall = time.monotonic() - started
-        usage = {"wall_seconds": round(wall, 2), "provider_kind": provider.kind,
-                 "transport": "app-server", **(res.usage or {})}
-        if res.error:
-            return DispatchResult(status=RunStatus.FAILED, error=res.error[:500], usage=usage,
-                                  summary=f"{self.name.value} failed (app-server)")
-        # complete_run via MCP stamps completed_at (same as exec path); lifecycle finalizes.
-        completed = await _completed_via_mcp(req.run_uid)
-        return DispatchResult(
-            status=RunStatus.AWAITING_INPUT if completed else RunStatus.RUNNING,
-            usage=usage, summary=f"{self.name.value} finished (app-server)",
-        )
-
 
 class CodexAdapter(_CLITrackingAdapter):
     name = Executor.CODEX

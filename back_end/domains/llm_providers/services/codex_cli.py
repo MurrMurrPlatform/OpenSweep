@@ -16,8 +16,10 @@ per-subscription lease + rotation write-back (`codex_credential.codex_credential
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import time
 
 from domains.llm_providers.services.codex_app_server_registry import REGISTRY, long_lived_loop
 from domains.executors.mcp_bridge import codex_mcp_config_object
@@ -87,6 +89,72 @@ async def run_turn_on(session, *, instruction: str, working_dir: str, run_uid: s
     return await session.client.run_turn(
         thread_id=thread_id, text=instruction, model=model or "",
         on_delta=on_delta, timeout_s=timeout_s,
+    )
+
+
+async def invoke_via_app_server(session, provider, *, system_prompt: str, instruction: str,
+                                timeout_seconds: int | None = None, working_dir: str | None = None,
+                                on_chunk=None, run_uid: str = ""):
+    """One codex turn over the app-server, shaped as an `LLMInvocation`.
+
+    Deliberately mirrors `llm_executor.invoke` so the app-server is a TRANSPORT
+    swap underneath the normal run pipeline, not a parallel pipeline. Everything
+    that makes a run a run — envelope extraction, executing the agent's
+    `tool_calls`, the continuation pass, quota handling, the raw transcript
+    artifact — lives in `cli_tracking._run_passes` and must apply here too. An
+    earlier version bypassed all of it and silently dropped every proposal the
+    agent made.
+
+    `on_chunk` is called with the running TOTAL (not the delta), matching the
+    CLI transport's contract.
+    """
+    # Local import: llm_executor imports this module at module level.
+    from domains.llm_providers.services.llm_executor import LLMInvocation
+
+    started = time.monotonic()
+    text_parts: list[str] = []
+
+    def _on_delta(delta: str) -> None:
+        text_parts.append(delta)
+        if on_chunk is not None:
+            # The pipeline's callback is async; the client calls this from the
+            # turn's own task, so hand the coroutine to the loop.
+            asyncio.ensure_future(on_chunk("stdout", "".join(text_parts)))
+
+    try:
+        res = await run_turn_on(
+            session,
+            instruction=f"{system_prompt}\n\n{instruction}" if system_prompt else instruction,
+            working_dir=working_dir or "", run_uid=run_uid, model=(provider.model or ""),
+            on_delta=_on_delta, timeout_s=float(timeout_seconds) if timeout_seconds else None,
+        )
+    except Exception as exc:  # noqa: BLE001 — the CLI transport reports failures
+        return LLMInvocation(                # in `error`, never by raising; match it.
+            raw_output="".join(text_parts), exit_code=1, transport="app-server",
+            command_excerpt="codex app-server turn/start",
+            rendered_system_prompt=system_prompt, rendered_instruction=instruction,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            error=f"app-server: {exc}"[:500],
+        )
+    raw = res.text or "".join(text_parts)
+    if on_chunk is not None and raw:
+        await on_chunk("stdout", raw)      # final total, so nothing is missed
+
+    error = res.error or ""
+    # `_run_passes` reads "timed out" to distinguish a wall kill (LIMIT_EXCEEDED)
+    # from a plain failure — keep the CLI transport's wording.
+    if error.startswith("turn timed out"):
+        error = f"timed out after {timeout_seconds}s"
+    return LLMInvocation(
+        raw_output=raw,
+        exit_code=0 if not error else 1,
+        transport="app-server",
+        command_excerpt="codex app-server turn/start",
+        rendered_system_prompt=system_prompt,
+        rendered_instruction=instruction,
+        duration_ms=int((time.monotonic() - started) * 1000),
+        error=error,
+        extra={"usage": res.usage or {}},
     )
 
 

@@ -11,6 +11,7 @@ on one subscription to run concurrently. This test file verifies:
     transcript before the subscription was claimed.
 """
 
+import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -39,8 +40,8 @@ async def _async_none():
     return None
 
 
-def _patch_session(monkeypatch, run_turn, *, acquire=None):
-    """Patch the acquire → run → release seam cli_tracking now uses.
+def _patch_session(monkeypatch, invoke, *, acquire=None):
+    """Patch the acquire → invoke → release seam cli_tracking now uses.
 
     Without this the adapter would call the REAL registry, which takes a Neo4j
     credential lease and blocks — a hang, not a failure.
@@ -57,9 +58,17 @@ def _patch_session(monkeypatch, run_turn, *, acquire=None):
         released["n"] += 1
 
     monkeypatch.setattr(cli_tracking.codex_cli, "acquire_app_server", _acquire)
-    monkeypatch.setattr(cli_tracking.codex_cli, "run_turn_on", run_turn)
+    monkeypatch.setattr(cli_tracking.codex_cli, "invoke_via_app_server", invoke)
     monkeypatch.setattr(cli_tracking.codex_cli, "release_app_server", _release)
     return released
+
+
+def _inv(text: str, **kw):
+    """An LLMInvocation shaped exactly like the CLI transport returns."""
+    from domains.llm_providers.services.llm_executor import LLMInvocation
+    base = dict(raw_output=text, exit_code=0, transport="app-server")
+    base.update(kw)
+    return LLMInvocation(**base)
 
 
 
@@ -82,13 +91,14 @@ async def test_codex_dispatch_uses_app_server_when_enabled(monkeypatch):
 
     monkeypatch.setattr(cli_tracking, "invoke_provider", boom_invoke)
 
-    async def fake_run(session, *, instruction, working_dir, run_uid, model="", on_delta=None, timeout_s=None):
+    async def fake_invoke(session, provider, *, system_prompt, instruction, timeout_seconds=None,
+                          working_dir=None, on_chunk=None, run_uid=""):
         invoked["app_server"] += 1
-        if on_delta:
-            on_delta("streamed ")
-        return TurnResult(text="streamed answer", usage={"input_tokens": 3})
+        if on_chunk:
+            await on_chunk("stdout", "streamed answer")
+        return _inv("streamed answer")
 
-    released = _patch_session(monkeypatch, fake_run)
+    released = _patch_session(monkeypatch, fake_invoke)
     monkeypatch.setattr(cli_tracking, "append_event", lambda uid, kind, **kw: invoked["events"].append((kind, kw)))
 
     async def completed(uid):
@@ -131,10 +141,11 @@ async def test_app_server_path_skips_credential_lease(monkeypatch):
 
     monkeypatch.setattr(cli_tracking.codex_credential, "codex_credential_txn", _recording_txn)
 
-    async def fake_run(session, *, instruction, working_dir, run_uid, model="", on_delta=None, timeout_s=None):
-        return TurnResult(text="ok", usage={})
+    async def fake_invoke(session, provider, *, system_prompt, instruction, timeout_seconds=None,
+                          working_dir=None, on_chunk=None, run_uid=""):
+        return _inv("ok")
 
-    _patch_session(monkeypatch, fake_run)
+    _patch_session(monkeypatch, fake_invoke)
     monkeypatch.setattr(cli_tracking, "append_event", lambda *a, **k: None)
     monkeypatch.setattr(cli_tracking, "record_input", lambda *a, **k: _async_none())
 
@@ -158,10 +169,11 @@ async def test_app_server_error_returns_failed(monkeypatch):
     monkeypatch.setattr(cli_tracking, "resolve_provider", _resolve)
     monkeypatch.setattr(cli_tracking.codex_cli, "app_server_enabled", lambda p: True)
 
-    async def fail_run(session, *, instruction, working_dir, run_uid, model="", on_delta=None, timeout_s=None):
-        raise RuntimeError("app-server connection refused")
+    async def fail_invoke(session, provider, *, system_prompt, instruction, timeout_seconds=None,
+                          working_dir=None, on_chunk=None, run_uid=""):
+        return _inv("", exit_code=1, error="app-server: connection refused")
 
-    _patch_session(monkeypatch, fail_run)
+    _patch_session(monkeypatch, fail_invoke)
     monkeypatch.setattr(cli_tracking, "append_event", lambda *a, **k: None)
     monkeypatch.setattr(cli_tracking, "record_input", lambda *a, **k: _async_none())
 
@@ -230,10 +242,10 @@ async def test_lease_contention_pauses_for_retry_not_fail(monkeypatch):
     async def busy_acquire(provider):
         raise HTTPException(status_code=503, detail="Another run is using this Codex subscription")
 
-    async def never_run(session, **kw):
+    async def never_invoke(session, provider, **kw):
         raise AssertionError("must not run a turn without the subscription")
 
-    _patch_session(monkeypatch, never_run, acquire=busy_acquire)
+    _patch_session(monkeypatch, never_invoke, acquire=busy_acquire)
 
     wrote = {"n": 0}
     monkeypatch.setattr(cli_tracking, "append_event", lambda *a, **k: wrote.__setitem__("n", wrote["n"] + 1))
@@ -246,3 +258,102 @@ async def test_lease_contention_pauses_for_retry_not_fail(monkeypatch):
     # Nothing was written before the subscription was claimed, so the retry
     # doesn't duplicate the instruction in the transcript.
     assert wrote["n"] == 0
+
+
+# ── Transport parity ────────────────────────────────────────────────────────
+#
+# The bug this guards: the app-server used to be a PARALLEL pipeline that
+# skipped _run_passes, so the agent's envelope tool_calls were never executed —
+# runs completed having proposed nothing, and the raw envelope JSON leaked into
+# the transcript. The app-server is a transport swap; a run must behave the same
+# on either one.
+
+_ENVELOPE = (
+    'Here is my analysis.\n\n```json\n'
+    '{"tool_calls": [{"tool": "propose_subsystem", "args": {"name": "auth"}},'
+    ' {"tool": "complete_run", "args": {"summary": "done"}}],'
+    ' "summary": "mapped the repo"}\n```'
+)
+
+
+async def _dispatch_on(monkeypatch, *, app_server: bool):
+    """Run one dispatch on the chosen transport, returning (result, executed)."""
+    provider = SimpleNamespace(uid="p1", kind="codex_subscription", model="",
+                               credential_revision=0, extra_args="", org_uid="org-a")
+
+    async def _resolve(*a, **k):
+        return provider
+
+    monkeypatch.setattr(cli_tracking, "resolve_provider", _resolve)
+    monkeypatch.setattr(cli_tracking.codex_cli, "app_server_enabled", lambda p: app_server)
+    monkeypatch.setattr(cli_tracking, "append_event", lambda *a, **k: None)
+    monkeypatch.setattr(cli_tracking, "record_input", lambda *a, **k: _async_none())
+    monkeypatch.setattr(cli_tracking.artifact_store, "put", lambda **kw: "artifact://raw")
+
+    @asynccontextmanager
+    async def _txn(_p):
+        yield
+
+    monkeypatch.setattr(cli_tracking.codex_credential, "codex_credential_txn", _txn)
+
+    executed = {"calls": None}
+
+    async def _exec_calls(*, calls, req, executor_value, deny_tools):
+        executed["calls"] = calls
+        return ([{"tool": c["tool"], "ok": True} for c in calls], ["artifact://tool"], {"ok": True})
+
+    monkeypatch.setattr(cli_tracking, "execute_envelope_tool_calls", _exec_calls)
+
+    async def _completed(uid):
+        return True
+
+    monkeypatch.setattr(cli_tracking, "_completed_via_mcp", _completed)
+
+    if app_server:
+        async def fake_invoke(session, prov, *, system_prompt, instruction, timeout_seconds=None,
+                              working_dir=None, on_chunk=None, run_uid=""):
+            if on_chunk:
+                await on_chunk("stdout", _ENVELOPE)
+            return _inv(_ENVELOPE)
+
+        _patch_session(monkeypatch, fake_invoke)
+    else:
+        async def fake_cli(prov, **kw):
+            on_chunk = kw.get("on_chunk")
+            if on_chunk:
+                # the exec transport streams codex JSONL, not plain text
+                line = json.dumps({"type": "item.completed",
+                                   "item": {"type": "agent_message", "text": _ENVELOPE}})
+                await on_chunk("stdout", line + "\n")
+            return _inv(_ENVELOPE, transport="cli")
+
+        monkeypatch.setattr(cli_tracking, "invoke_provider", fake_cli)
+
+    return await cli_tracking.CodexAdapter().dispatch(_req()), executed
+
+
+async def test_app_server_executes_envelope_tool_calls(monkeypatch):
+    """The regression itself: proposals in the envelope must actually be filed."""
+    result, executed = await _dispatch_on(monkeypatch, app_server=True)
+
+    assert executed["calls"] is not None, "envelope tool_calls were never executed"
+    assert [c["tool"] for c in executed["calls"]] == ["propose_subsystem", "complete_run"]
+    assert result.usage["tool_calls"] == 2
+    assert result.parse_status == "ok"
+    assert "artifact://tool" in result.output_refs
+
+
+async def test_both_transports_produce_the_same_run(monkeypatch):
+    """Same envelope in → same proposals, parse_status and outcome out."""
+    app_result, app_exec = await _dispatch_on(monkeypatch, app_server=True)
+    cli_result, cli_exec = await _dispatch_on(monkeypatch, app_server=False)
+
+    assert app_exec["calls"] == cli_exec["calls"]
+    assert app_result.status == cli_result.status
+    assert app_result.parse_status == cli_result.parse_status
+    assert app_result.outcome == cli_result.outcome
+    assert app_result.usage["tool_calls"] == cli_result.usage["tool_calls"]
+    assert app_result.output_refs == cli_result.output_refs
+    # The only thing that should differ is which transport ran it.
+    assert app_result.usage["transport"] == "app-server"
+    assert cli_result.usage["transport"] == "cli"

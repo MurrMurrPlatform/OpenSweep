@@ -22,7 +22,38 @@
 - **Phase 4c (public, small):** first-class API-key codex provider (seed an API-key `auth.json` — no OAuth, no lease, parallel by construction).
 - **Retiring `_codex_delta_feeder` / `exec` entirely:** kept as the default path until 4a is proven in production.
 
-### Phase 4b — DONE. The flag is safe to turn on.
+### Phase 4c — transport parity (the production regression)
+
+**What went wrong.** 4a/4b wired the app-server in as a PARALLEL pipeline
+(`_run_via_app_server`) that ran one turn and returned. It skipped everything
+`_run_passes` does: `extract_envelope`, **`execute_envelope_tool_calls`**, the
+continuation pass, quota→`PAUSED_QUOTA`, the raw-transcript artifact,
+`ceiling_warnings`, `extract_outcome`. Enabled in production, Area Map runs
+completed having proposed nothing (the agent's `tool_calls` were parsed by
+nobody), features were incomplete (no continuation pass), and the discarded
+envelope JSON leaked into the run transcript as assistant text.
+
+Root cause of the *process* failure: the tests asserted "the app-server seam was
+used", never "a run produces the same result on either transport". Feature
+parity was never checked.
+
+**The fix.** The app-server is now a TRANSPORT under `_run_passes`, not a
+pipeline beside it. `codex_cli.invoke_via_app_server` returns an `LLMInvocation`
+shaped exactly like `llm_executor.invoke` (including reporting failures in
+`error` rather than raising, and using the CLI's "timed out" wording so wall
+kills still map to `LIMIT_EXCEEDED`). `_run_passes` picks the transport and the
+matching delta parsing (JSONL feeder for exec, raw-tail passthrough for the
+app-server, which streams plain agent text); both passes use it.
+`_run_via_app_server` is deleted.
+
+**The guard.** `test_both_transports_produce_the_same_run` feeds one envelope
+through both transports and asserts identical executed `tool_calls`, status,
+`parse_status`, `outcome`, `output_refs` and tool counts — only `usage.transport`
+may differ. Verified to fail if the bypass is reintroduced.
+
+---
+
+### Phase 4b — concurrency + safety.
 
 **The problem 4b had to solve.** 4a spawned one app-server *per worker process*.
 Production runs Celery `--pool=prefork --concurrency=10`, so ten processes would
