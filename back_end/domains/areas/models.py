@@ -7,9 +7,11 @@ LEAF areas only. Human-owned; agents propose changes as AreaEdits. An area
 exists or is deleted — the only workflow state lives on AreaEdit
 (pending → accepted | rejected).
 
-Three kinds partition the map's semantics: subsystem areas tile the
-repository, feature areas overlay it, ignore areas fence off what audits
-must skip (see AREA_KINDS below).
+The kinds split across TWO independent axes, each a complete partition of
+the tree: subsystem areas tile the repository and ignore areas fence off
+what audits must skip; feature areas tile it a second time by product flow,
+with feature_ignore holding the paths no feature owns (see AREA_KINDS
+below). `services/area_coverage.py` is what checks either axis is whole.
 """
 
 from neomodel import (
@@ -21,14 +23,20 @@ from neomodel import (
 )
 
 AREA_KINDS = {
+    # ── subsystem axis: every tracked file belongs to exactly one leaf ──
     # subsystem — exclusive partition: every auditable file belongs to
     # exactly one subsystem LEAF.
     "subsystem",
-    # feature — spec-anchored cross-cutting overlay: references paths,
-    # no exclusivity.
-    "feature",
     # ignore — non-auditable files; the spec holds the REASON.
     "ignore",
+    # ── feature axis: a second, independent partition of the same tree ──
+    # feature — spec-anchored end-to-end flow. It overlays the subsystems,
+    # but feature LEAVES tile the tree among themselves.
+    "feature",
+    # feature_ignore — the feature axis's `ignore`: lockfiles, generated
+    # code and static assets that implement no product feature. Without it
+    # the feature axis can never be completed, so runs stop half-mapped.
+    "feature_ignore",
 }
 
 AREA_EDIT_STATUSES = {"pending", "accepted", "rejected"}

@@ -610,11 +610,16 @@ def validate_area_fields(
     """
     warnings: list[str] = []
     kind = kind or "subsystem"
-    if kind == "ignore" and not (spec or "").strip():
+    if kind in ("ignore", "feature_ignore") and not (spec or "").strip():
         warnings.append(
-            "ignore area without a reason — the spec should say why these "
+            f"{kind} area without a reason — the spec should say why these "
             "files are not auditable"
         )
+    if kind == "feature_ignore":
+        # Feature-axis parking for files no feature owns: the leaf-overlap
+        # loop below compares against the SUBSYSTEM axis, which is the wrong
+        # partition to hold it to.
+        return warnings
     if kind == "feature":
         warnings.extend(_feature_span_warnings(scope_paths, existing_areas))
         return warnings

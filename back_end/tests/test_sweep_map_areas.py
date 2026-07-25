@@ -83,11 +83,21 @@ def test_map_areas_body_links_docs_via_doc_uids():
     assert "the metadata listing carries each page's uid" in flat
 
 
+def test_map_areas_body_states_the_two_axis_invariant():
+    """The rule the failing run never knew: BOTH axes partition the repo, and
+    complete_run waits for both."""
+    flat = " ".join(_AGENT_BASES["map-areas"]["body"].split())
+    assert "exactly one LEAF on the subsystem axis" in flat
+    assert "exactly one LEAF on the feature axis" in flat
+    assert "feature_ignore" in flat
+    assert "Do NOT call complete_run until both partitions are complete." in flat
+
+
 def test_tooling_contract_names_the_tools():
     flat = " ".join(_MAP_AREAS_TOOLING_CONTRACT.split())
     assert "propose_area_edit" in flat
     assert "read_doc" in flat
-    assert "subsystem | feature | ignore" in flat
+    assert "subsystem | ignore" in flat and "feature | feature_ignore" in flat
     # In-loop feedback contract: warnings come back from the tool and the
     # agent must resolve them; enabled=false retires an area.
     assert "warnings" in flat

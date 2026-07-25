@@ -1845,7 +1845,7 @@ export type FileContent = FileContentDTO
 // rejected on the Areas view. Keys are path-like ("backend/delivery"); the
 // hierarchy is derived from key prefixes, never stored.
 
-export type AreaKind = 'subsystem' | 'feature' | 'ignore'
+export type AreaKind = 'subsystem' | 'ignore' | 'feature' | 'feature_ignore'
 export type AreaEditStatus = 'pending' | 'accepted' | 'rejected'
 
 export interface AreaDTO {

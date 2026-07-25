@@ -141,7 +141,10 @@ const hasDrift = computed(() => {
 const sortedAreas = computed<AreaDTO[]>(() => [...areaStore.areas].sort((a, b) => a.key.localeCompare(b.key)))
 const subsystems = computed(() => sortedAreas.value.filter((a) => a.kind === 'subsystem'))
 const features = computed(() => sortedAreas.value.filter((a) => a.kind === 'feature'))
-const ignored = computed(() => sortedAreas.value.filter((a) => a.kind === 'ignore'))
+// Both axes' ignore kinds share the section — they are the same idea, one per axis.
+const ignored = computed(() =>
+  sortedAreas.value.filter((a) => a.kind === 'ignore' || a.kind === 'feature_ignore'),
+)
 
 /** Feature areas rendered as a hierarchy (shared tree helper). */
 const featureTreeRows = computed<TreeRow<AreaDTO>[]>(() =>

@@ -20,7 +20,9 @@ from domains.areas.services.area_service import normalize_key
 
 
 def test_area_kinds_vocabulary():
-    assert AREA_KINDS == {"subsystem", "feature", "ignore"}
+    # Two axes, each with its own "belongs to no real area here" kind —
+    # without feature_ignore the feature axis can never be completed.
+    assert AREA_KINDS == {"subsystem", "ignore", "feature", "feature_ignore"}
 
 
 def test_area_edit_statuses_vocabulary():

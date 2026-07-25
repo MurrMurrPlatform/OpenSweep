@@ -179,6 +179,25 @@ def test_ignore_without_reason_warns():
     ) == []
 
 
+def test_feature_ignore_without_reason_warns():
+    assert validate_area_edit(
+        _edit("features/none", kind="feature_ignore", proposed_spec=" "), []
+    ) == [
+        "feature_ignore area without a reason — the spec should say why these "
+        "files are not auditable"
+    ]
+
+
+def test_feature_ignore_is_held_to_its_own_axis():
+    """It parks files on the FEATURE axis, so a subsystem leaf covering the
+    same paths is not a collision — that is the whole point of two axes."""
+    assert validate_area_edit(
+        _edit("features/none", kind="feature_ignore", scope_paths=["uv.lock"],
+              proposed_spec="lockfile"),
+        [_area("vendored", kind="ignore", scope_paths=["uv.lock"])],
+    ) == []
+
+
 def test_non_leaf_subsystem_does_not_warn_about_its_children():
     # "backend" has enabled children, so it is a grouping — its (spanning)
     # scope never collides with the leaves that actually own the files.

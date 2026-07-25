@@ -110,6 +110,7 @@ async function saveEdit() {
                 <SelectItem value="subsystem">subsystem — exclusive partition leaf</SelectItem>
                 <SelectItem value="feature">feature — cross-cutting spec overlay</SelectItem>
                 <SelectItem value="ignore">ignore — not auditable (spec says why)</SelectItem>
+                <SelectItem value="feature_ignore">feature_ignore — no feature owns it (spec says why)</SelectItem>
               </SelectContent>
             </Select>
           </div>

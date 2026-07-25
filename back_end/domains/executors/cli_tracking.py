@@ -10,6 +10,7 @@ extraction + tool dispatch, warnings-only ceiling accounting) lives in `_shared.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -17,6 +18,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from domains.areas.services import area_coverage
 from domains.executors._shared import (
     StreamRecorder,
     _completed_via_mcp,
@@ -64,6 +66,36 @@ _CONTINUATION_NUDGE_TRACKING = (
     "complete_run entry with your end-of-run report."
 )
 
+# Area-map partition gate: a mapping run that left an axis unpartitioned is
+# NOT finished, whatever its complete_run claims. Reuses the continuation
+# machinery above — only the nudge differs, because the agent needs to be told
+# WHICH axis and WHICH paths it skipped.
+_CONTINUATION_NUDGE_AREA_GAP = (
+    "The area map is NOT finished — you called complete_run (or stopped) with "
+    "an axis left unpartitioned:\n\n{gaps}\n\n"
+    "Both axes must partition the repository independently: every tracked file "
+    "belongs to exactly one subsystem-axis leaf (kind subsystem, or ignore for "
+    "non-auditable paths) AND exactly one feature-axis leaf (kind feature, or "
+    "feature_ignore for paths that implement no product feature). Propose the "
+    "missing areas with propose_area_edit until nothing is left over, then emit "
+    "the final JSON envelope INCLUDING a complete_run entry."
+)
+
+# What makes a run a MAPPING run, i.e. one this gate may hold to a whole-repo
+# partition. Two signals, either sufficient:
+#   1. the run's agent is the "map-areas" playbook base — the authoritative
+#      one, and the only signal an MCP-transport run gives (its proposals are
+#      executed live, so the final envelope may hold nothing but complete_run);
+#   2. the envelope proposes at least this many areas — a run reshaping the
+#      partition wholesale, whatever it was dispatched as.
+# The threshold is where the line sits: one or two propose_area_edit calls is
+# an incidental fix ("this scope moved"), and demanding a full partition from
+# such a run would hijack it.
+_MAPPING_RUN_MIN_PROPOSALS = 3
+_MAP_AREAS_AGENT_KEY = "map-areas"
+# git ls-files over a workspace clone; a stuck git must never hold a run.
+_TRACKED_FILES_TIMEOUT_SECONDS = 30
+
 
 def envelope_has_complete_run(envelope: dict[str, Any] | None) -> bool:
     """True when a parsed final envelope contains a `complete_run` tool call.
@@ -79,6 +111,132 @@ def envelope_has_complete_run(envelope: dict[str, Any] | None) -> bool:
         if isinstance(call, dict) and call.get("tool") == "complete_run":
             return True
     return False
+
+
+def envelope_area_proposals(envelope: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """The `propose_area_edit` args in a final envelope.
+
+    Envelope tool calls have NOT been executed at the continuation gate, so
+    these proposals exist nowhere else yet — coverage has to read them here
+    or it would measure the map without the run's own work."""
+    out: list[dict[str, Any]] = []
+    for call in (envelope or {}).get("tool_calls") or []:
+        if isinstance(call, dict) and call.get("tool") == "propose_area_edit":
+            args = call.get("args")
+            out.append(args if isinstance(args, dict) else {})
+    return out
+
+
+async def _run_agent_key(req: DispatchRequest) -> str:
+    """The system-agent key behind this run ("" for user agents / no agent).
+
+    map-areas runs are dispatched by the sweep flow with no ScheduledAgent, so
+    the Run's own composed agent is the fallback lookup."""
+    from domains.agents.models import Agent, ScheduledAgent
+    from domains.agents.services.registry import agent_key
+    from domains.runs.models import Run
+
+    agent_uid = ""
+    if req.scheduled_agent_uid:
+        sa = await ScheduledAgent.nodes.get_or_none(uid=req.scheduled_agent_uid)
+        agent_uid = (getattr(sa, "agent_uid", "") or "") if sa else ""
+    if not agent_uid:
+        run = await Run.nodes.get_or_none(uid=req.run_uid)
+        agent_uid = (getattr(run, "agent_uid", "") or "") if run else ""
+    if not agent_uid:
+        return ""
+    agent = await Agent.nodes.get_or_none(uid=agent_uid)
+    return agent_key(getattr(agent, "source_url", "") or "") if agent else ""
+
+
+async def _tracked_files(workspace_path: str) -> list[str]:
+    """Tracked paths in the run's workspace clone, via the runs domain's git
+    helper (one implementation of "run read-only git here")."""
+    from domains.runs.services.run_changes import _git
+
+    out = await asyncio.wait_for(
+        _git(workspace_path, "ls-files"), timeout=_TRACKED_FILES_TIMEOUT_SECONDS
+    )
+    return [line for line in out.splitlines() if line]
+
+
+async def _areas_after_run(
+    req: DispatchRequest, proposals: list[dict[str, Any]]
+) -> list[dict]:
+    """The area map as this run would leave it: accepted areas, overwritten by
+    the run's pending proposals (MCP transport) and by the proposals still
+    sitting in its envelope (envelope transport), keyed by area key."""
+    from domains.areas.models import Area, AreaEdit
+    from domains.areas.services.area_service import normalize_key
+
+    rows: dict[str, dict] = {}
+    for a in await Area.nodes.filter(repository_uid=req.repository_uid):
+        rows[a.key] = {
+            "key": a.key,
+            "kind": a.kind or "subsystem",
+            "scope_paths": list(a.scope_paths or []),
+            "enabled": bool(a.enabled),
+        }
+    for e in await AreaEdit.nodes.filter(
+        repository_uid=req.repository_uid, status="pending", source_run_uid=req.run_uid
+    ):
+        rows[e.key or ""] = {
+            "key": e.key or "",
+            "kind": e.kind or "subsystem",
+            "scope_paths": list(e.scope_paths or []),
+            "enabled": bool(getattr(e, "proposed_enabled", True)),
+        }
+    for args in proposals:
+        key = normalize_key(str(args.get("key") or ""))
+        if not key:
+            continue
+        rows[key] = {
+            "key": key,
+            "kind": str(args.get("kind") or "subsystem"),
+            "scope_paths": [str(p) for p in (args.get("scope_paths") or [])],
+            "enabled": bool(args.get("enabled", True)),
+        }
+    return list(rows.values())
+
+
+async def area_partition_nudge(
+    req: DispatchRequest, envelope: dict[str, Any] | None
+) -> str:
+    """The continuation nudge for a mapping run that left an axis with gaps;
+    "" when this is not a mapping run, both axes are whole, or coverage
+    cannot be computed.
+
+    Every failure mode degrades to "": a missing workspace, a git that errors
+    or hangs, an unreachable graph. Nothing here is worth failing a finished
+    run over — the gap is then reported by the areas UI instead."""
+    try:
+        proposals = envelope_area_proposals(envelope)
+        if len(proposals) < _MAPPING_RUN_MIN_PROPOSALS:
+            if await _run_agent_key(req) != _MAP_AREAS_AGENT_KEY:
+                return ""
+        workspace = req.repository_local_path or ""
+        if not workspace:
+            return ""
+        tracked = await _tracked_files(workspace)
+        if not tracked:
+            return ""  # no tree, no judgement
+        coverage = area_coverage.axis_coverage(
+            tracked, await _areas_after_run(req, proposals)
+        )
+        gaps = [
+            "- " + area_coverage.gap_sentence(axis, coverage[axis])
+            for axis in area_coverage.incomplete_axes(coverage)
+        ]
+        if not gaps:
+            return ""
+        return _CONTINUATION_NUDGE_AREA_GAP.format(gaps="\n".join(gaps))
+    except Exception as exc:  # noqa: BLE001 — advisory gate, never run-fatal
+        logger.warning(
+            f"run {req.run_uid}: area partition gate skipped "
+            f"({type(exc).__name__}: {exc})",
+            extra={"tag": "areas"},
+        )
+        return ""
 
 
 def codex_continuation_prompt(nudge: str, transcript_tail: str) -> str:
@@ -282,11 +440,15 @@ class _CLITrackingAdapter(ExecutorAdapter):
         # calls execute later, so completed_at is not yet stamped at this gate.
         # OpenCode gets no continuation yet — no session resume is available and
         # transcript-tail re-prompt is only wired for codex for now.
+        # A third signal OVERRIDES both: an area-mapping run whose map still has
+        # an unpartitioned axis has not finished the job it was given, so
+        # `area_partition_nudge` forces the pass even on a clean complete_run.
         # Tracking variable: last_inv points at whichever pass ran last so that
         # status decisions (wall-kill, FAILED) and usage always reflect the
         # final pass outcome.
         last_inv = inv
         continuation_pass = False
+        continuation_reason = ""
         if self.provider_kind == "codex_subscription":
             remaining_wall = (timeout - wall) if timeout is not None else None
             # Policy gate: max_continuation_passes=0 disables the (single)
@@ -294,15 +456,37 @@ class _CLITrackingAdapter(ExecutorAdapter):
             policy_passes = (
                 req.policy.max_continuation_passes if req.policy is not None else None
             )
+            nudge = ""
             if (
                 inv.ok  # gate: a crashed/timed-out first pass must NOT be re-prompted
                 and (policy_passes is None or int(policy_passes) >= 1)
-                and not envelope_has_complete_run(envelope)
-                and not await _completed_via_mcp(req.run_uid)
                 and (remaining_wall is None or remaining_wall > _MIN_CONTINUATION_WALL_SECONDS)
             ):
-                cont_prompt = codex_continuation_prompt(_CONTINUATION_NUDGE_TRACKING, raw_stdout)
-                append_event(req.run_uid, "user_message", text=_CONTINUATION_NUDGE_TRACKING)
+                finished = envelope_has_complete_run(envelope) or await _completed_via_mcp(
+                    req.run_uid
+                )
+                # A mapping run that left an axis unpartitioned is not finished
+                # even when it says it is — that exact claim is how a repo ended
+                # up with a complete subsystem axis and 5 feature areas. The gap
+                # nudge also outranks the generic one when the run stopped early:
+                # naming the missing paths beats "keep going". Bounded by the
+                # same single-continuation policy as every other pass.
+                gap_nudge = await area_partition_nudge(req, envelope)
+                if gap_nudge:
+                    nudge = gap_nudge
+                    continuation_reason = "area_partition_gap"
+                elif not finished:
+                    nudge = _CONTINUATION_NUDGE_TRACKING
+                    continuation_reason = "incomplete_run"
+            if nudge:
+                if continuation_reason == "area_partition_gap":
+                    logger.info(
+                        f"run {req.run_uid}: area map incomplete — forcing a "
+                        "continuation pass to finish the partition",
+                        extra={"tag": "areas"},
+                    )
+                cont_prompt = codex_continuation_prompt(nudge, raw_stdout)
+                append_event(req.run_uid, "user_message", text=nudge)
 
                 cont_recorder = StreamRecorder(
                     run_uid=req.run_uid,
@@ -427,6 +611,7 @@ class _CLITrackingAdapter(ExecutorAdapter):
         }
         if continuation_pass:
             usage["first_pass_exit_code"] = inv.exit_code
+            usage["continuation_reason"] = continuation_reason
         return DispatchResult(
             status=status,
             raw_artifact_uri=raw_uri,

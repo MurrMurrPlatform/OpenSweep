@@ -4,6 +4,7 @@ const KIND_VARIANT: Record<AreaKind, 'secondary' | 'info' | 'outline'> = {
   subsystem: 'secondary',
   feature: 'info',
   ignore: 'outline',
+  feature_ignore: 'outline',
 }
 
 /** Badge variant for an area kind (defensive for unknown strings). */
@@ -19,6 +20,8 @@ export const AREA_KIND_HELP: Record<AreaKind, string> = {
     "Feature areas: end-to-end flows that overlay the partition (their files also belong to subsystem areas). Audited against their spec — 'does the implementation match this contract?'",
   ignore:
     'Explicitly non-auditable files (lockfiles, generated, vendored), each with its reason. Excluded from coverage debt.',
+  feature_ignore:
+    'The feature axis\u2019s ignore: paths that implement no product feature (lockfiles, generated code, static assets), each with its reason. They close the feature partition without claiming to be a feature.',
 }
 
 /** Kind explanation (defensive for unknown strings — '' hides the help). */
