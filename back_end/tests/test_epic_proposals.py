@@ -92,14 +92,12 @@ def test_proposal_to_dto_maps_epic_fields():
         title="t",
         axis="files",
         evidence={"shared_paths": ["a.py"]},
-        shape="parallel-runs",
         plan_uid="plan1",
         origin="rule",
     )
     dto = proposal_to_dto(p, member_titles=["First", "Second"])
     assert dto.axis == "files"
     assert dto.evidence == {"shared_paths": ["a.py"]}
-    assert dto.shape == "parallel-runs"
     assert dto.plan_uid == "plan1"
     assert dto.origin == "rule"
     # Resolved server-side so the panel stops rendering raw uid fragments for

@@ -12,9 +12,7 @@ from domains.tickets.services.epics.schemas import (
     EpicAxis,
     EpicPartition,
     EpicSelection,
-    EpicShape,
     TicketFacts,
-    default_shape_for,
 )
 from domains.tickets.services.epics.selection import select_tickets
 
@@ -493,21 +491,9 @@ def test_every_deterministic_axis_is_computable():
         partition(pool, _spec(axis, min_members=1))  # must not raise
 
 
-# ── drafts: shape, evidence, rationale ─────────────────────────────────────
+# ── drafts: evidence, rationale ────────────────────────────────────────────
 
 
-def test_default_shape_fans_out_the_lens_axis_and_bundles_everything_else():
-    assert default_shape_for(EpicAxis.LENS) is EpicShape.PARALLEL_RUNS
-    for axis in EpicAxis:
-        if axis is not EpicAxis.LENS:
-            assert default_shape_for(axis) is EpicShape.SINGLE_PR
-
-
-def test_drafts_carry_the_axis_default_shape():
-    pool = [_t("a", kind="security"), _t("b", kind="security")]
-    assert partition(pool, _spec(EpicAxis.LENS))[0].shape is EpicShape.PARALLEL_RUNS
-    pool = [_t("a", area_keys=("x",)), _t("b", area_keys=("x",))]
-    assert partition(pool, _spec(EpicAxis.AREA))[0].shape is EpicShape.SINGLE_PR
 
 
 def test_evidence_leads_with_the_identifying_fact_and_stays_small():

@@ -17,9 +17,7 @@ from domains.tickets.services.epics.schemas import (
     EpicDraft,
     EpicPartition,
     EpicSelection,
-    EpicShape,
     TicketFacts,
-    default_shape_for,
 )
 from domains.tickets.services.epics.selection import select_tickets
 
@@ -30,9 +28,7 @@ __all__ = [
     "EpicDraft",
     "EpicPartition",
     "EpicSelection",
-    "EpicShape",
     "TicketFacts",
-    "default_shape_for",
     "partition",
     "select_tickets",
 ]

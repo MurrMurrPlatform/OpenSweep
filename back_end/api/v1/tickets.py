@@ -398,23 +398,6 @@ async def implement_ticket(uid: str, user: UserDTO = Depends(require_role("maint
             status_code=409,
             detail="this ticket has an active thread — approve implementation from the thread instead",
         )
-    # A `parallel-runs` epic parent is a rollup, not a work item: its members
-    # each get their own branch and PR from the epic tick. Implementing the
-    # parent directly would inject the group addendum and produce ONE PR
-    # covering every member — silently the opposite of the shape the reviewer
-    # approved, and racing the per-member runs for the same files.
-    from domains.tickets.models import EpicProposal
-
-    for p in await EpicProposal.nodes.filter(created_ticket_uid=uid):
-        if (p.shape or "single-pr") == "parallel-runs" and p.status == "approved":
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "this ticket is a parallel-runs epic parent — its members are "
-                    "dispatched individually by the epic tick; implement a member "
-                    "instead"
-                ),
-            )
     try:
         run = await trigger_implement_run(ticket, triggered_by=user.uid)
     except LifecycleError as exc:

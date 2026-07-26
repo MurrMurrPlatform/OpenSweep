@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
-import { GitPullRequest, Loader2, Split } from 'lucide-vue-next'
+import { Loader2 } from 'lucide-vue-next'
 import { useTicketStore } from '@/stores/ticketStore'
 import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
@@ -303,7 +303,6 @@ const cappedFrom = computed(() => {
 /** Keys that only restate what the row already shows. */
 const EVIDENCE_NOISE = new Set([
   'axis',
-  'shape',
   'plan_uid',
   'member_count',
   'member_uids',
@@ -355,12 +354,6 @@ function displayTitle(draft: EpicDraftDTO): string {
   return draft.title.replace(new RegExp(`\\s·\\s${n} tickets?(?=\\s|$)`), '')
 }
 
-function shapeOf(draft: EpicDraftDTO) {
-  const n = draft.member_ticket_uids.length
-  return draft.shape === 'parallel-runs'
-    ? { icon: Split, label: plural(n, 'run', 'runs'), hint: 'One agent run per member ticket.' }
-    : { icon: GitPullRequest, label: '1 PR', hint: 'The whole epic ships as one pull request.' }
-}
 
 // ── Create ──────────────────────────────────────────────────────────────────
 
@@ -610,12 +603,6 @@ async function create() {
                   >
                     {{ d.suggested_priority }}
                   </Badge>
-                  <span
-                    class="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-xs text-muted-foreground"
-                    :title="shapeOf(d).hint"
-                  >
-                    <component :is="shapeOf(d).icon" class="size-3" />{{ shapeOf(d).label }}
-                  </span>
                 </div>
                 <p
                   v-if="evidenceLine(d)"

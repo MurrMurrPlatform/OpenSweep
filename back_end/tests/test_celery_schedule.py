@@ -53,14 +53,6 @@ def test_every_beat_entry_resolves_to_a_registered_task():
     assert not missing, f"beat entries naming unregistered tasks: {missing}"
 
 
-def test_epic_tick_is_scheduled():
-    import domains.tickets.tasks.epic_tick  # noqa: F401 — registers task
-
-    dispatch = app.conf.beat_schedule.get("epic-tick")
-    assert dispatch is not None, "approved epics would never fan out into runs"
-    assert dispatch["task"] == "opensweep.tickets.epic_tick"
-    # The dispatch lock TTL (55s) assumes this cadence.
-    assert dispatch["schedule"] == 60.0
 
 
 def test_campaign_tick_is_scheduled_every_minute():

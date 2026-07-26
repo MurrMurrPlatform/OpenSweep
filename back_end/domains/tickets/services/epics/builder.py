@@ -109,7 +109,6 @@ async def plan_epics(
                 {
                     "title": d.title,
                     "axis": d.axis.value,
-                    "shape": d.shape.value,
                     "evidence": d.evidence,
                     "rationale": d.rationale,
                     "member_ticket_uids": d.member_ticket_uids,
@@ -134,7 +133,6 @@ async def plan_epics(
             actor_uid=actor_uid,
             axis=d.axis.value,
             evidence=d.evidence,
-            shape=d.shape.value,
             plan_uid=plan_uid,
             origin="rule",
         )
