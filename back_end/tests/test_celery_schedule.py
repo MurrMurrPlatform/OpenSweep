@@ -37,6 +37,32 @@ def test_beat_scan_task_registered():
     assert app.tasks.get("opensweep.runs.resume_paused_runs") is not None
 
 
+def test_every_beat_entry_resolves_to_a_registered_task():
+    """Generic guard: a beat entry naming a task celery never imports fails at
+    RUNTIME with "Received unregistered task", which shows up as a silently
+    dead schedule rather than a failed boot. Adding a task module to
+    `beat_schedule` but forgetting `include=[...]` is the easy way to do this,
+    so assert the whole schedule rather than one entry at a time.
+    """
+    app.loader.import_default_modules()  # what a worker does on start
+    missing = {
+        name: entry["task"]
+        for name, entry in app.conf.beat_schedule.items()
+        if entry["task"] not in app.tasks
+    }
+    assert not missing, f"beat entries naming unregistered tasks: {missing}"
+
+
+def test_epic_tick_is_scheduled():
+    import domains.tickets.tasks.epic_tick  # noqa: F401 — registers task
+
+    dispatch = app.conf.beat_schedule.get("epic-tick")
+    assert dispatch is not None, "approved epics would never fan out into runs"
+    assert dispatch["task"] == "opensweep.tickets.epic_tick"
+    # The dispatch lock TTL (55s) assumes this cadence.
+    assert dispatch["schedule"] == 60.0
+
+
 def test_campaign_tick_is_scheduled_every_minute():
     import domains.campaigns.tasks.campaign_tick as campaign_tick_module  # noqa: F401 — registers task
 

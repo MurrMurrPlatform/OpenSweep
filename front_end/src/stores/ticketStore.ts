@@ -2,15 +2,19 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { apiDelete, apiGet, apiPatch, apiPost } from '@/services/api'
 import type {
+  PlanEpicsRequest,
+  PlanEpicsPreview,
+  PlanEpicsResult,
+  BulkApproveResult,
   CreateTicketRequest,
-  GroupProposalStatus,
+  EpicProposalStatus,
   GroupTicketsRequest,
   ImplementRunDispatch,
-  ProposeGroupsDispatch,
+  SuggestEpicsDispatch,
   PullRequestDTO,
   TicketDTO,
   TicketDetailDTO,
-  TicketGroupProposalDTO,
+  EpicProposalDTO,
   TicketOrigin,
   TicketStatus,
   UpdateTicketRequest,
@@ -107,20 +111,20 @@ export const useTicketStore = defineStore('tickets', () => {
   // ── Grouping (batch related tickets under one parent) ───────────────────────
 
   /** Group ≥2 tickets under a new parent ticket (created in Backlog). */
-  async function groupTickets(req: GroupTicketsRequest): Promise<TicketDTO> {
-    const parent = await apiPost<TicketDTO>('/tickets/group', req)
+  async function createEpic(req: GroupTicketsRequest): Promise<TicketDTO> {
+    const parent = await apiPost<TicketDTO>('/tickets/epics', req)
     upsert(parent)
     return parent
   }
 
   /** Dissolve a group: detach every subticket from this parent. */
-  async function ungroupTicket(uid: string): Promise<{ ticket_uid: string; detached: number }> {
-    return apiPost<{ ticket_uid: string; detached: number }>(`/tickets/${uid}/ungroup`)
+  async function dissolveEpic(uid: string): Promise<{ ticket_uid: string; detached: number }> {
+    return apiPost<{ ticket_uid: string; detached: number }>(`/tickets/${uid}/dissolve-epic`)
   }
 
   /** Detach a single ticket from its parent group. */
-  async function removeFromGroup(uid: string): Promise<TicketDTO> {
-    const ticket = await apiPost<TicketDTO>(`/tickets/${uid}/remove-from-group`)
+  async function removeFromEpic(uid: string): Promise<TicketDTO> {
+    const ticket = await apiPost<TicketDTO>(`/tickets/${uid}/remove-from-epic`)
     upsert(ticket)
     return ticket
   }
@@ -128,31 +132,64 @@ export const useTicketStore = defineStore('tickets', () => {
   /** Dispatch a read-only run that proposes ticket groupings — every
    *  proposal is human-approved before anything changes. 409 when fewer
    *  than 2 ungrouped backlog/todo tickets exist. */
-  async function proposeGroups(repositoryUid: string): Promise<ProposeGroupsDispatch> {
-    return apiPost<ProposeGroupsDispatch>('/tickets/propose-groups', {
+  async function suggestEpics(repositoryUid: string): Promise<SuggestEpicsDispatch> {
+    return apiPost<SuggestEpicsDispatch>('/tickets/suggest-epics', {
       repository_uid: repositoryUid,
     })
   }
 
-  async function listGroupProposals(opts: {
+  async function listEpicProposals(opts: {
     repository_uid?: string
-    status?: GroupProposalStatus
-  } = {}): Promise<TicketGroupProposalDTO[]> {
+    status?: EpicProposalStatus
+  } = {}): Promise<EpicProposalDTO[]> {
     const qs = new URLSearchParams()
     Object.entries(opts).forEach(([k, v]) => {
       if (v) qs.set(k, String(v))
     })
-    const url = qs.toString() ? `/ticket-group-proposals?${qs.toString()}` : '/ticket-group-proposals'
-    return apiGet<TicketGroupProposalDTO[]>(url)
+    const url = qs.toString() ? `/epic-proposals?${qs.toString()}` : '/epic-proposals'
+    return apiGet<EpicProposalDTO[]>(url)
   }
 
   /** Approve: creates the parent ticket and re-parents the members. */
-  async function approveGroupProposal(uid: string): Promise<TicketGroupProposalDTO> {
-    return apiPost<TicketGroupProposalDTO>(`/ticket-group-proposals/${uid}/approve`)
+  async function approveEpic(uid: string): Promise<EpicProposalDTO> {
+    return apiPost<EpicProposalDTO>(`/epic-proposals/${uid}/approve`)
   }
 
-  async function rejectGroupProposal(uid: string): Promise<TicketGroupProposalDTO> {
-    return apiPost<TicketGroupProposalDTO>(`/ticket-group-proposals/${uid}/reject`)
+  async function rejectEpic(uid: string): Promise<EpicProposalDTO> {
+    return apiPost<EpicProposalDTO>(`/epic-proposals/${uid}/reject`)
+  }
+
+  /**
+   * Approve a whole plan of batches as one review action. Partial success is
+   * reported rather than thrown — a stale batch must not stop its siblings
+   * from landing — so callers MUST read `errors`, not assume every uid
+   * succeeded.
+   */
+  async function bulkApproveEpics(uids: string[]): Promise<BulkApproveResult> {
+    return apiPost<BulkApproveResult>('/epic-proposals/bulk-approve', { uids })
+  }
+
+  /**
+   * Build batches from a rule on a COMPUTED axis — no agent, no run, returns
+   * the plan immediately and PERSISTS it as reviewable proposals.
+   */
+  async function planEpics(
+    req: Omit<PlanEpicsRequest, 'dry_run'>,
+  ): Promise<PlanEpicsResult> {
+    return apiPost<PlanEpicsResult>('/tickets/plan-epics', { ...req, dry_run: false })
+  }
+
+  /**
+   * Preview the identical plan without persisting anything, so the counts
+   * shown before approval come from the code that builds them rather than an
+   * estimate. Returns unpersisted drafts — they have no `uid` yet, which is
+   * why this is a separate method rather than a `dry_run` flag callers can
+   * forget they set.
+   */
+  async function previewEpics(
+    req: Omit<PlanEpicsRequest, 'dry_run'>,
+  ): Promise<PlanEpicsPreview> {
+    return apiPost<PlanEpicsPreview>('/tickets/plan-epics', { ...req, dry_run: true })
   }
 
   // ── PR side of the link (delivery surface) ──────────────────────────────────
@@ -176,13 +213,16 @@ export const useTicketStore = defineStore('tickets', () => {
     implementTicket,
     refineTicket,
     deleteTicket,
-    groupTickets,
-    ungroupTicket,
-    removeFromGroup,
-    proposeGroups,
-    listGroupProposals,
-    approveGroupProposal,
-    rejectGroupProposal,
+    createEpic,
+    dissolveEpic,
+    removeFromEpic,
+    suggestEpics,
+    planEpics,
+    previewEpics,
+    listEpicProposals,
+    approveEpic,
+    bulkApproveEpics,
+    rejectEpic,
     linkTicketToPullRequest,
   }
 })

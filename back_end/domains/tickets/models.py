@@ -9,6 +9,7 @@ linked PR completes the ticket (done via merge).
 from neomodel import (
     AsyncStructuredNode,
     DateTimeProperty,
+    IntegerProperty,
     JSONProperty,
     StringProperty,
 )
@@ -27,6 +28,19 @@ class Ticket(AsyncStructuredNode):
     # backlog | todo | in-progress | in-review | done  (Gate 1 = backlog → todo)
     priority = StringProperty(default="medium")  # low | medium | high | urgent
     size = StringProperty(default="")  # trivial | small | medium | large
+
+    # Denormalized from the origin Finding at promotion time. NOT the same axis
+    # as `priority`: severity is how bad the found thing is (tops out at
+    # `critical`), priority is how soon we want it fixed (tops out at `urgent`).
+    # Epic selection needs "every critical and high" — a question about the
+    # finding — and joining back through origin_finding_uid on every list query
+    # would not scale. `kind`/`tags`/`subtype` are here for the same reason:
+    # they are the `lens` and `class` epic axes and are unreachable from
+    # the Ticket alone.
+    severity = StringProperty(default="", index=True)  # low|medium|high|critical
+    kind = StringProperty(default="", index=True)
+    tags = JSONProperty(default=[])
+    subtype = StringProperty(default="")
 
     origin = StringProperty(default="human", index=True)  # finding | human | agent-proposal
     origin_finding_uid = StringProperty(default="", index=True)
@@ -53,8 +67,8 @@ class Ticket(AsyncStructuredNode):
     updated_at = DateTimeProperty(default_now=True)
 
 
-class TicketGroupProposal(AsyncStructuredNode):
-    """An agent-proposed batch of related tickets (PLATFORM_V2_DESIGN.md §15).
+class EpicProposal(AsyncStructuredNode):
+    """An agent-proposed epic of related tickets (PLATFORM_V2_DESIGN.md §15).
 
     Agents may only PROPOSE groupings — approval is human-only, mirroring
     Gate 1. Approving creates a parent Ticket (origin agent-proposal, born in
@@ -66,13 +80,61 @@ class TicketGroupProposal(AsyncStructuredNode):
     repository_uid = StringProperty(required=True, index=True)
 
     title = StringProperty(required=True)  # title for the parent ticket on approval
-    rationale = StringProperty(default="")  # why these belong in one batch
+    rationale = StringProperty(default="")  # why these belong in one epic
     member_ticket_uids = JSONProperty(default=[])
     suggested_labels = JSONProperty(default=[])
     suggested_priority = StringProperty(default="medium")
 
+    # What makes these belong together (EpicAxis). Six of the eight axes are
+    # computed, not judged — only `root-cause` needs the agent. Recording the
+    # axis is what lets the review card show a one-line structured reason
+    # instead of a paragraph of model prose.
+    axis = StringProperty(default="root-cause", index=True)
+    # Structured, axis-specific support for the claim: shared paths, the area
+    # key, the finding class. The UI renders ONE line from this.
+    evidence = JSONProperty(default={})
+    # single-pr | parallel-runs — how the epic executes once approved.
+    #
+    # NOT YET HONOURED AT DISPATCH. Approval materializes one parent ticket,
+    # so every epic currently executes as `single-pr` whatever this says.
+    # `parallel-runs` needs a fan-out that dispatches one run per member under
+    # `llm_providers.capacity.provider_headroom` — reuse `campaigns.tick.
+    # plan_tick`'s min(max_parallel, headroom) composition rather than writing
+    # a second capacity check, because that headroom guard is currently
+    # consulted ONLY by the campaign tick and a new dispatcher that skips it
+    # gets no bound at all.
+    shape = StringProperty(default="single-pr")
+    # Groups epics produced by one selection so they can be approved in bulk.
+    plan_uid = StringProperty(default="", index=True)
+    # manual | rule | agent — which of the three producers built it.
+    origin = StringProperty(default="agent", index=True)
+
     status = StringProperty(default="proposed", index=True)  # proposed | approved | rejected
     source_run_uid = StringProperty(default="", index=True)  # run that proposed it
+
+    # Dispatch state, driven by the epic tick after approval. Approving a
+    # epic IS the decision to work it, so approval queues it here rather
+    # than leaving the reviewer to hunt down an Implement button.
+    #   "" = never approved · pending → dispatching → done | failed
+    # An empty value on an already-approved row means "approved before epic
+    # dispatch existed" — the tick ignores it, which is deliberate: back-
+    # filling those to `pending` would fan out write runs for every epic
+    # ever approved.
+    dispatch_state = StringProperty(default="", index=True)
+    # [{ticket_uid, run_uid}] — one entry per run this epic has started.
+    dispatched = JSONProperty(default=[])
+    # When dispatch was queued. A member can 409 PERMANENTLY (an open PR
+    # already implements it), and such a member never enters `dispatched`, so
+    # the epic would otherwise sit in `dispatching` retrying every minute
+    # forever. The tick gives up after EPIC_DISPATCH_DEADLINE measured from
+    # here — not from `updated_at`, which every tick refreshes.
+    dispatch_started_at = DateTimeProperty()
+    # Why dispatch failed or gave up. A real column beats stuffing sentinel
+    # rows into `dispatched`, which is a list of runs and should stay one.
+    last_error = StringProperty(default="")
+    # Cap on this epic's own concurrent runs; composed with (not replacing)
+    # the provider's ceiling — the tighter of the two wins.
+    max_parallel = IntegerProperty(default=3)
 
     # Review record — set on approve/reject; created_ticket_uid is the parent
     # ticket materialized by approval.
@@ -90,4 +152,7 @@ TICKET_ORIGINS = {"finding", "human", "agent-proposal"}
 
 TICKET_PRIORITIES = {"low", "medium", "high", "urgent"}
 
-GROUP_PROPOSAL_STATUSES = {"proposed", "approved", "rejected"}
+EPIC_PROPOSAL_STATUSES = {"proposed", "approved", "rejected"}
+
+#: "" is a legal value — an approved row that predates epic dispatch.
+EPIC_DISPATCH_STATES = {"", "pending", "dispatching", "done", "failed"}

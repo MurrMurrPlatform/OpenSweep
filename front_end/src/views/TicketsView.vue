@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  ArrowLeft, ArrowRight, ChevronDown, Crosshair, GitPullRequest, Layers, Plus, RefreshCw,
+  ArrowLeft, ArrowRight, Boxes, ChevronDown, Crosshair, GitPullRequest, Layers, Plus, RefreshCw,
   Search, SlidersHorizontal, Sparkles, SquareKanban, X,
 } from 'lucide-vue-next'
 import { useTicketStore } from '@/stores/ticketStore'
@@ -50,8 +50,9 @@ import {
 import BoardLane from '@/components/tickets/BoardLane.vue'
 import TicketCard from '@/components/tickets/TicketCard.vue'
 import TicketDialog from '@/components/tickets/TicketDialog.vue'
-import GroupTicketsDialog from '@/components/tickets/GroupTicketsDialog.vue'
-import GroupProposalsPanel from '@/components/tickets/GroupProposalsPanel.vue'
+import CreateEpicDialog from '@/components/tickets/CreateEpicDialog.vue'
+import EpicBuilderDialog from '@/components/tickets/EpicBuilderDialog.vue'
+import EpicProposalsPanel from '@/components/tickets/EpicProposalsPanel.vue'
 import { STATUS_LABELS, STATUS_ORDER, TRANSITIONS, statusVariant } from '@/components/tickets/ticketMeta'
 import type { PullRequestDTO, TicketDTO, TicketPriority, TicketStatus } from '@/types/api'
 
@@ -66,8 +67,9 @@ const loading = ref(true)
 const error = ref<string | null>(null)
 const createOpen = ref(false)
 const groupOpen = ref(false)
+const epicBuilderOpen = ref(false)
 const proposing = ref(false)
-const proposalsPanel = ref<InstanceType<typeof GroupProposalsPanel> | null>(null)
+const proposalsPanel = ref<InstanceType<typeof EpicProposalsPanel> | null>(null)
 
 async function reload() {
   if (!repoUid.value) return
@@ -113,7 +115,7 @@ const groupableTickets = computed(() =>
 
 function onGrouped(parent: TicketDTO) {
   void reload()
-  toast.info(`Grouped under “${parent.title}” — approve it (Gate 1) to make the batch implementable.`)
+  toast.info(`Grouped under “${parent.title}” — approve it (Gate 1) to make the epic implementable.`)
 }
 
 /** Dispatch a read-only run that proposes groupings via the platform tools. */
@@ -121,11 +123,11 @@ async function suggestGroups() {
   if (!repoUid.value || proposing.value) return
   proposing.value = true
   try {
-    const dispatch = await store.proposeGroups(repoUid.value)
+    const dispatch = await store.suggestEpics(repoUid.value)
     const runUid = typeof dispatch.run_uid === 'string' ? dispatch.run_uid : ''
     toast.success(
       'Grouping run dispatched',
-      `Analyzing ${dispatch.candidate_count ?? '?'} ungrouped tickets${runUid ? ` · run ${runUid.slice(0, 8)}` : ''} — proposals appear here for approval.`,
+      `Analyzing ${dispatch.candidate_count ?? '?'} tickets not in an epic${runUid ? ` · run ${runUid.slice(0, 8)}` : ''} — proposals appear here for approval.`,
     )
   } catch (e) {
     const msg = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
@@ -412,16 +414,19 @@ function onTicketCreated(ticket: TicketDTO) {
             :disabled="!repoUid || groupableTickets.length < 2"
             :loading="proposing"
           >
-            <Layers /> Group
+            <Layers /> Epics
             <ChevronDown class="!size-3.5 text-muted-foreground" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" class="w-56">
           <DropdownMenuItem class="gap-2" :disabled="proposing" @select="suggestGroups">
-            <Sparkles class="size-4" /> Suggest groups (agent run)
+            <Sparkles class="size-4" /> Suggest epics by root cause (agent run)
+          </DropdownMenuItem>
+          <DropdownMenuItem class="gap-2" @select="epicBuilderOpen = true">
+            <Boxes class="size-4" /> Build epics by rule…
           </DropdownMenuItem>
           <DropdownMenuItem class="gap-2" @select="groupOpen = true">
-            <Layers class="size-4" /> Group tickets by hand…
+            <Layers class="size-4" /> Create an epic by hand…
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -459,7 +464,7 @@ function onTicketCreated(ticket: TicketDTO) {
     </div>
 
     <!-- Agent-proposed groupings awaiting human approval -->
-    <GroupProposalsPanel
+    <EpicProposalsPanel
       v-if="repoUid"
       ref="proposalsPanel"
       :repository-uid="repoUid"
@@ -651,11 +656,16 @@ function onTicketCreated(ticket: TicketDTO) {
       :default-repository-uid="repoUid ?? ''"
       @saved="onTicketCreated"
     />
-    <GroupTicketsDialog
+    <CreateEpicDialog
       v-model:open="groupOpen"
       :repository-uid="repoUid ?? ''"
       :tickets="groupableTickets"
       @saved="onGrouped"
+    />
+    <EpicBuilderDialog
+      v-model:open="epicBuilderOpen"
+      :repository-uid="repoUid ?? ''"
+      @created="reload"
     />
   </div>
 </template>

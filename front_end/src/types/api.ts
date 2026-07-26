@@ -904,6 +904,16 @@ export interface LLMProvider {
   active: boolean
   /** Owning org uid. */
   org_uid: string
+  /**
+   * How many runs may execute on this provider at once (>=1). Campaign
+   * dispatch clamps to the remaining headroom, so this is a ceiling across
+   * ALL campaigns, not per-campaign.
+   *
+   * Note for codex_subscription: the credential lease serializes that
+   * subscription to one run regardless, so values above 1 buy paused_quota
+   * parks rather than parallelism.
+   */
+  max_concurrent_runs?: number
   notes?: string
   has_credential_secret?: boolean
   last_health_check_at?: string | null
@@ -1298,9 +1308,23 @@ export interface UpdateTicketRequest {
 
 // ── Ticket group proposals (agent-suggested batches, human-approved) ────────
 
-export type GroupProposalStatus = 'proposed' | 'approved' | 'rejected'
+export type EpicProposalStatus = 'proposed' | 'approved' | 'rejected'
 
-export interface TicketGroupProposalDTO {
+/** The single dimension a batch was cut along — drives the card's evidence line. */
+export type EpicAxis =
+  | 'manual'
+  | 'area'
+  | 'feature'
+  | 'files'
+  | 'lens'
+  | 'class'
+  | 'linked'
+  | 'root-cause'
+
+/** `single-pr` = the batch ships as one PR; `parallel-runs` = one run per member. */
+export type EpicShape = 'single-pr' | 'parallel-runs'
+
+export interface EpicProposalDTO {
   uid: string
   repository_uid: string
   title: string
@@ -1308,8 +1332,27 @@ export interface TicketGroupProposalDTO {
   member_ticket_uids: string[]
   suggested_labels: string[]
   suggested_priority: TicketPriority
-  status: GroupProposalStatus
+  status: EpicProposalStatus
   source_run_uid: string
+  /**
+   * Batching metadata. Optional while the backend rolls it out — proposals
+   * written before that arrive without it, so every reader must degrade.
+   * The string union is open (`| string`) because the axis vocabulary grows
+   * server-side faster than this file does.
+   */
+  axis?: EpicAxis | string
+  shape?: EpicShape | string
+  /**
+   * Small structured payload backing `axis`; its keys vary per axis — e.g.
+   * `{axis:'files', shared_paths:['a.py','b.py'], member_count:4}`,
+   * `{area_key:'back_end/domains/areas'}`, `{class:'perf/n-plus-one'}`.
+   * Read it defensively: unknown keys are displayable extras, not errors.
+   */
+  evidence?: Record<string, unknown>
+  /** Shared by the sibling batches one planning pass produced together. */
+  plan_uid?: string
+  /** Member titles resolved server-side, parallel to `member_ticket_uids`. */
+  member_titles?: string[]
   /** Parent ticket materialized by approval (empty until then). */
   created_ticket_uid: string
   reviewed_by: string
@@ -1318,7 +1361,7 @@ export interface TicketGroupProposalDTO {
   updated_at?: string | null
 }
 
-/** POST /tickets/group — batch ≥2 tickets under a new parent ticket. */
+/** POST /tickets/epics — batch ≥2 tickets under a new parent ticket. */
 export interface GroupTicketsRequest {
   repository_uid: string
   title: string
@@ -1328,12 +1371,83 @@ export interface GroupTicketsRequest {
   priority?: TicketPriority
 }
 
-/** Response of POST /tickets/propose-groups — inspect loosely. */
-export type ProposeGroupsDispatch = {
+/** Response of POST /tickets/suggest-epics — inspect loosely. */
+export type SuggestEpicsDispatch = {
   run_uid?: string
   scheduled_agent_uid?: string
   candidate_count?: number
 } & Record<string, unknown>
+
+/** Request for POST /tickets/plan-epics — the no-agent batching path. */
+export interface PlanEpicsRequest {
+  repository_uid: string
+  statuses?: string[]
+  /** `>=` on the ladder: 'high' admits high and urgent. */
+  min_priority?: string
+  /** `>=` on the ladder: 'high' admits high and critical. */
+  min_severity?: string
+  labels?: string[]
+  kinds?: string[]
+  area_keys?: string[]
+  /** "top X" — 0 means uncapped. */
+  limit?: number
+  sort?: string
+  /** Computable axes only; 'root-cause' goes through /tickets/suggest-epics. */
+  axis?: EpicAxis
+  /** "…in Y runs". */
+  max_batches?: number
+  min_members?: number
+  max_members?: number
+  /** Preview the identical plan without persisting it. */
+  dry_run?: boolean
+}
+
+export interface EpicPlanSummary {
+  axis: string
+  candidates: number
+  selected: number
+  epics: number
+  /** Selected but left unplaced — most axes leave singletons behind. */
+  unplaced: number
+}
+
+/**
+ * An unpersisted batch, as returned by `dry_run`. Deliberately NOT a
+ * `EpicProposalDTO`: nothing has been written, so there is no `uid`,
+ * `status`, or review record to speak of. Typing it as the full DTO would let
+ * `batch.uid` compile and hand `undefined` to anything keyed on it.
+ */
+export interface EpicDraftDTO {
+  title: string
+  axis: EpicAxis
+  shape: EpicShape
+  evidence: Record<string, unknown>
+  rationale: string
+  member_ticket_uids: string[]
+  suggested_priority: string
+  suggested_labels: string[]
+}
+
+/** Result of a persisting build — batches are real proposals. */
+export interface PlanEpicsResult {
+  plan_uid: string
+  summary: EpicPlanSummary
+  epics: EpicProposalDTO[]
+}
+
+/** Result of `dry_run: true` — nothing written, so `plan_uid` is empty. */
+export interface PlanEpicsPreview {
+  plan_uid: ''
+  summary: EpicPlanSummary
+  epics: EpicDraftDTO[]
+}
+
+/** Bulk approve reports partial success — always read `errors`. */
+export interface BulkApproveResult {
+  approved: EpicProposalDTO[]
+  errors: { uid: string; detail: string }[]
+}
+
 
 // ── Comments (discussion threads on any data item) ──────────────────────────
 
@@ -1528,7 +1642,21 @@ export interface CampaignPart {
   lens_keys: string[]
   /** '' until the part's run is dispatched. */
   run_uid: string
+  /**
+   * The PLANNER's bookkeeping, not the run's. Four values, forward-only
+   * (done/failed never revert), rewritten once a minute by the campaign
+   * tick, and frozen entirely once the campaign leaves `running`. Use it to
+   * reason about the plan; use `run_status` to show a human what is
+   * happening.
+   */
   state: CampaignPartState
+  /**
+   * The part's Run's LIVE status. Detail reads only (GET /campaigns/{uid});
+   * absent on list reads and on parts not yet dispatched. Where the two
+   * disagree this one is the truth — notably `awaiting_input`, which the
+   * planner records as `done`.
+   */
+  run_status?: RunStatus
   file_count: number | null
 }
 
@@ -1670,6 +1798,15 @@ export interface CreateCampaignRequest {
   template?: CampaignTemplate
   /** Legacy: kept optional for back-compat; prefer coverage_keys. */
   area_prefix?: string
+}
+
+/** Post-create edits (PATCH /campaigns/{uid}). Scheduling knobs only — the
+ *  plan is baked in at create time. Omitted fields are left alone. */
+export interface UpdateCampaignRequest {
+  /** Parts in flight at once. Takes effect on the next tick; the effective
+   *  number is the tighter of this and the provider's max_concurrent_runs. */
+  max_parallel?: number
+  title?: string
 }
 
 /** Live plan preview — what would be dispatched if a campaign were launched
@@ -1977,7 +2114,8 @@ export interface AreaDetailDTO {
 
 /** Accepting an edit applies it and returns partition warnings to eyeball. */
 export interface AcceptAreaEditResponse {
-  area: AreaDTO
+  /** null when the edit retired an area that was never mapped — nothing was created. */
+  area: AreaDTO | null
   warnings: string[]
 }
 

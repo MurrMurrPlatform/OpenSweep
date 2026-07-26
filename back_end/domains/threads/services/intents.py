@@ -95,7 +95,7 @@ def build_thread_session_intent(ticket, thread_uid: str) -> str:
     )
 
 
-def build_group_addendum(children: list) -> str:
+def build_epic_addendum(children: list) -> str:
     """Group flow: the parent ticket is implemented as ONE unit — one branch,
     one PR that closes every subticket. List the members so the agent covers
     them all."""
@@ -114,7 +114,7 @@ def build_group_addendum(children: list) -> str:
         )
     return (
         "\n\n# Ticket group — implement ALL subtickets in this one branch/PR\n"
-        "This ticket is a group parent. The batch below ships as one unit; the\n"
+        "This ticket is a group parent. The epic below ships as one unit; the\n"
         "PR that closes the parent closes every subticket. Cover each one and\n"
         "say per subticket in your summary what you did (or why you skipped it).\n\n"
         + "\n".join(lines)

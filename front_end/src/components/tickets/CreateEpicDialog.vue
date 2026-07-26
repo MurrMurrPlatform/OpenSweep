@@ -5,6 +5,7 @@ import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -77,7 +78,7 @@ async function save() {
   if (!canSave.value) return
   saving.value = true
   try {
-    const parent = await store.groupTickets({
+    const parent = await store.createEpic({
       repository_uid: props.repositoryUid,
       title: title.value.trim(),
       description: description.value || undefined,
@@ -102,16 +103,16 @@ async function save() {
       <DialogHeader>
         <DialogTitle>Group tickets</DialogTitle>
         <DialogDescription>
-          Pick ≥2 tickets to batch under a new parent ticket, so one implement run can pick up the
-          whole batch instead of one PR per ticket. Members keep their status; the parent starts in
+          Pick ≥2 tickets to epic under a new parent ticket, so one implement run can pick up the
+          whole epic instead of one PR per ticket. Members keep their status; the parent starts in
           Backlog (Gate 1).
         </DialogDescription>
       </DialogHeader>
 
-      <div class="max-h-[60vh] space-y-3 overflow-y-auto -mx-6 px-6">
+      <DialogBody class="space-y-3">
         <div class="space-y-1.5">
           <Label for="group-title">Group title</Label>
-          <Input id="group-title" v-model="title" placeholder="e.g. Auth hardening batch" @keydown.enter="save" />
+          <Input id="group-title" v-model="title" placeholder="e.g. Auth hardening epic" @keydown.enter="save" />
         </div>
         <div class="space-y-1.5">
           <Label for="group-desc">Description</Label>
@@ -170,7 +171,7 @@ async function save() {
             </label>
           </div>
         </div>
-      </div>
+      </DialogBody>
 
       <DialogFooter>
         <Button variant="ghost" size="sm" @click="emit('update:open', false)">Cancel</Button>

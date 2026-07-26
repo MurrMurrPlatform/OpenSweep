@@ -67,6 +67,13 @@ class FakeTicket(_Node):
 class FakeFinding(_Node):
     nodes = _nodes_for("FakeFinding")
 
+    # Promotion copies these batching facets onto the ticket, so the fake has
+    # to carry them or it stops modelling the node it stands in for.
+    severity = "medium"
+    kind = ""
+    tags: list[str] = []
+    subtype = ""
+
 
 @pytest.fixture(autouse=True)
 def fakes(monkeypatch):

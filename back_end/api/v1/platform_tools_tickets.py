@@ -119,26 +119,43 @@ async def platform_update_ticket(
     return ticket_to_dto(updated)
 
 
-class PlatformProposeTicketGroupRequest(BaseModel):
-    """Agents suggest that ≥2 open tickets be batched under one parent.
+class PlatformProposeEpicRequest(BaseModel):
+    """Agents suggest that ≥2 open tickets be grouped under one parent.
     Nothing changes until a human approves the proposal."""
 
     repository_uid: str = Field(min_length=1)
     title: str = Field(
         min_length=1,
-        description="Short title for the batch — becomes the parent ticket's title on approval.",
+        description="Short title for the epic — becomes the parent ticket's title on approval.",
     )
     rationale: str = Field(
         "",
         description=(
-            "Why these tickets belong in one batch — cite the shared "
-            "files/subsystem/root cause. Becomes the parent ticket's "
-            "description on approval. Rendered as markdown."
+            "ONE sentence on why these ship together. Rendered on a single "
+            "line in the review list and TRUNCATED past ~240 characters — put "
+            "the specifics in `evidence`, not here."
         ),
     )
     member_ticket_uids: list[str] = Field(
         min_length=2,
         description="Uids of the 2-6 existing tickets that should ship together.",
+    )
+    axis: str = Field(
+        "root-cause",
+        description=(
+            "What makes these belong together. Agents should send "
+            "'root-cause' — the platform computes area/feature/files/lens/"
+            "class/linked groupings itself, exactly, without a model."
+        ),
+    )
+    evidence: dict = Field(
+        default_factory=dict,
+        description=(
+            "Small structured object supporting the claim, e.g. "
+            '{"root_cause": "callers must remember to await close()", '
+            '"shared_paths": ["a/b.py"]}. Rendered as the epic\'s one-line '
+            "reason, so keep it short and put the identifying fact first."
+        ),
     )
     suggested_labels: list[str] = Field(default_factory=list)
     suggested_priority: str = "medium"
@@ -146,10 +163,10 @@ class PlatformProposeTicketGroupRequest(BaseModel):
 
 @router.post(
     "/propose-group",
-    operation_id="opensweep_platform_propose_ticket_group",
+    operation_id="opensweep_platform_propose_epic",
 )
 async def platform_propose_ticket_group(
-    req: PlatformProposeTicketGroupRequest,
+    req: PlatformProposeEpicRequest,
     request: Request,
     user: UserDTO = Depends(get_current_user),
 ) -> dict:
@@ -157,12 +174,12 @@ async def platform_propose_ticket_group(
     Approval creates a parent ticket (origin agent-proposal, backlog) with the
     members as subtickets; the members themselves are never touched here.
     Idempotent on the member set."""
-    from domains.tickets.services.ticket_group_service import TicketGroupService
+    from domains.tickets.services.epic_service import EpicService
 
     await require_tool_repo_access(request, user, req.repository_uid)
     run_uid = request.headers.get("X-OpenSweep-Run-Uid") or ""
     actor = run_uid or user.uid
-    proposal, deduplicated = await TicketGroupService().propose(
+    proposal, deduplicated = await EpicService().propose(
         repository_uid=req.repository_uid,
         title=req.title,
         rationale=req.rationale,
@@ -171,6 +188,9 @@ async def platform_propose_ticket_group(
         suggested_priority=req.suggested_priority,
         source_run_uid=run_uid,
         actor_uid=actor,
+        axis=req.axis,
+        evidence=req.evidence,
+        origin="agent",
     )
     return {"proposal_uid": proposal.uid, "deduplicated": deduplicated}
 

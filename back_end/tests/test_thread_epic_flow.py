@@ -1,8 +1,8 @@
-"""Group flow (Phase 5): one thread on the parent → one PR covers the batch."""
+"""Group flow (Phase 5): one thread on the parent → one PR covers the epic."""
 
 from types import SimpleNamespace
 
-from domains.threads.services.intents import build_group_addendum
+from domains.threads.services.intents import build_epic_addendum
 
 
 def _child(uid, title, desc="", ac=None):
@@ -12,11 +12,11 @@ def _child(uid, title, desc="", ac=None):
 
 
 def test_no_children_no_addendum():
-    assert build_group_addendum([]) == ""
+    assert build_epic_addendum([]) == ""
 
 
 def test_children_are_listed_with_acceptance():
-    out = build_group_addendum(
+    out = build_epic_addendum(
         [
             _child("c-1", "Fix login", "500 on login", ["login works"]),
             _child("c-2", "Fix logout"),
@@ -28,5 +28,5 @@ def test_children_are_listed_with_acceptance():
 
 
 def test_long_descriptions_truncate():
-    out = build_group_addendum([_child("c-1", "T", "x" * 1000)])
+    out = build_epic_addendum([_child("c-1", "T", "x" * 1000)])
     assert "…" in out and len(out) < 900

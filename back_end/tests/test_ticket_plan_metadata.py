@@ -16,7 +16,8 @@ def test_dto_carries_plan():
     t = SimpleNamespace(
         uid="t-1", repository_uid="r-1", title="T", description="",
         acceptance_criteria=[], labels=[], status="todo", priority="medium",
-        size="", origin="human", origin_finding_uid="", parent_ticket_uid="",
+        size="", severity="", kind="", tags=[], subtype="",
+        origin="human", origin_finding_uid="", parent_ticket_uid="",
         linked_finding_uids=[], linked_pr_uids=[], assignee_uid="",
         plan={"markdown": "## P", "state": "drafted", "thread_uid": "th-1"},
         approved_by="", approved_at=None, done_at=None, created_at=None,

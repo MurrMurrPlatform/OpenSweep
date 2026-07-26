@@ -20,7 +20,10 @@ from domains.delivery.schemas import (
     VerdictResult,
 )
 
-SEVERITY_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+# The shared ladder (it had three divergent copies). The merge-blocking
+# threshold below is the one place severity gates behaviour, so it must not
+# drift from the ladder the batch selection filters rank with.
+from infrastructure.ranking import SEVERITY_ORDER
 
 _CI_FAILURE_CONCLUSIONS = {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
 _CI_OK_CONCLUSIONS = {"success", "neutral", "skipped"}
