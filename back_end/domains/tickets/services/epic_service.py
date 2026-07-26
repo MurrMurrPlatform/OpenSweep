@@ -18,7 +18,6 @@ from domains.tickets.schemas import EpicProposalDTO, EpicProposalStatus
 from domains.tickets.services.epics.schemas import (
     MAX_RATIONALE_CHARS,
     EpicAxis,
-    default_shape_for,
 )
 from domains.tickets.services.ticket_service import TicketService
 from infrastructure.audit import write_audit
@@ -40,14 +39,8 @@ def proposal_to_dto(
         suggested_priority=p.suggested_priority or "medium",
         axis=p.axis or "root-cause",
         evidence=dict(p.evidence or {}),
-        shape=p.shape or "single-pr",
         plan_uid=p.plan_uid or "",
         origin=p.origin or "agent",
-        dispatch_state=p.dispatch_state or "",
-        dispatched=list(p.dispatched or []),
-        max_parallel=int(p.max_parallel or 3),
-        dispatch_started_at=p.dispatch_started_at,
-        last_error=p.last_error or "",
         status=EpicProposalStatus(p.status or "proposed"),
         source_run_uid=p.source_run_uid or "",
         created_ticket_uid=p.created_ticket_uid or "",
@@ -116,7 +109,6 @@ class EpicService:
         actor_uid: str | None = None,
         axis: str = "root-cause",
         evidence: dict | None = None,
-        shape: str = "",
         plan_uid: str = "",
         origin: str = "agent",
     ) -> tuple[EpicProposal, bool]:
@@ -152,7 +144,6 @@ class EpicService:
             ),
             axis=axis,
             evidence=dict(evidence or {}),
-            shape=shape or default_shape_for(EpicAxis(axis)).value,
             plan_uid=plan_uid,
             origin=origin,
             status="proposed",
@@ -242,42 +233,16 @@ class EpicService:
             payload={"from": "backlog", "to": "todo", "cause": "epic_approval"},
         )
 
-        # `parallel-runs` dispatches one run per MEMBER, and a run may only
-        # start on a ticket that passed Gate 1 (IMPLEMENTABLE_TICKET_STATUSES).
-        # The epic approval is that gate for everything it contains, so the
-        # members are stamped too — otherwise the tick would 409 on every one
-        # of them. `single-pr` leaves member statuses alone, as it always has:
-        # there the parent's PR is what closes them, and nothing ever
-        # dispatches against a member directly.
-        if (p.shape or "single-pr") == "parallel-runs":
-            for member_uid in alive:
-                m = await Ticket.nodes.get_or_none(uid=member_uid)
-                if m is None or m.status != "backlog":
-                    continue
-                m.status = "todo"
-                m.approved_by = actor_uid
-                m.approved_at = now
-                m.updated_at = now
-                await m.save()
-                await write_audit(
-                    kind="ticket.transitioned",
-                    subject_uid=m.uid,
-                    subject_type="Ticket",
-                    actor_uid=actor_uid,
-                    payload={"from": "backlog", "to": "todo", "cause": "epic_approval"},
-                )
-
+        # Member statuses are deliberately left alone. An epic ships as ONE
+        # run on the parent — `trigger_implement_run` injects the members as
+        # its work list and the merged PR closes every one of them — so a
+        # member is never dispatched against directly and never needs to pass
+        # Gate 1 on its own.
         p.status = "approved"
         p.created_ticket_uid = parent.uid
         p.reviewed_by = actor_uid
         p.reviewed_at = now
         p.updated_at = now
-        # Approving IS the decision to work the epic — queue it for the tick
-        # rather than leaving the reviewer to press Implement afterwards.
-        p.dispatch_state = "pending"
-        p.dispatched = []
-        p.dispatch_started_at = now
-        p.last_error = ""
         await p.save()
         await write_audit(
             kind="epic.approved",
@@ -288,7 +253,6 @@ class EpicService:
                 "created_ticket_uid": parent.uid,
                 "member_ticket_uids": alive,
                 "axis": p.axis or "",
-                "shape": p.shape or "",
                 # Members silently absent from the epic a reviewer thought
                 # they were approving — recorded so the drop is inspectable.
                 "dropped_already_grouped": claimed,

@@ -36,7 +36,6 @@ from domains.tickets.services.epics.schemas import (
     EpicDraft,
     EpicPartition,
     TicketFacts,
-    default_shape_for,
 )
 from infrastructure.ranking import PRIORITY_ORDER, priority_rank
 
@@ -125,9 +124,12 @@ def by_feature(facts: list[TicketFacts]) -> list[_Group]:
 
 
 def by_lens(facts: list[TicketFacts]) -> list[_Group]:
-    """Group on finding kind — "all the security tickets". This is the one
-    axis whose members are NOT expected to touch the same files, which is why
-    `default_shape_for` fans it out into parallel runs."""
+    """Group on finding kind — "all the security tickets".
+
+    This is the one axis whose members are NOT expected to touch the same
+    files: it spreads across the whole repository. Worth knowing when sizing
+    `max_members`, since those members have the least to gain from sharing a
+    single pull request."""
     return _group_by_key(facts, lambda f: f.kind, evidence_field="lens", axis="lens")
 
 
@@ -396,7 +398,6 @@ def _build_draft(
         title=title,
         member_ticket_uids=[m.uid for m in chunk],
         axis=axis,
-        shape=default_shape_for(axis),
         evidence=evidence,
         rationale=_rationale(axis, group.label, len(chunk)),
         suggested_priority=_suggested_priority(chunk),

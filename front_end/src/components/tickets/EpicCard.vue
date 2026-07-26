@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { RouterLink } from 'vue-router'
-import { Check, ChevronDown, ChevronRight, GitPullRequest, Split, X } from 'lucide-vue-next'
+import { Check, ChevronDown, ChevronRight, X } from 'lucide-vue-next'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { MarkdownView } from '@/components/ui/markdown'
@@ -113,23 +113,6 @@ const rationaleOneLine = computed(() =>
     .trim(),
 )
 
-const shape = computed(() => {
-  if (props.proposal.shape === 'parallel-runs') {
-    return {
-      icon: Split,
-      label: `${memberCount.value} runs`,
-      hint: 'Approving fans this epic out into one agent run per member ticket.',
-    }
-  }
-  if (props.proposal.shape === 'single-pr') {
-    return {
-      icon: GitPullRequest,
-      label: '1 PR',
-      hint: 'Approving ships these tickets as one pull request.',
-    }
-  }
-  return null
-})
 </script>
 
 <template>
@@ -153,13 +136,6 @@ const shape = computed(() => {
         <Badge :variant="priorityVariant(proposal.suggested_priority)" class="shrink-0 px-1.5 text-[10px]">
           {{ proposal.suggested_priority }}
         </Badge>
-        <span
-          v-if="shape"
-          class="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-xs text-muted-foreground"
-          :title="shape.hint"
-        >
-          <component :is="shape.icon" class="size-3" />{{ shape.label }}
-        </span>
         <!-- Capped at 3 — a heavily-labelled epic would otherwise push its own
              title off the row. The rest are in the +N tooltip. -->
         <Badge

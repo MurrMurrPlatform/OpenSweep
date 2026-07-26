@@ -138,17 +138,8 @@ class EpicProposalDTO(BaseModel):
     #: this is what the card renders as a one-line reason.
     axis: str = "root-cause"
     evidence: dict = Field(default_factory=dict)
-    shape: str = "single-pr"
     plan_uid: str = ""
     origin: str = "agent"
-    #: "" | pending | dispatching | done | failed — set on approval, advanced
-    #: by the epic tick. "" on an approved row = approved before dispatch
-    #: existed.
-    dispatch_state: str = ""
-    dispatched: list[dict] = Field(default_factory=list)
-    max_parallel: int = 3
-    dispatch_started_at: datetime | None = None
-    last_error: str = ""
     status: EpicProposalStatus = EpicProposalStatus.PROPOSED
     source_run_uid: str = ""
     created_ticket_uid: str = ""

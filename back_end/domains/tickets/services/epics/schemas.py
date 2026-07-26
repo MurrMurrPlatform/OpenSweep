@@ -54,28 +54,6 @@ DETERMINISTIC_AXES = frozenset(
 )
 
 
-class EpicShape(StrEnum):
-    """How the epic executes once approved."""
-
-    #: One thread, one branch, one PR closing every member.
-    SINGLE_PR = "single-pr"
-    #: One run per member, fanned out under provider headroom.
-    PARALLEL_RUNS = "parallel-runs"
-
-
-def default_shape_for(axis: EpicAxis) -> EpicShape:
-    """Members of an epic are related BY CONSTRUCTION, so they would collide
-    on one branch — which is exactly why they belong in one PR rather than
-    racing each other. `LENS` is the exception: "all the security tickets"
-    spreads across the whole repo with no expected file overlap, so those
-    genuinely parallelize.
-
-    Parallelism across epics is where "top X issues in Y runs" comes from —
-    Y epics, disjoint by construction, each one run.
-    """
-    return EpicShape.PARALLEL_RUNS if axis is EpicAxis.LENS else EpicShape.SINGLE_PR
-
-
 @dataclass(frozen=True)
 class EpicSelection:
     """WHICH tickets are eligible, and how many. The `min_*` fields are `>=`
@@ -158,15 +136,11 @@ class EpicDraft:
     title: str
     member_ticket_uids: list[str]
     axis: EpicAxis
-    shape: EpicShape
     evidence: dict = field(default_factory=dict)
     rationale: str = ""
     suggested_priority: str = "medium"
     suggested_labels: list[str] = field(default_factory=list)
 
-    def __post_init__(self) -> None:
-        if not self.shape:
-            self.shape = default_shape_for(self.axis)
 
 
 #: Hard ceiling on agent-authored rationale. The grouping tool accepted an

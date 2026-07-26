@@ -1321,9 +1321,6 @@ export type EpicAxis =
   | 'linked'
   | 'root-cause'
 
-/** `single-pr` = the batch ships as one PR; `parallel-runs` = one run per member. */
-export type EpicShape = 'single-pr' | 'parallel-runs'
-
 export interface EpicProposalDTO {
   uid: string
   repository_uid: string
@@ -1341,7 +1338,6 @@ export interface EpicProposalDTO {
    * server-side faster than this file does.
    */
   axis?: EpicAxis | string
-  shape?: EpicShape | string
   /**
    * Small structured payload backing `axis`; its keys vary per axis — e.g.
    * `{axis:'files', shared_paths:['a.py','b.py'], member_count:4}`,
@@ -1395,7 +1391,7 @@ export interface PlanEpicsRequest {
   /** Computable axes only; 'root-cause' goes through /tickets/suggest-epics. */
   axis?: EpicAxis
   /** "…in Y runs". */
-  max_batches?: number
+  max_epics?: number
   min_members?: number
   max_members?: number
   /** Preview the identical plan without persisting it. */
@@ -1420,7 +1416,6 @@ export interface EpicPlanSummary {
 export interface EpicDraftDTO {
   title: string
   axis: EpicAxis
-  shape: EpicShape
   evidence: Record<string, unknown>
   rationale: string
   member_ticket_uids: string[]
