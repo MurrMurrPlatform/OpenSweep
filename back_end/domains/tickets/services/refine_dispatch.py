@@ -49,10 +49,10 @@ async def dispatch_refine_run(
     """Trigger the read-only refine run for a ticket. Raises HTTPException 409
     when the lifecycle refuses the dispatch."""
     from domains.agents.services.composition import compose_agent_intent
-    from domains.runs.schemas import Effort, RunTrigger
-    from domains.runs.services.lifecycle import LifecycleError, trigger_run
     from domains.repositories.services.workflow import stage_prompt_body
     from domains.run_policies.services.effort import ensure_policy_for_effort
+    from domains.runs.schemas import Effort, RunTrigger
+    from domains.runs.services.lifecycle import LifecycleError, trigger_run
 
     structural = build_ticket_refine_intent(ticket)
     if extra_context:

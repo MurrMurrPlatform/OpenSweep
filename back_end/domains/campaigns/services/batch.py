@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from domains.campaigns.models import Campaign
+from domains.campaigns.models import DEFAULT_MAX_PARALLEL, Campaign
 from domains.campaigns.schemas import CreateCampaignRequest
 from infrastructure.audit import write_audit
 
@@ -55,7 +55,7 @@ async def create_batch(
         k=max(int(req.k or 3), 1),
         area_prefix=(req.area_prefix or "").strip(),
         parts=[],
-        max_parallel=max(int(req.max_parallel or 2), 1),
+        max_parallel=max(int(req.max_parallel or DEFAULT_MAX_PARALLEL), 1),
         created_by=created_by,
         trigger_provenance=trigger_provenance or "manual",
     )
@@ -70,7 +70,7 @@ async def create_batch(
             effort=(req.effort or "").strip(),
             k=max(int(req.k or 3), 1),
             area_prefix=(req.area_prefix or "").strip(),
-            max_parallel=max(int(req.max_parallel or 2), 1),
+            max_parallel=max(int(req.max_parallel or DEFAULT_MAX_PARALLEL), 1),
             title=f"{parent.title} — {child_kind}",
         )
         child = await campaign_service.create(

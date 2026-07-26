@@ -16,6 +16,12 @@ from neomodel import (
     StringProperty,
 )
 
+# How many parts a campaign dispatches at once when nothing says otherwise.
+# The effective number is the tighter of this and the target provider's
+# `max_concurrent_runs` (tick._provider_headroom), so raising it hands the
+# capacity decision to the provider rather than to whoever clicked create.
+DEFAULT_MAX_PARALLEL = 5
+
 
 class Campaign(AsyncStructuredNode):
     uid = StringProperty(unique_index=True, required=True)
@@ -76,7 +82,7 @@ class Campaign(AsyncStructuredNode):
     plan_summary = JSONProperty(default={})
 
     # How many parts may be in flight at once.
-    max_parallel = IntegerProperty(default=2)
+    max_parallel = IntegerProperty(default=DEFAULT_MAX_PARALLEL)
 
     created_by = StringProperty(default="")
     # "manual" | "cron:<expr>" — scheduled campaigns dispatch their children

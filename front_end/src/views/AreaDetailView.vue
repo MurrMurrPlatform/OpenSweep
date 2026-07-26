@@ -156,7 +156,9 @@ async function acceptEdit(edit: AreaEditDTO) {
   resolvingUid.value = edit.uid
   try {
     const { area: saved, warnings } = await areaStore.acceptEdit(edit.uid)
-    if (warnings.length) toast.warn(`Accepted ${saved.key} with warnings`, warnings.join('; '))
+    // A retirement of an area that was never mapped: nothing to create.
+    if (!saved) toast.success('Edit accepted', `${edit.key} was not mapped — nothing created`)
+    else if (warnings.length) toast.warn(`Accepted ${saved.key} with warnings`, warnings.join('; '))
     else toast.success('Edit accepted', saved.key)
     await refresh()
   } catch (e: unknown) {

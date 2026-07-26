@@ -1,6 +1,7 @@
 // Presentation helpers for Run statuses — notably the quota-paused state,
 // which carries retry info in usage.quota.
 
+import type { BadgeVariants } from '@/components/ui/badge'
 import type { RunDTO, RunQuotaUsage, RunStatus } from '@/types/api'
 
 type RunLike = Pick<RunDTO, 'status' | 'usage'>
@@ -77,4 +78,14 @@ export function runStatusVariant(
   if (status === 'failed' || status === 'cancelled' || status === 'limit_exceeded') return 'danger'
   if (status === 'paused_quota') return 'warn'
   return 'default' // ended
+}
+
+/** runStatusVariant's tones predate the shadcn Badge set (danger/default
+ *  are gone). Views were each carrying their own copy of this mapping. */
+export function toneToBadgeVariant(
+  tone: ReturnType<typeof runStatusVariant>,
+): BadgeVariants['variant'] {
+  if (tone === 'danger') return 'destructive'
+  if (tone === 'default') return 'secondary'
+  return tone
 }

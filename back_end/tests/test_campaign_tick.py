@@ -137,3 +137,45 @@ def test_complete_after_last_running_part_terminates_this_tick():
     out = plan_tick(parts, {"r0": "ended"}, 2)
     assert out["mark_done"] == [0]
     assert out["complete"] is True
+
+
+# ── provider headroom clamp ───────────────────────────────────────────────
+
+
+def test_provider_headroom_clamps_below_max_parallel():
+    """The tighter of the two ceilings wins — a campaign allowed 5 parts
+    still only gets what the provider has capacity for."""
+    parts = [_part(i) for i in range(5)]
+    out = plan_tick(parts, {}, 5, 2)
+    assert out["dispatch"] == [0, 1]
+
+
+def test_max_parallel_clamps_below_provider_headroom():
+    parts = [_part(i) for i in range(5)]
+    out = plan_tick(parts, {}, 2, 99)
+    assert out["dispatch"] == [0, 1]
+
+
+def test_zero_provider_headroom_dispatches_nothing():
+    """A saturated provider stalls dispatch rather than piling on runs that
+    would only park in paused_quota."""
+    parts = [_part(0), _part(1)]
+    out = plan_tick(parts, {}, 5, 0)
+    assert out["dispatch"] == []
+    assert out["complete"] is False
+
+
+def test_unknown_provider_headroom_does_not_clamp():
+    """None = couldn't resolve a provider; fall back to the campaign cap
+    alone rather than silently stalling the campaign."""
+    parts = [_part(i) for i in range(3)]
+    assert plan_tick(parts, {}, 3, None)["dispatch"] == [0, 1, 2]
+
+
+def test_headroom_already_accounts_for_own_in_flight_runs():
+    """provider_headroom counts this campaign's own runs, so it must NOT be
+    reduced a second time by in_flight — the two ceilings are independent."""
+    parts = [_part(0, state="running", run_uid="r0"), _part(1), _part(2)]
+    # 1 run in flight: campaign capacity 5-1=4, provider headroom already 4.
+    out = plan_tick(parts, {"r0": "running"}, 5, 4)
+    assert out["dispatch"] == [1, 2]

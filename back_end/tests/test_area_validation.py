@@ -236,3 +236,76 @@ def test_non_leaf_others_are_not_overlap_targets():
         )
         == []
     )
+
+
+# ── Faked nesting ────────────────────────────────────────────────────────────
+# "/" is the only hierarchy separator; dash-compound siblings defeat it.
+
+
+def test_dash_compound_sibling_of_an_existing_key_warns():
+    # The real shape from a flat map run: a leaf hung off an existing key with
+    # a dash instead of a "/".
+    assert validate_area_edit(
+        _edit("subsystem-frontend-build", scope_paths=["front_end/vite.config.ts"]),
+        [_area("subsystem-frontend", scope_paths=["front_end/src/"])],
+    ) == [
+        "key 'subsystem-frontend-build' fakes nesting with a dash — '/' is the "
+        "only hierarchy separator; propose 'subsystem-frontend/build' so it "
+        "nests under 'subsystem-frontend'"
+    ]
+
+
+def test_two_dash_compound_siblings_warn_on_their_shared_prefix():
+    # Neither key is the other's parent: the shared "subsystem-api" prefix is
+    # the grouping both should hang under. This pair also shows WHY the dash
+    # matters — flat keys get no parent/child exemption, so the containing
+    # scope reads as an overlap on top of the naming warning. Nested as
+    # "subsystem-api/layer" over "subsystem-api/core", only the naming is left.
+    warnings = validate_area_edit(
+        _edit("subsystem-api-layer", scope_paths=["back_end/api/"]),
+        [_area("subsystem-api-core", scope_paths=["back_end/api/deps.py"])],
+    )
+    assert warnings == [
+        "key 'subsystem-api-layer' fakes nesting with a dash — '/' is the only "
+        "hierarchy separator; propose 'subsystem-api/layer' so it nests under "
+        "'subsystem-api'",
+        "scope 'back_end/api/' overlaps leaf 'subsystem-api-core' "
+        "('back_end/api/deps.py')",
+    ]
+    # Named as the parent it actually is, the containing scope is exempt —
+    # nesting is hierarchy, not a partition violation.
+    assert validate_area_edit(
+        _edit("subsystem-api", scope_paths=["back_end/api/"]),
+        [_area("subsystem-api/core", scope_paths=["back_end/api/deps.py"])],
+    ) == []
+
+
+def test_the_ancestor_key_itself_is_not_flagged():
+    # Proposing "subsystem-frontend" while "subsystem-frontend-build" exists:
+    # the ancestor is fine, the longer sibling is the one to rename.
+    assert validate_area_edit(
+        _edit("subsystem-frontend", scope_paths=["front_end/src/"]),
+        [_area("subsystem-frontend-build", scope_paths=["front_end/vite.config.ts"])],
+    ) == []
+
+
+def test_properly_nested_keys_do_not_warn():
+    assert validate_area_edit(
+        _edit("backend/api", scope_paths=["back_end/api"]),
+        [_area("backend/runs", scope_paths=["back_end/domains/runs"])],
+    ) == []
+
+
+def test_unrelated_dash_names_do_not_warn():
+    # Dashes are fine — only a SHARED leading segment reads as faked nesting.
+    assert validate_area_edit(
+        _edit("docker-compose", scope_paths=["docker-compose.yml"]),
+        [_area("ci-pipeline", scope_paths=[".github/"])],
+    ) == []
+
+
+def test_same_leaf_name_under_different_parents_does_not_warn():
+    assert validate_area_edit(
+        _edit("backend/api-core", scope_paths=["back_end/api"]),
+        [_area("billing/api-core", scope_paths=["billing/api"])],
+    ) == []

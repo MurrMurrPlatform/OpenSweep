@@ -17,7 +17,8 @@ const forwardedProps = useForwardProps(delegatedProps)
     v-bind="forwardedProps"
     :class="
       cn(
-        'text-lg font-semibold leading-none tracking-tight',
+        // `leading-snug` (not `leading-none`) so titles that wrap stay legible.
+        'text-lg font-semibold leading-snug tracking-tight break-words',
         props.class,
       )
     "

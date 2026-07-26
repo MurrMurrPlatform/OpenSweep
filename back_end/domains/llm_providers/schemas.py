@@ -40,6 +40,9 @@ class LLMProviderDTO(BaseModel):
     enabled: bool = True
     active: bool = False
     fallback_priority: int = 100  # §8 fallback chain — lower runs first
+    # How many runs may execute on this provider at once (>=1). Campaign
+    # dispatch clamps to the remaining headroom.
+    max_concurrent_runs: int = 5
     notes: str = ""
     has_credential_secret: bool = False   # never returns the secret itself
     # Codex-subscription credential state (see codex token-refresh design).
@@ -66,6 +69,9 @@ class CreateLLMProviderRequest(BaseModel):
     enabled: bool = True
     active: bool = False
     fallback_priority: int = 100
+    # 0/unset = the platform default for this kind (kind_meta), so the
+    # connect dialog need not know that codex serializes to 1.
+    max_concurrent_runs: int = 0
     notes: str = ""
     credential_secret: str = ""  # write-only
 
@@ -81,6 +87,7 @@ class UpdateLLMProviderRequest(BaseModel):
     enabled: bool | None = None
     active: bool | None = None
     fallback_priority: int | None = None
+    max_concurrent_runs: int | None = None
     notes: str | None = None
     credential_secret: str | None = None  # write-only; pass empty string to clear
 
@@ -138,6 +145,9 @@ _AIDER_SETUP_STEPS = [
 #   default_api_key_env       — fallback env var for API kinds
 #   featured                  — picker order; 0 = hidden from the UI picker
 #     (the API still accepts hidden kinds — aider/custom are ops-only)
+#   default_max_concurrent_runs — capacity ceiling for the kind; omitted means
+#     DEFAULT_MAX_CONCURRENT_RUNS. Only kinds that are serialized by something
+#     outside our control need to say otherwise.
 KIND_CATALOG: dict[LLMProviderKind, dict] = {
     LLMProviderKind.CLAUDE_SUBSCRIPTION: {
         "display_name": "Claude Code (subscription CLI)",
@@ -185,6 +195,12 @@ KIND_CATALOG: dict[LLMProviderKind, dict] = {
         "credential_placeholder": '{"OPENAI_API_KEY": "...", "tokens": { ... }}',
         "setup_steps": _CODEX_SETUP_STEPS,
         "default_model": "gpt-5-codex",
+        # The credential lease (codex_credential) is a hard mutual exclusion
+        # of one run per subscription on the `exec` path, which is every
+        # Celery-worker run (codex_cli.app_server_enabled). Starting more
+        # only parks the losers in paused_quota for the 10-minute resume
+        # beat, so the honest ceiling is 1 until app-server sharing is on.
+        "default_max_concurrent_runs": 1,
     },
     LLMProviderKind.CLAUDE_API: {
         "display_name": "Anthropic API",
@@ -335,6 +351,18 @@ def kind_meta(kind: str | LLMProviderKind) -> dict:
         return KIND_CATALOG[LLMProviderKind(kind)]
     except ValueError:
         return {}
+
+
+# Fan-out a provider is assumed to tolerate when nothing says otherwise.
+DEFAULT_MAX_CONCURRENT_RUNS = 5
+
+
+def default_max_concurrent_runs(kind: str | LLMProviderKind) -> int:
+    """The capacity ceiling to stamp on a new row of this kind."""
+    return int(
+        kind_meta(kind).get("default_max_concurrent_runs")
+        or DEFAULT_MAX_CONCURRENT_RUNS
+    )
 
 
 def default_cli_template(kind: str | LLMProviderKind) -> str:

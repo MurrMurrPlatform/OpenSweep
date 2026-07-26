@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from domains.campaigns.models import DEFAULT_MAX_PARALLEL
 from logging_config import logger
 
 # Child run statuses that end a part. awaiting_input IS the everyday
@@ -22,7 +23,10 @@ _LOCK_TTL = 55  # under the 60s beat interval so a crashed tick self-heals
 
 
 def plan_tick(
-    parts: list[dict], run_status_by_uid: dict[str, str], max_parallel: int
+    parts: list[dict],
+    run_status_by_uid: dict[str, str],
+    max_parallel: int,
+    provider_headroom: int | None = None,
 ) -> dict:
     """Decide this tick's moves. Pure.
 
@@ -32,6 +36,12 @@ def plan_tick(
     (running, queued, paused_quota) stays in flight. Global parts become
     dispatchable only once every area part is terminal, so their
     escalation digests see the full campaign's findings.
+
+    `provider_headroom` is the target provider's remaining capacity
+    (llm_providers.services.capacity). None = unknown, don't clamp. It
+    already accounts for this campaign's own in-flight runs, so it is a
+    second independent ceiling rather than a subtraction from the first —
+    the tighter of the two wins.
     """
     mark_done: list[int] = []
     mark_failed: list[int] = []
@@ -64,6 +74,8 @@ def plan_tick(
     )
 
     capacity = max(int(max_parallel) - in_flight, 0)
+    if provider_headroom is not None:
+        capacity = min(capacity, max(int(provider_headroom), 0))
     dispatch: list[int] = []
     pending_left = 0
     for part in sorted(parts, key=lambda p: int(p["idx"])):
@@ -145,6 +157,35 @@ async def _finalize_guarded(campaign) -> bool:
         return False
 
 
+async def _provider_headroom(c) -> int | None:
+    """Remaining capacity on the provider this campaign's parts will use.
+
+    Parts resolve their provider at dispatch time via the org's active
+    provider (executors._shared.resolve_provider), so that is what we size
+    against here. None = couldn't resolve one; don't clamp, and let dispatch
+    fail loudly on its own terms rather than silently stalling the campaign.
+    """
+    from domains.llm_providers.services.capacity import provider_headroom
+    from domains.llm_providers.services.llm_provider_service import (
+        get_active_provider,
+        repository_org_uid,
+    )
+
+    try:
+        org_uid = await repository_org_uid(c.repository_uid or "")
+        provider = await get_active_provider(org_uid) if org_uid else None
+        if provider is None:
+            return None
+        return await provider_headroom(provider)
+    except Exception as exc:  # noqa: BLE001 — capacity is advisory, never fatal
+        logger.warning(
+            f"campaign {c.uid}: provider headroom unavailable "
+            f"({type(exc).__name__}: {exc}) — dispatching on campaign cap alone",
+            extra={"tag": "campaigns"},
+        )
+        return None
+
+
 async def _tick_one(c) -> tuple[int, int]:
     """Advance one running campaign. Returns (dispatched, finalized)."""
     from domains.campaigns.models import Campaign, is_legal_status_transition
@@ -158,7 +199,12 @@ async def _tick_one(c) -> tuple[int, int]:
         run = await Run.nodes.get_or_none(uid=uid)
         if run is not None:
             status_map[uid] = run.status or ""
-    decision = plan_tick(parts, status_map, int(c.max_parallel or 2))
+    decision = plan_tick(
+        parts,
+        status_map,
+        int(c.max_parallel or DEFAULT_MAX_PARALLEL),
+        await _provider_headroom(c),
+    )
 
     now = datetime.now(UTC)
     events: list[dict] = []

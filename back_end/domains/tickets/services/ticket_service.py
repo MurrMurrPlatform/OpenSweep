@@ -37,6 +37,10 @@ from domains.tickets.schemas import (
 from domains.users.schemas import role_at_least
 from infrastructure.audit import write_audit
 
+# Imported, not redefined: this ladder had three divergent copies. Re-exported
+# because callers and tests already import `priority_rank` from this module.
+from infrastructure.ranking import priority_rank  # noqa: F401
+
 # Legal human transitions: {from: {to, ...}}. "Any → backlog except from done"
 # plus the forward path with its two step-backs.
 LEGAL_TRANSITIONS: dict[str, frozenset[str]] = {
@@ -49,15 +53,8 @@ LEGAL_TRANSITIONS: dict[str, frozenset[str]] = {
 
 GATE_1 = ("backlog", "todo")  # the human approval gate — maintainer+ only
 
-_PRIORITY_RANK = {"low": 0, "medium": 1, "high": 2, "urgent": 3}
-
-
 def is_legal_transition(from_status: str, to_status: str) -> bool:
     return to_status in LEGAL_TRANSITIONS.get(from_status, frozenset())
-
-
-def priority_rank(priority: str) -> int:
-    return _PRIORITY_RANK.get(priority, _PRIORITY_RANK["medium"])
 
 
 def ticket_to_dto(t: Ticket) -> TicketDTO:
@@ -71,6 +68,10 @@ def ticket_to_dto(t: Ticket) -> TicketDTO:
         status=TicketStatus(t.status or "backlog"),
         priority=t.priority or "medium",
         size=t.size or "",
+        severity=t.severity or "",
+        kind=t.kind or "",
+        tags=list(t.tags or []),
+        subtype=t.subtype or "",
         origin=t.origin or "human",
         origin_finding_uid=t.origin_finding_uid or "",
         parent_ticket_uid=t.parent_ticket_uid or "",
@@ -99,11 +100,16 @@ class TicketService:
         if parent is None or parent.repository_uid != repository_uid:
             raise HTTPException(status_code=404, detail=f"Ticket {ticket_uid} not found")
 
-    async def _require_finding_in_repo(self, finding_uid: str, repository_uid: str) -> None:
-        """404 unless `finding_uid` exists AND lives in `repository_uid` (F4)."""
+    async def _require_finding_in_repo(self, finding_uid: str, repository_uid: str) -> Finding:
+        """404 unless `finding_uid` exists AND lives in `repository_uid` (F4).
+
+        Returns the finding so promotion can copy its epic facets without
+        a second read.
+        """
         finding = await Finding.nodes.get_or_none(uid=finding_uid)
         if finding is None or finding.repository_uid != repository_uid:
             raise HTTPException(status_code=404, detail=f"Finding {finding_uid} not found")
+        return finding
 
     async def list(
         self,
@@ -158,8 +164,16 @@ class TicketService:
         # (not 409) so a foreign uid never leaks its existence.
         if req.parent_ticket_uid:
             await self._require_ticket_in_repo(req.parent_ticket_uid, req.repository_uid)
+        # Epic planning facets are derived HERE rather than at each promotion site
+        # (resolution_service, the platform tool, bulk promote from the
+        # findings board) so no caller can create a finding-backed ticket that
+        # is invisible to severity/lens/class selection. An explicit value on
+        # the request wins — callers that already hold the finding may pass it.
+        finding = None
         if req.origin_finding_uid:
-            await self._require_finding_in_repo(req.origin_finding_uid, req.repository_uid)
+            finding = await self._require_finding_in_repo(
+                req.origin_finding_uid, req.repository_uid
+            )
         t = Ticket(
             uid=uuid4().hex,
             repository_uid=req.repository_uid,
@@ -169,6 +183,10 @@ class TicketService:
             labels=req.labels,
             priority=req.priority or "medium",
             size=req.size,
+            severity=req.severity or (finding.severity or "" if finding else ""),
+            kind=req.kind or (finding.kind or "" if finding else ""),
+            tags=req.tags or (list(finding.tags or []) if finding else []),
+            subtype=req.subtype or (finding.subtype or "" if finding else ""),
             origin=origin,
             origin_finding_uid=req.origin_finding_uid,
             linked_finding_uids=[req.origin_finding_uid] if req.origin_finding_uid else [],
@@ -209,7 +227,7 @@ class TicketService:
         )
         return t
 
-    # ── Grouping (batch related tickets under one parent) ────────────────
+    # ── Grouping (epic related tickets under one parent) ────────────────
 
     async def validate_group_members(
         self, repository_uid: str, member_ticket_uids: list[str]
@@ -232,12 +250,12 @@ class TicketService:
                 )
             if t.status == "done":
                 raise HTTPException(
-                    status_code=409, detail=f"Ticket {uid} is done — nothing left to batch"
+                    status_code=409, detail=f"Ticket {uid} is done — nothing left to epic"
                 )
             members.append(t)
         return members
 
-    async def group_tickets(
+    async def create_epic(
         self,
         *,
         repository_uid: str,
@@ -250,7 +268,7 @@ class TicketService:
         actor_uid: str | None = None,
     ) -> Ticket:
         """Create a parent ticket and re-parent the members under it, so the
-        batch can be approved/implemented as one unit. Members keep their own
+        epic can be approved/implemented as one unit. Members keep their own
         status; the parent is born in backlog (Gate 1 stays human-only)."""
         members = await self.validate_group_members(repository_uid, member_ticket_uids)
         parent = await self.create(
@@ -270,7 +288,7 @@ class TicketService:
             m.updated_at = now
             await m.save()
         await write_audit(
-            kind="ticket.grouped",
+            kind="epic.created",
             subject_uid=parent.uid,
             subject_type="Ticket",
             actor_uid=actor_uid,
@@ -294,7 +312,7 @@ class TicketService:
             c.updated_at = now
             await c.save()
         await write_audit(
-            kind="ticket.ungrouped",
+            kind="epic.dissolved",
             subject_uid=parent.uid,
             subject_type="Ticket",
             actor_uid=actor_uid,
@@ -312,7 +330,7 @@ class TicketService:
         t.updated_at = datetime.now(UTC)
         await t.save()
         await write_audit(
-            kind="ticket.left_group",
+            kind="epic.member_removed",
             subject_uid=t.uid,
             subject_type="Ticket",
             actor_uid=actor_uid,
@@ -431,7 +449,7 @@ class TicketService:
 
         Group flow (unified dev flow): a group parent is implemented as ONE
         unit — merging its PR completes every subticket too
-        ("ticket.done_via_group_merge").
+        ("ticket.done_via_epic_merge").
         """
         t = await self.get_node(uid)
         if t.status == "done":
@@ -451,7 +469,7 @@ class TicketService:
             child_frm = child.status
             await self._set_status(child, "done")
             await write_audit(
-                kind="ticket.done_via_group_merge",
+                kind="ticket.done_via_epic_merge",
                 subject_uid=child.uid,
                 subject_type="Ticket",
                 actor_uid="system",
@@ -461,7 +479,43 @@ class TicketService:
                     "pull_request_uid": pull_request_uid,
                 },
             )
+        await self._complete_parent_if_all_children_done(t)
         return t
+
+    async def _complete_parent_if_all_children_done(self, child: Ticket) -> None:
+        """Close a group parent once every member is done.
+
+        `single-pr` epics close top-down: the parent's PR merges and the
+        loop above closes the members. `parallel-runs` epics have no parent
+        PR at all — each member merges its own — so nothing ever closed the
+        parent and it sat in `todo` forever, making a fully-delivered epic
+        look permanently in-flight on the board.
+
+        Event-driven here rather than in the epic tick so it holds however a
+        member got closed (its own PR, a manual transition, an epic that was
+        dissolved), not only for epics the tick is still watching.
+
+        Recursion-safe: closing the parent re-enters `mark_done_via_merge`,
+        whose `status == "done"` guard short-circuits on the second pass.
+        """
+        parent_uid = child.parent_ticket_uid or ""
+        if not parent_uid:
+            return
+        parent = await Ticket.nodes.get_or_none(uid=parent_uid)
+        if parent is None or parent.status == "done":
+            return
+        siblings = await Ticket.nodes.filter(parent_ticket_uid=parent_uid)
+        if not all((s.status or "") == "done" for s in siblings):
+            return
+        frm = parent.status
+        await self._set_status(parent, "done")
+        await write_audit(
+            kind="ticket.done_via_epic_rollup",
+            subject_uid=parent.uid,
+            subject_type="Ticket",
+            actor_uid="system",
+            payload={"from": frm, "member_count": len(siblings)},
+        )
 
     # ── Delete ───────────────────────────────────────────────────────────
 

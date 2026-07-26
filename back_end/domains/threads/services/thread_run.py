@@ -56,7 +56,7 @@ async def finalize_thread_run(run) -> None:
     thread = await Thread.nodes.get_or_none(uid=thread_uid)
     if thread is None:
         return
-    # Turn boundary = retry point for answer batches that were held while the
+    # Turn boundary = retry point for answer epics that were held while the
     # run was mid-turn (delivery is guarded, never lost). Best-effort.
     try:
         from domains.threads.services.thread_service import ThreadService
@@ -152,9 +152,9 @@ def build_go_message(
         )
     group_block = ""
     if children:
-        from domains.threads.services.intents import build_group_addendum
+        from domains.threads.services.intents import build_epic_addendum
 
-        group_block = build_group_addendum(children)
+        group_block = build_epic_addendum(children)
     return (
         "GO — the user approved implementation. PLANNING MODE IS OVER for "
         "this conversation: implement now, in this workspace.\n"

@@ -13,9 +13,9 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from domains.threads.models import Thread, is_legal_phase_transition
-from domains.threads.services.progress import compute_progress
 from domains.threads.schemas import ThreadDetailDTO, ThreadDTO, ThreadRunSummaryDTO
 from domains.threads.services.intents import build_thread_session_intent
+from domains.threads.services.progress import compute_progress
 from infrastructure.audit import write_audit
 from logging_config import logger
 
@@ -119,7 +119,7 @@ def open_question_events(events: list[dict]) -> list[dict]:
 
 def pending_answer_events(events: list[dict]) -> list[dict]:
     """Answered questions whose answers were not yet delivered to the agent —
-    batch gating (multiple questions per turn) accumulates them here."""
+    epic gating (multiple questions per turn) accumulates them here."""
     return [
         e
         for e in events
@@ -283,15 +283,15 @@ class ThreadService:
         from domains.delivery.services.implement_run_service import branch_name_for_ticket
         from domains.delivery.services.run_dispatch import require_repository
         from domains.execution.services.sandbox_service import SandboxService
+        from domains.repositories.services.repository_service import repository_to_dto
+        from domains.run_policies.services.effort import ensure_policy_for_effort
         from domains.runs.schemas import (
+            Effort,
             ExecutionMode,
             Executor,
-            Effort,
             RunTrigger,
         )
         from domains.runs.services.lifecycle import LifecycleError, trigger_run
-        from domains.repositories.services.repository_service import repository_to_dto
-        from domains.run_policies.services.effort import ensure_policy_for_effort
         from domains.tickets.services.ticket_service import TicketService
         from infrastructure.git_providers import get_provider_client
 
@@ -549,7 +549,7 @@ class ThreadService:
             except Exception:  # noqa: BLE001
                 pass
 
-        # Batch gating: with several questions in flight the agent resumes
+        # Epic gating: with several questions in flight the agent resumes
         # only once ALL are answered (or the user forces continue).
         if deliver:
             await self._deliver_pending_answers(t)
@@ -748,8 +748,6 @@ class ThreadService:
         implement run with decision-log carry-over, as originally shipped."""
         from domains.delivery.services.implement_run_service import trigger_implement_run
         from domains.runs.services.run_events import read_events
-        from domains.threads.services.intents import build_group_addendum
-        from domains.tickets.models import Ticket
 
         events: list[dict] = []
         if t.active_run_uid:
@@ -761,8 +759,11 @@ class ThreadService:
                     extra={"tag": "threads"},
                 )
         addendum = compose_addendum_for_thread(t.plan_state, t.plan_text or "", events)
-        children = list(await Ticket.nodes.filter(parent_ticket_uid=ticket.uid))
-        addendum += build_group_addendum(children)
+        # The group addendum is NOT added here: `trigger_implement_run` owns it
+        # for every caller. It used to be appended only on this path and on the
+        # v2 thread GO message, so a one-shot `POST /tickets/{uid}/implement`
+        # on a group parent dispatched a run that never saw its subtickets —
+        # then the merge closed all of them anyway.
 
         run = await trigger_implement_run(
             ticket, triggered_by=actor_uid, intent_addendum=addendum

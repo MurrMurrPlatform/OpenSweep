@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -113,7 +114,7 @@ async function connect() {
           </DialogDescription>
         </DialogHeader>
 
-        <div class="flex max-h-[60vh] flex-col gap-4 overflow-y-auto">
+        <DialogBody class="flex flex-col gap-4">
           <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <button
               v-for="meta in agentTiles"
@@ -152,7 +153,7 @@ async function connect() {
               </button>
             </div>
           </template>
-        </div>
+        </DialogBody>
 
         <DialogFooter>
           <Button variant="ghost" @click="emit('update:open', false)">Cancel</Button>
@@ -172,7 +173,7 @@ async function connect() {
           <DialogDescription>{{ selected.tagline }}</DialogDescription>
         </DialogHeader>
 
-        <div class="flex max-h-[60vh] flex-col gap-3 overflow-y-auto">
+        <DialogBody class="flex flex-col gap-3">
           <div v-if="selected.needs_base_url" class="flex flex-col gap-1.5">
             <Label for="connect-base-url">Server URL</Label>
             <Input id="connect-base-url" v-model="baseUrl" class="font-mono" />
@@ -205,7 +206,7 @@ async function connect() {
               </ol>
             </div>
           </div>
-        </div>
+        </DialogBody>
 
         <DialogFooter>
           <Button variant="ghost" @click="selected = null">Back</Button>

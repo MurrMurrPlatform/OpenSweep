@@ -72,7 +72,10 @@ class BulkAreaEditRequest(BaseModel):
 
 
 class AcceptAreaEditResponse(BaseModel):
-    area: AreaDTO
+    """`area` is null when the edit retired an area that was never mapped —
+    accepting "this should not exist" resolves the edit and creates nothing."""
+
+    area: AreaDTO | None = None
     warnings: list[str]
 
 

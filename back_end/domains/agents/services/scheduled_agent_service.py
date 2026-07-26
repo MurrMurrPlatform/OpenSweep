@@ -11,7 +11,6 @@ Every repository gets two seeded bindings on registration:
 
 from __future__ import annotations
 
-from typing import Optional
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -94,7 +93,7 @@ async def to_dto(s: ScheduledAgent, *, agent: Agent | None = None) -> ScheduledA
 
 
 async def list_scheduled_agents(
-    *, repository_uid: Optional[str] = None
+    *, repository_uid: str | None = None
 ) -> list[ScheduledAgentDTO]:
     rows = await ScheduledAgent.nodes.all()
     if repository_uid:
@@ -204,7 +203,11 @@ async def delete_scheduled_agent(uid: str, *, actor_uid: str = "") -> None:
 
 
 async def seed_keep_docs_current(repository_uid: str) -> ScheduledAgent | None:
-    """Idempotent: one seeded docs-freshness binding per repository."""
+    """Idempotent: one seeded docs-freshness binding per repository.
+
+    Seeded DISABLED — a repo starts with nothing firing on its own; flip
+    `enabled` on to opt into on-event docs freshness.
+    """
     agent = await system_agent_by_key("document")
     if agent is None:
         logger.warning(
@@ -223,6 +226,7 @@ async def seed_keep_docs_current(repository_uid: str) -> ScheduledAgent | None:
         trigger="on-event",
         target={},  # empty = repo-wide: any change makes it a candidate
         autonomy="suggest",
+        enabled=False,
         provenance="system",
     )
     await s.save()
@@ -231,8 +235,10 @@ async def seed_keep_docs_current(repository_uid: str) -> ScheduledAgent | None:
 
 async def seed_audit_stale(repository_uid: str) -> ScheduledAgent | None:
     """Idempotent: one seeded stale-audit binding per repository, INERT
-    (trigger="") — a user-set cron is the opt-in, matching the scanner's
-    semantics. Each due tick runs sweep.run_auto_audit: rank pages
+    (trigger="") and DISABLED — a user-set cron plus `enabled` is the opt-in,
+    matching the scanner's semantics. Manual dispatch through the UI's trigger
+    endpoint ignores `enabled`, so the anchor stays usable by hand. Each due
+    tick runs sweep.run_auto_audit: rank pages
     never-checked first then longest-stale, dispatch one scoped audit per
     page up to target.limit."""
     agent = await system_agent_by_key("audit-stale")
@@ -253,6 +259,7 @@ async def seed_audit_stale(repository_uid: str) -> ScheduledAgent | None:
         trigger="",
         target={"limit": 3},
         autonomy="ask-before-run",
+        enabled=False,
         provenance="system",
     )
     await s.save()
@@ -304,22 +311,25 @@ async def _seed_binding(
 async def seed_audit_agents(repository_uid: str) -> list[ScheduledAgent]:
     """Idempotent: the recurring whole-repo audit bindings every repo gets.
 
-    - Weekly FULL deep issue hunt (Mondays 06:00)  — enabled.
-    - Weekly security audit (Mondays 08:00)         — enabled.
-    - Daily deep issue hunt (Tue–Sat 06:00)         — seeded DISABLED; flip
-      `enabled` on to opt into the higher-frequency (higher-cost) daily sweep.
-    - Weekly rotation campaign (Mondays 07:00)      — seeded DISABLED; each
-      due tick plans + launches a rotation campaign over the k least-recently
-      covered areas (run-campaign anchor).
+    ALL seed DISABLED — a new repo fires nothing on its own, and every
+    recurring sweep is an explicit opt-in. Flip `enabled` on to activate:
 
-    All seed with autonomy="ask-before-run": an enabled binding's cron tick
-    proposes a run for approval rather than auto-billing. Dial up to
+    - Weekly FULL deep issue hunt (Mondays 06:00).
+    - Weekly security audit (Mondays 08:00).
+    - Daily deep issue hunt (Tue–Sat 06:00)    — the higher-frequency
+      (higher-cost) alternative to the weekly hunt.
+    - Weekly rotation campaign (Mondays 07:00) — each due tick plans +
+      launches a rotation campaign over the k least-recently covered areas
+      (run-campaign anchor).
+
+    All seed with autonomy="ask-before-run": once enabled, a binding's cron
+    tick proposes a run for approval rather than auto-billing. Dial up to
     auto-run-cheap/auto-run-any for unattended operation.
     """
     seeded: list[ScheduledAgent] = []
     for key, title, trigger, enabled, target in (
-        (DEEP_ISSUE_HUNT_KEY, DEEP_HUNT_WEEKLY_TITLE, "cron:0 6 * * 1", True, {}),
-        (SECURITY_AUDIT_KEY, SECURITY_AUDIT_WEEKLY_TITLE, "cron:0 8 * * 1", True, {}),
+        (DEEP_ISSUE_HUNT_KEY, DEEP_HUNT_WEEKLY_TITLE, "cron:0 6 * * 1", False, {}),
+        (SECURITY_AUDIT_KEY, SECURITY_AUDIT_WEEKLY_TITLE, "cron:0 8 * * 1", False, {}),
         (DEEP_ISSUE_HUNT_KEY, DEEP_HUNT_DAILY_TITLE, "cron:0 6 * * 2-6", False, {}),
         (
             RUN_CAMPAIGN_KEY,
@@ -343,16 +353,18 @@ async def seed_audit_agents(repository_uid: str) -> list[ScheduledAgent]:
 
 
 async def seed_map_areas(repository_uid: str) -> list[ScheduledAgent]:
-    """Idempotent: the two map-areas bindings every repo gets.
+    """Idempotent: the two map-areas bindings every repo gets, both DISABLED.
 
-    - "Map areas" — INERT (trigger=""), enabled: the manual anchor the UI's
-      trigger endpoint dispatches; no cron ever fires it.
-    - "Monthly area-map refresh" (1st of the month 05:00) — seeded DISABLED;
-      flip `enabled` on to opt into the recurring re-map.
+    - "Map areas" — INERT (trigger=""): the manual anchor the UI's trigger
+      endpoint dispatches; no cron ever fires it. Seeded disabled so a new
+      repo shows nothing active, which costs it nothing — the manual dispatch
+      path (dispatch.trigger_scheduled_agent) does not check `enabled`.
+    - "Monthly area-map refresh" (1st of the month 05:00) — flip `enabled` on
+      to opt into the recurring re-map.
     """
     seeded: list[ScheduledAgent] = []
     for title, trigger, enabled in (
-        (MAP_AREAS_TITLE, "", True),
+        (MAP_AREAS_TITLE, "", False),
         (MAP_AREAS_MONTHLY_TITLE, "cron:0 5 1 * *", False),
     ):
         s = await _seed_binding(

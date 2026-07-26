@@ -74,10 +74,13 @@ export const useAreaStore = defineStore('areas', () => {
   async function acceptEdit(uid: string): Promise<AcceptAreaEditResponse> {
     const result = await apiPost<AcceptAreaEditResponse>(`/area-edits/${uid}/accept`)
     edits.value = edits.value.filter((e) => e.uid !== uid)
+    // A retirement of a never-mapped area resolves the edit and creates nothing.
     const area = result.area
-    areas.value = areas.value.some((a) => a.uid === area.uid)
-      ? areas.value.map((a) => (a.uid === area.uid ? area : a))
-      : [...areas.value, area].sort((a, b) => a.key.localeCompare(b.key))
+    if (area) {
+      areas.value = areas.value.some((a) => a.uid === area.uid)
+        ? areas.value.map((a) => (a.uid === area.uid ? area : a))
+        : [...areas.value, area].sort((a, b) => a.key.localeCompare(b.key))
+    }
     return result
   }
 

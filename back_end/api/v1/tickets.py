@@ -11,15 +11,17 @@ from pydantic import BaseModel, Field
 from api.dependencies import get_current_user, require_role
 from domains.tenancy import org_repo_uids, require_repo_in_org
 from domains.tickets.schemas import (
+    CreateEpicRequest,
     CreateTicketRequest,
-    GroupTicketsRequest,
     LinkFindingRequest,
     LinkPullRequestRequest,
+    PlanEpicsRequest,
     TicketDetailDTO,
     TicketDTO,
     TransitionTicketRequest,
     UpdateTicketRequest,
 )
+from domains.tickets.services.epics.schemas import MAX_RATIONALE_CHARS
 from domains.tickets.services.ticket_service import TicketService, ticket_to_dto
 from domains.users.schemas import UserDTO
 
@@ -51,18 +53,18 @@ async def list_tickets(
     return tickets
 
 
-# ── Grouping — batch related tickets under one parent ───────────────────────
+# ── Grouping — epic related tickets under one parent ───────────────────────
 
 
-@router.post("/group", response_model=TicketDTO, operation_id="opensweep_ticket_group")
-async def group_tickets(
-    req: GroupTicketsRequest, user: UserDTO = Depends(require_role("maintainer"))
+@router.post("/epics", response_model=TicketDTO, operation_id="opensweep_ticket_create_epic")
+async def create_epic(
+    req: CreateEpicRequest, user: UserDTO = Depends(require_role("maintainer"))
 ):
-    """Group ≥2 tickets under a new parent ticket so the batch can be
+    """Group ≥2 tickets under a new parent ticket so the epic can be
     approved and implemented as one unit. Members keep their own status; the
     parent is born in backlog (Gate 1 stays human-only)."""
     await require_repo_in_org(req.repository_uid, user.org_uid)
-    parent = await TicketService().group_tickets(
+    parent = await TicketService().create_epic(
         repository_uid=req.repository_uid,
         title=req.title,
         description=req.description,
@@ -75,11 +77,45 @@ async def group_tickets(
     return ticket_to_dto(parent)
 
 
-class ProposeGroupsRequest(BaseModel):
+class SuggestEpicsRequest(BaseModel):
     repository_uid: str = Field(min_length=1)
+    #: conservative | balanced | exhaustive — how readily the agent epics.
+    aggressiveness: str = "balanced"
 
 
-def _build_group_proposal_intent(tickets: list[TicketDTO], repository_uid: str) -> str:
+# How hard to push for epics. The old prompt hardcoded the `conservative`
+# stance ("a wrong grouping is worse than no grouping", "at most 4") and then
+# people wondered why so few groups came back — the answer was in the prompt,
+# not the model. Now it is a dial, and the default admits that a rejected
+# proposal costs one click while a missed epic costs a whole extra PR.
+_GROUPING_STANCES: dict[str, str] = {
+    "conservative": (
+        "Propose an epic only when the shared cause is explicit in the code. "
+        "A wrong grouping is worse than no grouping. At most 3 epics of 2-6 "
+        "tickets; leave anything doubtful ungrouped."
+    ),
+    "balanced": (
+        "Propose an epic when the shared cause is supported by code you have "
+        "actually read. At most 6 epics of 2-6 tickets. A human rejects a "
+        "wrong epic in one click, so a plausible epic you can evidence is "
+        "worth proposing — but a guess you cannot point at code for is not."
+    ),
+    "exhaustive": (
+        "Find every shared cause you can evidence, including ones spanning "
+        "distant parts of the tree. At most 10 epics of 2-8 tickets. Prefer "
+        "proposing a supportable epic over leaving tickets unexamined; the "
+        "human review gate is the filter, not your caution."
+    ),
+}
+
+GROUPING_AGGRESSIVENESS = frozenset(_GROUPING_STANCES)
+
+
+def _build_epic_proposal_intent(
+    tickets: list[TicketDTO],
+    repository_uid: str,
+    aggressiveness: str = "balanced",
+) -> str:
     lines = []
     for t in tickets:
         desc = (t.description or "").strip().replace("\n", " ")
@@ -93,13 +129,22 @@ def _build_group_proposal_intent(tickets: list[TicketDTO], repository_uid: str) 
             f"  description: {desc or '(none)'}"
         )
     listing = "\n".join(lines)
+    stance = _GROUPING_STANCES.get(aggressiveness, _GROUPING_STANCES["balanced"])
     return (
-        "Analyze the open tickets below and propose which of them should be "
-        "grouped into batches — sets of tickets that touch the same subsystem, "
-        "the same files, or share one theme, so a single implement run (one PR "
-        "or a small series) can pick up the whole batch instead of one PR per "
-        "ticket. This is read-only against the repository — do not modify any "
-        "code.\n"
+        "Analyze the open tickets below and propose which of them share an "
+        "underlying ROOT CAUSE — one defect, one missing abstraction, or one "
+        "bad assumption that is showing up in several places — so a single "
+        "implement run can fix the cause once instead of patching each "
+        "symptom in its own PR. This is read-only against the repository — do "
+        "not modify any code.\n"
+        "\n"
+        "Group ONLY on shared root cause. Do not group on shared files, "
+        "shared subsystem, shared area, shared label, or shared theme: the "
+        "platform already computes those groupings exactly, without a model, "
+        "and an epic you propose on one of those axes is duplicated work that "
+        "a human then has to review. Your judgment is wanted for the one thing "
+        "arithmetic cannot see — that these different-looking tickets are the "
+        "same bug wearing different clothes.\n"
         "\n"
         f"Repository uid: {repository_uid}\n"
         "\n"
@@ -107,34 +152,39 @@ def _build_group_proposal_intent(tickets: list[TicketDTO], repository_uid: str) 
         f"{listing}\n"
         "\n"
         "Task:\n"
-        "1. Read the code the tickets touch to judge which ones genuinely "
-        "belong together. Overlapping files or one shared root cause are "
-        "strong signals; a vague thematic echo is not.\n"
-        "2. For each coherent batch of 2-6 tickets, call "
-        "`opensweep_platform_propose_ticket_group` with the repository_uid, a "
-        "short `title` for the batch, a `rationale` explaining why these "
-        "tickets should ship together (cite the shared files/subsystem), the "
-        "`member_ticket_uids`, and optionally `suggested_labels` and "
-        "`suggested_priority`.\n"
-        "3. Leave tickets that do not clearly belong to a batch ungrouped — "
-        "a wrong grouping is worse than no grouping. Propose at most 4 "
-        "groups, and never place one ticket in two groups.\n"
+        "1. Read the code the tickets touch. Look for the shared cause: the "
+        "same helper misused in five call sites, one missing validation that "
+        "several tickets each work around, one type that should have made a "
+        "class of bugs impossible.\n"
+        f"2. {stance}\n"
+        "3. For each epic, call `opensweep_platform_propose_epic` "
+        "with the repository_uid, a short `title`, `member_ticket_uids`, "
+        "`axis='root-cause'`, and `evidence` — a small object naming the "
+        "cause and the code that proves it, e.g. "
+        '{"root_cause": "callers must remember to await close()", '
+        '"shared_paths": ["a/b.py", "c/d.py"]}. Optionally '
+        "`suggested_labels` and `suggested_priority`.\n"
+        f"4. Keep `rationale` to ONE sentence under {MAX_RATIONALE_CHARS} "
+        "characters — it is rendered on a single line in the review list, and "
+        "longer text is truncated, not shown. Put the specifics in "
+        "`evidence`, which is rendered structurally.\n"
+        "5. Never place one ticket in two epics.\n"
         "Do not create tickets, do not change ticket statuses, and do not "
         "file findings. A human reviews every proposal: approval creates the "
         "parent ticket with your members as subtickets; rejection discards it."
     )
 
 
-@router.post("/propose-groups", operation_id="opensweep_ticket_propose_groups")
-async def propose_ticket_groups(
-    req: ProposeGroupsRequest, user: UserDTO = Depends(require_role("maintainer"))
+@router.post("/suggest-epics", operation_id="opensweep_ticket_suggest_epics")
+async def suggest_epics(
+    req: SuggestEpicsRequest, user: UserDTO = Depends(require_role("maintainer"))
 ) -> dict:
     """Dispatch a read-only run that analyzes ungrouped backlog/todo tickets
-    and proposes groupings via `opensweep_platform_propose_ticket_group`. Every
+    and proposes groupings via `opensweep_platform_propose_epic`. Every
     proposal is human-approved before anything changes."""
+    from domains.run_policies.services.effort import ensure_policy_for_effort
     from domains.runs.schemas import Effort, RunTrigger
     from domains.runs.services.lifecycle import LifecycleError, trigger_run
-    from domains.run_policies.services.effort import ensure_policy_for_effort
     from infrastructure.audit import write_audit
 
     await require_repo_in_org(req.repository_uid, user.org_uid)
@@ -160,13 +210,15 @@ async def propose_ticket_groups(
         agent_key="refine",
         stage="refine",
         repo_guidance="",
-        custom_intent=_build_group_proposal_intent(candidates, req.repository_uid),
+        custom_intent=_build_epic_proposal_intent(
+            candidates, req.repository_uid, req.aggressiveness
+        ),
         org_uid=user.org_uid,
     )
     intent = composed.text
     policy = await ensure_policy_for_effort(Effort.NORMAL)
     await write_audit(
-        kind="ticket_group.propose.requested",
+        kind="epic.propose.requested",
         subject_uid=req.repository_uid,
         subject_type="Repository",
         actor_uid=user.uid,
@@ -192,7 +244,29 @@ async def propose_ticket_groups(
     }
 
 
-@router.post("/{uid}/ungroup", operation_id="opensweep_ticket_ungroup")
+@router.post("/plan-epics", operation_id="opensweep_ticket_plan_epics")
+async def build_ticket_epics(
+    req: PlanEpicsRequest, user: UserDTO = Depends(require_role("maintainer"))
+) -> dict:
+    """Select tickets by rule and cut them into epics on a COMPUTED axis —
+    no agent, no run, answers immediately.
+
+    This is the "top X issues in Y runs" path. Six of the eight axes (area,
+    feature, files, lens, class, linked) are arithmetic over data the tickets
+    already carry, so asking a model to eyeball them only added latency and
+    variance. `root-cause` is the exception and still goes through
+    `POST /propose-groups`.
+
+    `dry_run` returns the identical plan without persisting, so the counts a
+    reviewer approves against come from the code that builds them.
+    """
+    from domains.tickets.services.epics.builder import plan_epics
+
+    await require_repo_in_org(req.repository_uid, user.org_uid)
+    return await plan_epics(req, actor_uid=user.uid)
+
+
+@router.post("/{uid}/dissolve-epic", operation_id="opensweep_ticket_dissolve_epic")
 async def ungroup_ticket(
     uid: str, user: UserDTO = Depends(require_role("maintainer"))
 ) -> dict:
@@ -206,9 +280,9 @@ async def ungroup_ticket(
 
 
 @router.post(
-    "/{uid}/remove-from-group",
+    "/{uid}/remove-from-epic",
     response_model=TicketDTO,
-    operation_id="opensweep_ticket_remove_from_group",
+    operation_id="opensweep_ticket_remove_from_epic",
 )
 async def remove_ticket_from_group(
     uid: str, user: UserDTO = Depends(require_role("maintainer"))
@@ -324,6 +398,23 @@ async def implement_ticket(uid: str, user: UserDTO = Depends(require_role("maint
             status_code=409,
             detail="this ticket has an active thread — approve implementation from the thread instead",
         )
+    # A `parallel-runs` epic parent is a rollup, not a work item: its members
+    # each get their own branch and PR from the epic tick. Implementing the
+    # parent directly would inject the group addendum and produce ONE PR
+    # covering every member — silently the opposite of the shape the reviewer
+    # approved, and racing the per-member runs for the same files.
+    from domains.tickets.models import EpicProposal
+
+    for p in await EpicProposal.nodes.filter(created_ticket_uid=uid):
+        if (p.shape or "single-pr") == "parallel-runs" and p.status == "approved":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "this ticket is a parallel-runs epic parent — its members are "
+                    "dispatched individually by the epic tick; implement a member "
+                    "instead"
+                ),
+            )
     try:
         run = await trigger_implement_run(ticket, triggered_by=user.uid)
     except LifecycleError as exc:

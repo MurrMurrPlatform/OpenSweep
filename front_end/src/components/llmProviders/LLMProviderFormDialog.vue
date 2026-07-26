@@ -2,6 +2,7 @@
 import { computed, reactive, watch } from 'vue'
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -33,6 +34,7 @@ const form = reactive({
   label: '',
   model: '',
   base_url: '',
+  max_concurrent_runs: 5,
   enabled: true,
   active: false,
   credential_secret: '',          // write-only; never pre-filled
@@ -45,6 +47,7 @@ watch(() => props.open, (val) => {
   form.label = p.label
   form.model = p.model || ''
   form.base_url = p.base_url || ''
+  form.max_concurrent_runs = p.max_concurrent_runs ?? 5
   form.enabled = p.enabled
   form.active = p.active
   form.credential_secret = ''
@@ -58,6 +61,7 @@ function onSubmit() {
     label: form.label,
     model: form.model,
     base_url: form.base_url,
+    max_concurrent_runs: Math.max(Math.trunc(form.max_concurrent_runs) || 1, 1),
     enabled: form.enabled,
     active: form.active,
   }
@@ -81,7 +85,7 @@ function onSubmit() {
         </DialogDescription>
       </DialogHeader>
 
-      <div class="flex flex-col gap-3 max-h-[60vh] overflow-y-auto -mx-6 px-6">
+      <DialogBody class="flex flex-col gap-3">
         <div class="flex flex-col gap-1.5">
           <Label for="provider-label">Label</Label>
           <Input id="provider-label" v-model="form.label" />
@@ -95,6 +99,26 @@ function onSubmit() {
         <div v-if="meta?.needs_base_url" class="flex flex-col gap-1.5">
           <Label for="provider-base-url">Server URL</Label>
           <Input id="provider-base-url" v-model="form.base_url" class="font-mono" :placeholder="meta?.default_base_url" />
+        </div>
+
+        <div class="flex flex-col gap-1.5">
+          <Label for="provider-max-concurrent">Max concurrent runs</Label>
+          <Input
+            id="provider-max-concurrent"
+            v-model.number="form.max_concurrent_runs"
+            type="number"
+            min="1"
+            class="max-w-32"
+          />
+          <p class="text-xs text-muted-foreground">
+            How many runs may use this provider at once, across every campaign.
+            Campaign dispatch stops at whichever is tighter — this or the
+            campaign's own max parallel.
+            <span v-if="provider?.kind === 'codex_subscription'" class="text-warn">
+              Codex serializes to one run per subscription while the app-server
+              path is off, so values above 1 only park runs in paused_quota.
+            </span>
+          </p>
         </div>
 
         <!-- Credential section — kind-aware. -->
@@ -145,7 +169,7 @@ function onSubmit() {
           </div>
           <Switch v-model="form.active" />
         </div>
-      </div>
+      </DialogBody>
 
       <DialogFooter>
         <Button variant="ghost" @click="emit('update:open', false)">Cancel</Button>

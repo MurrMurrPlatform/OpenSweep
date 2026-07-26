@@ -18,12 +18,14 @@ from neomodel import adb
 
 from domains.llm_providers.models import LLMProvider
 from domains.llm_providers.schemas import (
+    DEFAULT_MAX_CONCURRENT_RUNS,
     CreateLLMProviderRequest,
     LLMProviderDTO,
     LLMProviderHealth,
     LLMProviderKind,
     UpdateLLMProviderRequest,
     default_cli_template,
+    default_max_concurrent_runs,
     kind_meta,
 )
 from domains.users.schemas import UserDTO
@@ -125,6 +127,11 @@ class LLMProviderService:
             enabled=True if active else req.enabled,
             active=active,
             fallback_priority=int(req.fallback_priority),
+            max_concurrent_runs=(
+                max(int(req.max_concurrent_runs), 1)
+                if req.max_concurrent_runs
+                else default_max_concurrent_runs(req.kind)
+            ),
             notes=req.notes,
             credential_secret=sealed_secret(req.credential_secret or ""),
         )
@@ -163,6 +170,14 @@ class LLMProviderService:
             # Clearing the template (or switching kind without one) means
             # "reset to the platform default for this kind".
             n.cli_command_template = default_cli_template(n.kind)
+        if "max_concurrent_runs" in data:
+            # 0/negative means "back to the kind's default" — a ceiling of
+            # zero would silently stall every campaign on this provider.
+            n.max_concurrent_runs = (
+                max(int(data["max_concurrent_runs"]), 1)
+                if data["max_concurrent_runs"]
+                else default_max_concurrent_runs(n.kind)
+            )
         if make_active:
             n.enabled = True
             await _deactivate_others(n.uid, scope)
@@ -251,6 +266,9 @@ def _to_dto(n: LLMProvider) -> LLMProviderDTO:
         enabled=bool(n.enabled),
         active=bool(getattr(n, "active", False)),
         fallback_priority=int(getattr(n, "fallback_priority", None) or 100),
+        max_concurrent_runs=int(
+            getattr(n, "max_concurrent_runs", None) or DEFAULT_MAX_CONCURRENT_RUNS
+        ),
         notes=n.notes or "",
         has_credential_secret=bool((n.credential_secret or "").strip()),
         needs_reauth=bool(getattr(n, "needs_reauth", False)),

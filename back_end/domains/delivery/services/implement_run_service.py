@@ -37,18 +37,18 @@ from domains.docs.services.doc_freshness import docs_watching_paths
 from domains.execution.schemas import SandboxDTO
 from domains.execution.services.sandbox_service import SandboxService
 from domains.findings.models import Finding
-from domains.runs.models import Run
-from domains.runs.schemas import (
-    ExecutionMode,
-    Executor,
-    Effort,
-    RunTrigger,
-)
-from domains.runs.services.lifecycle import trigger_run
 from domains.repositories.models import Repository
 from domains.repositories.services.repository_service import repository_to_dto
 from domains.repositories.services.workflow import stage_prompt_body
 from domains.run_policies.services.effort import ensure_policy_for_effort
+from domains.runs.models import Run
+from domains.runs.schemas import (
+    Effort,
+    ExecutionMode,
+    Executor,
+    RunTrigger,
+)
+from domains.runs.services.lifecycle import trigger_run
 from domains.tickets.models import Ticket
 from infrastructure.audit import write_audit
 from infrastructure.git_providers import get_provider_client
@@ -166,6 +166,20 @@ async def trigger_implement_run(
     intent_addendum: str = "",
 ) -> Run:
     """Create the write sandbox and dispatch the implement run."""
+    # A group parent's real work is its subtickets, so every dispatch path
+    # must carry them. This lives here rather than in the callers because it
+    # was previously added only by the two Thread paths: a one-shot
+    # `POST /tickets/{uid}/implement` on a group parent produced a run that
+    # implemented the parent's own (usually near-empty) description while
+    # `mark_done_via_merge` still closed every child on merge — an epic
+    # silently shipping as a no-op.
+    from domains.threads.services.intents import build_epic_addendum
+    from domains.tickets.models import Ticket as _Ticket
+
+    children = list(await _Ticket.nodes.filter(parent_ticket_uid=ticket.uid))
+    if children:
+        intent_addendum = (intent_addendum or "") + build_epic_addendum(children)
+
     if (ticket.status or "") not in IMPLEMENTABLE_TICKET_STATUSES:
         raise HTTPException(
             status_code=409,

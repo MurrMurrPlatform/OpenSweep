@@ -145,7 +145,7 @@ async function confirmUngroupAll() {
   ungroupOpen.value = false
   ungrouping.value = true
   try {
-    const result = await store.ungroupTicket(ticket.value.uid)
+    const result = await store.dissolveEpic(ticket.value.uid)
     children.value = []
     toast.success('Group dissolved', `${result.detached} subticket${result.detached === 1 ? '' : 's'} detached`)
   } catch (e) {
@@ -162,7 +162,7 @@ async function leaveGroup() {
   if (!ticket.value || leavingGroup.value) return
   leavingGroup.value = true
   try {
-    ticket.value = await store.removeFromGroup(ticket.value.uid)
+    ticket.value = await store.removeFromEpic(ticket.value.uid)
     toast.success('Removed from group')
   } catch (e) {
     const msg = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)

@@ -500,7 +500,7 @@ def _include_routers(application: FastAPI):
         "api.v1.platform_tools_delivery",
         # Tickets — Phase 2 work management (Gate 1 lives here)
         "api.v1.tickets",
-        "api.v1.ticket_groups",
+        "api.v1.epics",
         "api.v1.platform_tools_tickets",
         # Threads — unified dev flow: one conversation per ticket
         "api.v1.threads",

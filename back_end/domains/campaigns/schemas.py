@@ -4,6 +4,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from domains.campaigns.models import DEFAULT_MAX_PARALLEL
+
 
 class CampaignDTO(BaseModel):
     uid: str
@@ -29,8 +31,12 @@ class CampaignDTO(BaseModel):
     area_prefix: str = ""
     # Part dicts as stored: {idx, kind, title, scope_paths, doc_uids,
     # lens_keys, run_uid, state, file_count, area_keys}.
+    #
+    # Detail reads (to_dto_live) add `run_status` — the part's Run's LIVE
+    # status. `state` is the planner's own 4-value bookkeeping and lags it
+    # by design; render `run_status` when it is present.
     parts: list[dict] = Field(default_factory=list)
-    max_parallel: int = 2
+    max_parallel: int = DEFAULT_MAX_PARALLEL
     created_by: str = ""
     trigger_provenance: str = ""
     summary: dict = Field(default_factory=dict)
@@ -62,8 +68,16 @@ class CreateCampaignRequest(BaseModel):
     # Area-map campaigns only: plan just the areas at or under this key
     # ("" = the whole map; ignored for docs-derived plans).
     area_prefix: str = ""
-    max_parallel: int = 2
+    max_parallel: int = DEFAULT_MAX_PARALLEL
     title: str = ""
+
+
+class UpdateCampaignRequest(BaseModel):
+    """Post-create edits. Only scheduling knobs — the plan itself is fixed
+    at create time (campaign_service.update)."""
+
+    max_parallel: int | None = None
+    title: str | None = None
 
 
 class CampaignAreaPreview(BaseModel):

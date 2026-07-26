@@ -104,7 +104,9 @@ async def accept_area_edit(
     e = await area_service.get_area_edit(uid)
     await require_repo_in_org(e.repository_uid, user.org_uid)
     a, warnings = await area_service.accept_area_edit(uid, actor=user.uid)
-    return AcceptAreaEditResponse(area=area_service.area_to_dto(a), warnings=warnings)
+    return AcceptAreaEditResponse(
+        area=area_service.area_to_dto(a) if a else None, warnings=warnings
+    )
 
 
 @router.post("/area-edits/{uid}/reject", operation_id="opensweep_reject_area_edit")

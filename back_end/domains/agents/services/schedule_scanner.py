@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from croniter import croniter
 from fastapi import HTTPException
@@ -29,11 +29,11 @@ def is_due(expression: str, *, last: datetime | None, now: datetime) -> bool:
         raise ValueError(f"invalid crontab: {expression!r}")
     prev_fire = croniter(expression, now).get_prev(datetime)
     if prev_fire.tzinfo is None:
-        prev_fire = prev_fire.replace(tzinfo=timezone.utc)
+        prev_fire = prev_fire.replace(tzinfo=UTC)
     if last is None:
         return prev_fire <= now
     if last.tzinfo is None:
-        last = last.replace(tzinfo=timezone.utc)
+        last = last.replace(tzinfo=UTC)
     return prev_fire > last
 
 
@@ -50,7 +50,7 @@ async def scan_and_dispatch(*, now: datetime | None = None) -> ScanResult:
     from domains.agents.services.dispatch import trigger_scheduled_agent
     from domains.runs.services.lifecycle import LifecycleError
 
-    moment = now or datetime.now(timezone.utc)
+    moment = now or datetime.now(UTC)
     result = ScanResult()
     for sa in await ScheduledAgent.nodes.all():
         if not sa.enabled:
@@ -114,6 +114,7 @@ async def scan_and_dispatch(*, now: datetime | None = None) -> ScanResult:
                 sa.last_scheduled_at = moment
                 await sa.save()
                 continue
+            from domains.campaigns.models import DEFAULT_MAX_PARALLEL
             from domains.campaigns.schemas import CreateCampaignRequest
             from domains.campaigns.services import campaign_service
 
@@ -131,7 +132,9 @@ async def scan_and_dispatch(*, now: datetime | None = None) -> ScanResult:
                         lens_keys=[str(k) for k in (tgt.get("lens_keys") or [])],
                         effort=str(tgt.get("effort") or ""),
                         area_prefix=str(tgt.get("area_prefix") or ""),
-                        max_parallel=int(tgt.get("max_parallel") or 2),
+                        max_parallel=int(
+                            tgt.get("max_parallel") or DEFAULT_MAX_PARALLEL
+                        ),
                     ),
                     created_by=f"scheduled-agent:{sa.uid}",
                     trigger_provenance=sa.trigger or "",

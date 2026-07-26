@@ -29,6 +29,7 @@ app = Celery(
         "domains.execution.tasks.cleanup_sandboxes",
         "domains.agents.tasks.schedule_tick",
         "domains.campaigns.tasks.campaign_tick",
+        "domains.tickets.tasks.epic_tick",
         "domains.runs.tasks.resume_paused",
         "domains.runs.tasks.reconcile_runs",
         "domains.runs.tasks.dispatch_runs",
@@ -66,6 +67,15 @@ app.conf.update(
         "campaign-tick": {
             "task": "opensweep.campaigns.tick",
             "schedule": 60.0,  # every minute — parts chain promptly
+        },
+        # Fan an approved epic out into implement runs, bounded by the
+        # epic's own max_parallel AND the provider's headroom (the tighter
+        # wins). Only epics a human approved are ever dispatched — the tick
+        # starts nothing on its own, and it ignores rows whose dispatch_state
+        # is empty (approved before epic dispatch existed).
+        "epic-tick": {
+            "task": "opensweep.tickets.epic_tick",
+            "schedule": 60.0,  # every minute — members chain promptly
         },
         # Quota pause/resume (PLATFORM_V2_DESIGN.md §8): the beat task only
         # SELECTS eligible paused runs and enqueues one

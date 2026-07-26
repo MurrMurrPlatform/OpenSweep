@@ -88,16 +88,30 @@ NEW:
       <DialogTitle>T</DialogTitle>
       <DialogDescription>D</DialogDescription>
     </DialogHeader>
-    …body…
+    <DialogBody>…body…</DialogBody>
     <DialogFooter>…buttons…</DialogFooter>
   </DialogContent>
 </Dialog>
 ```
 - `v-model:open` replaces `:open` + `@update:open` + `@close` (call the old
   close handler inside `@update:open` when it did more than set the flag).
-- Long bodies: wrap body in `<div class="max-h-[60vh] overflow-y-auto -mx-6 px-6">`
-  or use `<ScrollArea>`.
-- For confirmation dialogs prefer `AlertDialog` (+`AlertDialogAction/Cancel`).
+- **Scrolling is handled by the primitives — do NOT add your own `max-h-[60vh]`
+  or `overflow-y-auto` wrapper.** `DialogContent` caps itself at
+  `100dvh - 2rem` and scrolls as a whole; wrap the body in `<DialogBody>` to
+  get the better behaviour (header + footer stay pinned, only the body
+  scrolls). `DialogBody` already bleeds the `-mx-6 px-6` padding, so pass it
+  only layout classes (`class="space-y-3"`, `class="flex flex-col gap-3"`).
+- `DialogContent` is a **flex column**, is `w-[calc(100%-2rem)]` (so phones get
+  a side gutter), and sets `min-w-0` on its direct children so long unbreakable
+  strings wrap instead of pushing the dialog off-screen. Genuinely wide content
+  (code, diffs, tables) still needs its own `overflow-x-auto`.
+- Only pass width classes to `DialogContent` (`sm:max-w-2xl`). Padding lives on
+  the inner scroll wrapper, so `class="p-0"` on `DialogContent` does nothing.
+- A custom scrolling region inside a dialog needs `min-h-0 flex-1` on itself
+  *and* on every flex ancestor up to `DialogContent` — without `min-h-0` a flex
+  child refuses to shrink and the content overflows instead of scrolling.
+- For confirmation dialogs prefer `AlertDialog` (+`AlertDialogAction/Cancel`) —
+  it gets the same viewport cap and gutter.
 
 ### Select (compound now — was native select with :options)
 OLD: `<Select v-model="v" :options="opts" placeholder="…" />`

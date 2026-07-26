@@ -24,6 +24,12 @@ class TicketDTO(BaseModel):
     status: TicketStatus = TicketStatus.BACKLOG
     priority: str = "medium"
     size: str = ""
+    # Denormalized from the origin finding — the epic axes. See
+    # Ticket.severity in models.py for why these are not joined on demand.
+    severity: str = ""
+    kind: str = ""
+    tags: list[str] = Field(default_factory=list)
+    subtype: str = ""
     origin: str = "human"
     origin_finding_uid: str = ""
     parent_ticket_uid: str = ""
@@ -60,6 +66,13 @@ class CreateTicketRequest(BaseModel):
     origin_finding_uid: str = ""
     parent_ticket_uid: str = ""
     assignee_uid: str = ""
+    # Normally derived from `origin_finding_uid` by the service; accepted
+    # explicitly so callers that already hold the finding (bulk promote) can
+    # skip the re-read.
+    severity: str = ""
+    kind: str = ""
+    tags: list[str] = Field(default_factory=list)
+    subtype: str = ""
 
 
 class UpdateTicketRequest(BaseModel):
@@ -88,10 +101,10 @@ class LinkPullRequestRequest(BaseModel):
     pull_request_uid: str = Field(min_length=1)
 
 
-# ── Grouping (parent/subtickets as one implementable batch) ──────────────────
+# ── Grouping (parent/subtickets as one implementable epic) ──────────────────
 
 
-class GroupTicketsRequest(BaseModel):
+class CreateEpicRequest(BaseModel):
     """Group ≥2 existing tickets under a new parent ticket."""
 
     repository_uid: str = Field(min_length=1)
@@ -102,24 +115,81 @@ class GroupTicketsRequest(BaseModel):
     priority: str = "medium"
 
 
-class GroupProposalStatus(str, Enum):
+class EpicProposalStatus(str, Enum):
     PROPOSED = "proposed"
     APPROVED = "approved"
     REJECTED = "rejected"
 
 
-class TicketGroupProposalDTO(BaseModel):
+class EpicProposalDTO(BaseModel):
     uid: str
     repository_uid: str
     title: str
     rationale: str = ""
     member_ticket_uids: list[str] = Field(default_factory=list)
+    #: Member titles resolved server-side, parallel to `member_ticket_uids`.
+    #: The review panel used to look these up against whatever tickets the
+    #: board happened to have loaded, so a filtered-out member rendered as a
+    #: raw uid fragment.
+    member_titles: list[str] = Field(default_factory=list)
     suggested_labels: list[str] = Field(default_factory=list)
     suggested_priority: str = "medium"
-    status: GroupProposalStatus = GroupProposalStatus.PROPOSED
+    #: What makes these belong together, and the structured support for it —
+    #: this is what the card renders as a one-line reason.
+    axis: str = "root-cause"
+    evidence: dict = Field(default_factory=dict)
+    shape: str = "single-pr"
+    plan_uid: str = ""
+    origin: str = "agent"
+    #: "" | pending | dispatching | done | failed — set on approval, advanced
+    #: by the epic tick. "" on an approved row = approved before dispatch
+    #: existed.
+    dispatch_state: str = ""
+    dispatched: list[dict] = Field(default_factory=list)
+    max_parallel: int = 3
+    dispatch_started_at: datetime | None = None
+    last_error: str = ""
+    status: EpicProposalStatus = EpicProposalStatus.PROPOSED
     source_run_uid: str = ""
     created_ticket_uid: str = ""
     reviewed_by: str = ""
     reviewed_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+
+# ── Epic building (deterministic axes — no agent involved) ──────────────────
+
+
+class PlanEpicsRequest(BaseModel):
+    """Select tickets by rule and cut them into epics on a computed axis.
+
+    This is the path that does NOT need a language model: an area key matches
+    or it does not, paths overlap or they do not. It returns proposals
+    synchronously instead of dispatching a run.
+    """
+
+    repository_uid: str = Field(min_length=1)
+    # Selection
+    statuses: list[str] = Field(default_factory=lambda: ["backlog", "todo"])
+    min_priority: str = ""
+    min_severity: str = ""
+    labels: list[str] = Field(default_factory=list)
+    kinds: list[str] = Field(default_factory=list)
+    area_keys: list[str] = Field(default_factory=list)
+    limit: int = Field(default=20, ge=0)
+    sort: str = "priority"
+    # Partition — `max_epics` is the "…in Y runs" knob.
+    axis: str = "area"
+    max_epics: int = Field(default=4, ge=0)
+    min_members: int = Field(default=2, ge=2)
+    max_members: int = Field(default=6, ge=2)
+    #: Preview without persisting anything.
+    dry_run: bool = False
+
+
+class BulkApproveRequest(BaseModel):
+    """Approve several proposals in one action (the single bulk gate)."""
+
+    uids: list[str] = Field(min_length=1)
+

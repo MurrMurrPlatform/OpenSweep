@@ -194,15 +194,17 @@ async function connect(inst: AvailableReposInstallation, repo: AvailableRepo) {
     </EmptyState>
 
     <!-- Repo picker -->
-    <!-- min-w-0: DialogContent is a grid — without it a long unbreakable
-         repo/branch name widens this column past the dialog edge. -->
-    <div v-else-if="data" class="flex min-w-0 flex-col gap-3">
+    <!-- min-w-0: without it a long unbreakable repo/branch name widens this
+         column past the dialog edge. min-h-0 + flex-1: claim the leftover
+         dialog height so the list below gets a real box to scroll inside. -->
+    <div v-else-if="data" class="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
       <div class="relative">
         <Search class="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <Input v-model="query" placeholder="Filter by owner/name…" class="pl-8" />
       </div>
 
-      <div class="flex max-h-[50vh] flex-col gap-4 overflow-y-auto pr-1">
+      <!-- The filter input stays pinned; only the repo list scrolls. -->
+      <div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain pr-1">
         <div v-if="noMatches" class="py-6 text-center text-sm text-muted-foreground">
           No repositories match “{{ query }}”.
         </div>

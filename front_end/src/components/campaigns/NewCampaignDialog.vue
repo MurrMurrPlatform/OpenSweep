@@ -7,6 +7,7 @@ import { useLensStore } from '@/stores/lensStore'
 import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
 import { buildTreeRows } from '@/lib/treeRows'
+import { DEFAULT_MAX_PARALLEL } from '@/lib/campaignStatus'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -57,7 +58,7 @@ const kind = ref<CampaignKind>('subsystem')
 const selection = ref<CampaignSelection>('all')
 const k = ref(3)
 const effort = ref<AgentEffort | 'default'>('default')
-const maxParallel = ref(2)
+const maxParallel = ref(DEFAULT_MAX_PARALLEL)
 const title = ref('')
 const creating = ref(false)
 
@@ -226,7 +227,7 @@ watch(
     selection.value = 'all'
     k.value = 3
     effort.value = 'default'
-    maxParallel.value = 2
+    maxParallel.value = DEFAULT_MAX_PARALLEL
     title.value = ''
     coverageKeys.value = new Set()
     planPreview.value = null

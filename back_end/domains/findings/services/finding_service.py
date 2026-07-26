@@ -27,16 +27,15 @@ from domains.findings.services.dedupe import build_dedupe_key
 from domains.runs.services.run_provider import provider_info_for_run
 from infrastructure.audit import write_audit
 
-_SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+# Imported, not redefined: this ladder had three divergent copies (here,
+# delivery.convergence, tickets.ticket_service). Re-exported because callers
+# and tests already import `severity_rank` from this module.
+from infrastructure.ranking import severity_rank  # noqa: F401
 
 FINDING_SORT_FIELDS = frozenset(
     {"updated_at", "created_at", "severity", "confidence", "title"}
 )
 FINDING_SORT_DIRS = frozenset({"asc", "desc"})
-
-
-def severity_rank(severity: str) -> int:
-    return _SEVERITY_RANK.get(severity, _SEVERITY_RANK["medium"])
 
 
 def sort_findings(
