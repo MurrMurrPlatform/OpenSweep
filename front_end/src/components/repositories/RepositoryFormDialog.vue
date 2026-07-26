@@ -2,6 +2,7 @@
 import { computed, reactive, watch } from 'vue'
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -104,7 +105,7 @@ function onSubmit() {
         <DialogDescription>Connect a GitHub repo to OpenSweep.</DialogDescription>
       </DialogHeader>
 
-      <div class="flex flex-col gap-3 max-h-[60vh] overflow-y-auto -mx-6 px-6">
+      <DialogBody class="flex flex-col gap-3">
         <div class="flex flex-col gap-1">
           <Label for="repo-name">Name</Label>
           <Input id="repo-name" v-model="form.name" placeholder="My project" />
@@ -149,7 +150,7 @@ function onSubmit() {
             </SelectContent>
           </Select>
         </div>
-      </div>
+      </DialogBody>
 
       <DialogFooter>
         <Button variant="ghost" @click="emit('update:open', false)">Cancel</Button>

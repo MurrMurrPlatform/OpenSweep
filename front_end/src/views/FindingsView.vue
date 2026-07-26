@@ -38,6 +38,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Separator } from '@/components/ui/separator'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -58,6 +59,9 @@ const createOpen = ref(false)
 const search = ref('')
 const filter = ref<'all' | 'issues' | 'improvements' | 'proposals'>('all')
 const tagFilter = ref('')
+// Search box inside the "+N more" tag popover — filters the folded-away tags.
+const tagSearch = ref('')
+const tagPopoverOpen = ref(false)
 const severityFilter = ref<'' | Severity>('')
 const statusFilter = ref<FindingStatus | 'all'>('open')
 const sortKey = ref('updated_desc')
@@ -130,11 +134,49 @@ const counts = computed(() => ({
   proposals: all.value.filter((f) => f.kind === 'proposal').length,
 }))
 
-/** Distinct tags across the loaded findings — data-driven filter chips. */
-const allTags = computed(() => {
-  const tags = new Set<string>()
-  for (const f of all.value) for (const t of f.tags || []) tags.add(t)
-  return Array.from(tags).sort()
+/** How many tag chips stay inline before the rest fold into the popover.
+ *  Tag vocabulary grows with the finding count, so an unbounded chip row would
+ *  push the list itself off the screen. */
+const INLINE_TAG_LIMIT = 8
+
+/** Distinct tags across the loaded findings, most frequent first — the common
+ *  tags are the useful filters, and frequency order keeps them stable as new
+ *  findings land. Ties break alphabetically so the row doesn't jitter. */
+const tagCounts = computed(() => {
+  const counts = new Map<string, number>()
+  for (const f of all.value) for (const t of f.tags || []) counts.set(t, (counts.get(t) ?? 0) + 1)
+  return [...counts.entries()]
+    .map(([tag, count]) => ({ tag, count }))
+    .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
+})
+
+/** Inline chips: the top N, plus the active tag pinned in if it ranks lower —
+ *  a selected filter must never be invisible. */
+const inlineTags = computed(() => {
+  const top = tagCounts.value.slice(0, INLINE_TAG_LIMIT)
+  if (tagFilter.value && !top.some((t) => t.tag === tagFilter.value)) {
+    const active = tagCounts.value.find((t) => t.tag === tagFilter.value)
+    if (active) return [...top.slice(0, INLINE_TAG_LIMIT - 1), active]
+  }
+  return top
+})
+
+/** Everything not shown inline, narrowed by the popover's own search box. */
+const overflowTags = computed(() => {
+  const inline = new Set(inlineTags.value.map((t) => t.tag))
+  const rest = tagCounts.value.filter((t) => !inline.has(t.tag))
+  const q = tagSearch.value.trim().toLowerCase()
+  return q ? rest.filter((t) => t.tag.toLowerCase().includes(q)) : rest
+})
+
+// Switching repo or status can retire a tag entirely. Left set, it would filter
+// the list down to nothing with no chip on screen to explain why.
+watch(tagCounts, (tags) => {
+  if (tagFilter.value && !tags.some((t) => t.tag === tagFilter.value)) tagFilter.value = ''
+})
+
+watch(tagPopoverOpen, (open) => {
+  if (!open) tagSearch.value = ''
 })
 
 const items = computed(() => {
@@ -590,22 +632,66 @@ const emptyCopy = computed(() => {
             {{ c.label }}
             <span class="text-muted-foreground">· {{ counts[c.id] }}</span>
           </Button>
-          <template v-if="allTags.length">
+          <template v-if="tagCounts.length">
             <span class="mx-1 hidden h-4 w-px bg-border sm:block" />
             <button
-              v-for="t in allTags"
-              :key="t"
+              v-for="t in inlineTags"
+              :key="t.tag"
               type="button"
               :class="[
                 'rounded-full border px-2.5 py-0.5 text-xs transition-colors',
-                tagFilter === t
+                tagFilter === t.tag
                   ? 'border-primary bg-primary/10 text-primary'
                   : 'border-border text-muted-foreground hover:bg-accent',
               ]"
-              @click="tagFilter = tagFilter === t ? '' : t"
+              @click="tagFilter = tagFilter === t.tag ? '' : t.tag"
             >
-              {{ t }}
+              {{ t.tag }}
+              <span class="ml-1 tabular-nums opacity-60">{{ t.count }}</span>
             </button>
+            <!-- Everything past the inline limit — keeps the row a fixed
+                 height no matter how large the tag vocabulary grows. -->
+            <Popover v-if="tagCounts.length > inlineTags.length" v-model:open="tagPopoverOpen">
+              <PopoverTrigger as-child>
+                <button
+                  type="button"
+                  class="rounded-full border border-dashed border-border px-2.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent"
+                >
+                  +{{ tagCounts.length - inlineTags.length }} more
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="start" class="w-64 p-0">
+                <div class="border-b p-2">
+                  <Input
+                    v-model="tagSearch"
+                    placeholder="Filter tags…"
+                    class="h-8 text-xs"
+                  />
+                </div>
+                <div class="max-h-64 overflow-y-auto overscroll-contain p-2">
+                  <p v-if="!overflowTags.length" class="px-1 py-2 text-xs text-muted-foreground">
+                    No tags match “{{ tagSearch.trim() }}”.
+                  </p>
+                  <div v-else class="flex flex-wrap gap-1.5">
+                    <button
+                      v-for="t in overflowTags"
+                      :key="t.tag"
+                      type="button"
+                      :class="[
+                        'rounded-full border px-2.5 py-0.5 text-xs transition-colors',
+                        tagFilter === t.tag
+                          ? 'border-primary bg-primary/10 text-primary'
+                          : 'border-border text-muted-foreground hover:bg-accent',
+                      ]"
+                      @click="tagFilter = tagFilter === t.tag ? '' : t.tag; tagPopoverOpen = false"
+                    >
+                      {{ t.tag }}
+                      <span class="ml-1 tabular-nums opacity-60">{{ t.count }}</span>
+                    </button>
+                  </div>
+                </div>
+              </PopoverContent>
+            </Popover>
           </template>
         </div>
       </div>
@@ -661,12 +747,21 @@ const emptyCopy = computed(() => {
                 <Badge :variant="severityVariant(f.severity)" class="px-1.5 text-[10px]">{{ f.severity }}</Badge>
                 <Badge variant="outline" class="px-1.5 text-[10px]">{{ f.kind }}</Badge>
                 <span v-if="f.subtype" class="font-mono text-[10px] uppercase text-muted-foreground">{{ f.subtype }}</span>
+                <!-- Capped at 3 — a heavily-tagged finding would otherwise push
+                     its own title off the row. Full list is on the detail page. -->
                 <span
-                  v-for="t in f.tags || []"
+                  v-for="t in (f.tags || []).slice(0, 3)"
                   :key="t"
                   class="rounded-full border px-1.5 py-0 text-[10px] text-muted-foreground"
                 >
                   {{ t }}
+                </span>
+                <span
+                  v-if="(f.tags || []).length > 3"
+                  class="text-[10px] text-muted-foreground"
+                  :title="(f.tags || []).join(', ')"
+                >
+                  +{{ (f.tags || []).length - 3 }}
                 </span>
                 <span v-if="f.created_at" class="ml-auto text-[10px] text-muted-foreground">
                   found {{ formatRelativeTime(f.created_at) }}

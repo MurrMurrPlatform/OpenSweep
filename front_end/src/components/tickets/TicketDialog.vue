@@ -5,6 +5,7 @@ import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -233,7 +234,7 @@ const dialogDescription = computed(() => {
         <DialogDescription>{{ dialogDescription }}</DialogDescription>
       </DialogHeader>
 
-      <div class="max-h-[60vh] space-y-3 overflow-y-auto -mx-6 px-6">
+      <DialogBody class="space-y-3">
         <div class="space-y-1.5">
           <Label for="ticket-repo">Repository</Label>
           <Select
@@ -290,7 +291,7 @@ const dialogDescription = computed(() => {
           <Label for="ticket-labels">Labels (comma-separated)</Label>
           <Input id="ticket-labels" v-model="labelsText" placeholder="e.g. tech-debt, api" />
         </div>
-      </div>
+      </DialogBody>
 
       <DialogFooter>
         <Button variant="ghost" size="sm" @click="emit('update:open', false)">Cancel</Button>

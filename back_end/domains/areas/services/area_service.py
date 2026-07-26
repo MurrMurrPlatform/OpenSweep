@@ -525,22 +525,12 @@ async def propose_area_edit(
     # In-loop partition check: validate against the live enabled areas PLUS
     # this run's other pending proposals — a run mapping the whole repo would
     # otherwise only collide at accept time, long after it can react.
-    rows = [r for r in await _repo_area_rows(repository_uid) if r["key"] != key]
-    if source_run_uid:
-        for other in await AreaEdit.nodes.filter(
-            repository_uid=repository_uid,
-            status="pending",
-            source_run_uid=source_run_uid,
-        ):
-            if other.uid != e.uid and (other.key or "") != key:
-                rows.append(
-                    {
-                        "key": other.key or "",
-                        "kind": other.kind or "subsystem",
-                        "scope_paths": list(other.scope_paths or []),
-                        "enabled": bool(getattr(other, "proposed_enabled", True)),
-                    }
-                )
+    rows = await _partition_rows(
+        repository_uid=repository_uid,
+        key=key,
+        source_run_uid=source_run_uid,
+        exclude_edit_uid=e.uid,
+    )
     warnings = validate_area_edit(e, rows) if enabled else []
     e.warnings = warnings  # persist so the review queue shows them before accept
     await e.save()
@@ -610,6 +600,10 @@ def validate_area_fields(
     """
     warnings: list[str] = []
     kind = kind or "subsystem"
+    enabled = [a for a in existing_areas if a.get("enabled", True)]
+    enabled_keys = [a["key"] for a in enabled if a.get("key")]
+    # Key hygiene is kind-independent — check it before the per-kind returns.
+    warnings.extend(_faked_nesting_warnings(key, enabled_keys))
     if kind in ("ignore", "feature_ignore") and not (spec or "").strip():
         warnings.append(
             f"{kind} area without a reason — the spec should say why these "
@@ -624,8 +618,6 @@ def validate_area_fields(
         warnings.extend(_feature_span_warnings(scope_paths, existing_areas))
         return warnings
 
-    enabled = [a for a in existing_areas if a.get("enabled", True)]
-    enabled_keys = [a["key"] for a in enabled if a.get("key")]
     if not is_leaf(key, enabled_keys):
         return warnings  # groupings don't own files; their children do
 
@@ -648,6 +640,48 @@ def validate_area_fields(
                         f"scope '{scope}' overlaps leaf '{other_key}' ('{other_scope}')"
                     )
     return warnings
+
+
+def _faked_nesting_warnings(key: str, other_keys: list[str]) -> list[str]:
+    """Sibling keys that share a leading dash-segment are faked nesting.
+
+    "/" is the only hierarchy separator the map understands, so
+    "subsystem-api-core" beside "subsystem-api-layer" reads as two unrelated
+    top-level leaves. That is not cosmetic: `child_key_prefix_of` needs the "/"
+    boundary, so the parent/child exemption in the overlap check never fires
+    and a broad area's scope collides with every key that should have been its
+    child. Only same-parent siblings are compared — "backend/api-core" and
+    "billing/api-core" share nothing but a name.
+    """
+    parent, _, leaf = key.rpartition("/")
+    segments = leaf.split("-")
+    if len(segments) < 2:
+        return []  # a single-segment leaf fakes nothing
+    shared_best: list[str] = []
+    for other in other_keys:
+        other_parent, _, other_leaf = other.rpartition("/")
+        if other == key or other_parent != parent:
+            continue
+        shared: list[str] = []
+        for mine, theirs in zip(segments, other_leaf.split("-")):
+            if mine != theirs:
+                break
+            shared.append(mine)
+        # key is an ancestor of `other` here — `other` is the one to rename.
+        if len(shared) == len(segments):
+            continue
+        if len(shared) > len(shared_best):
+            shared_best = shared
+    if not shared_best:
+        return []
+    prefix = f"{parent}/" if parent else ""
+    ancestor = "-".join(shared_best)
+    nested = f"{ancestor}/" + "-".join(segments[len(shared_best):])
+    return [
+        f"key '{key}' fakes nesting with a dash — '/' is the only hierarchy "
+        f"separator; propose '{prefix}{nested}' so it nests under "
+        f"'{prefix}{ancestor}'"
+    ]
 
 
 def _feature_span_warnings(
@@ -698,18 +732,82 @@ async def _repo_area_rows(repository_uid: str) -> list[dict]:
     ]
 
 
-async def accept_area_edit(uid: str, *, actor: str = "human") -> tuple[Area, list[str]]:
+async def _partition_rows(
+    *,
+    repository_uid: str,
+    key: str,
+    source_run_uid: str,
+    exclude_edit_uid: str = "",
+) -> list[dict]:
+    """The map one edit is judged against: the live areas plus the still-pending
+    proposals from its own batch, minus the edit's own key.
+
+    Propose and accept both validate through this, so an edit's warnings do not
+    change between the two. A mapping run proposes its subsystems and the
+    features overlaying them as ONE batch; judging a feature against only the
+    areas already committed makes the warnings depend on accept order, and the
+    review queue hands them back newest-first — features before the subsystems
+    that anchor them. That ordering alone used to flag every correctly-anchored
+    feature as "overlaps no subsystem leaf".
+    """
+    rows = [r for r in await _repo_area_rows(repository_uid) if r["key"] != key]
+    if not source_run_uid:
+        return rows
+    for other in await AreaEdit.nodes.filter(
+        repository_uid=repository_uid,
+        status="pending",
+        source_run_uid=source_run_uid,
+    ):
+        if other.uid == exclude_edit_uid or (other.key or "") == key:
+            continue
+        rows.append(
+            {
+                "key": other.key or "",
+                "kind": other.kind or "subsystem",
+                "scope_paths": list(other.scope_paths or []),
+                "enabled": bool(getattr(other, "proposed_enabled", True)),
+            }
+        )
+    return rows
+
+
+async def accept_area_edit(
+    uid: str, *, actor: str = "human"
+) -> tuple[Area | None, list[str]]:
     """Apply a pending AreaEdit (creating the Area for new-area proposals).
 
     On an existing area, spec/scope_paths/doc_uids are FULL REPLACEMENT —
     an empty value clears the field (the edit carries the area's next
     shape). key/kind/title keep the existing value when the edit leaves
     them empty; that IS intentional: an empty string there means "keep",
-    never "erase"."""
+    never "erase".
+
+    Returns the resulting Area, or None when the edit retired an area that
+    was never mapped — accepting "this should not exist" creates nothing."""
     e = await get_area_edit(uid)
     if e.status != "pending":
         raise HTTPException(status_code=409, detail=f"AreaEdit is {e.status}, not pending")
     now = datetime.now(UTC)
+    proposed_enabled = bool(getattr(e, "proposed_enabled", True))
+    if not e.area_uid and not proposed_enabled:
+        # A run that proposed an area and then thought better of it re-proposes
+        # the same key with enabled=false, replacing its own pending edit. On a
+        # first map run there is no Area behind that key, so there is nothing to
+        # retire — resolve the edit and create nothing. (create_area takes no
+        # `enabled`, so routing this through it would materialise the area the
+        # agent just disowned, enabled.)
+        e.status = "accepted"
+        e.resolved_by = actor
+        e.resolved_at = now
+        await e.save()
+        await write_audit(
+            kind="area_edit.accepted",
+            subject_uid=e.uid,
+            subject_type="AreaEdit",
+            actor_uid=actor,
+            payload={"area_uid": "", "key": e.key, "retired_unmapped": True},
+        )
+        return None, []
     if e.area_uid:
         a = await Area.nodes.get_or_none(uid=e.area_uid)
         if a is None:
@@ -724,7 +822,7 @@ async def accept_area_edit(uid: str, *, actor: str = "human") -> tuple[Area, lis
             a.title = e.title
         a.scope_paths = list(e.scope_paths or [])
         a.doc_uids = list(e.doc_uids or [])
-        a.enabled = bool(getattr(e, "proposed_enabled", True))
+        a.enabled = proposed_enabled
         a.updated_at = now
         _mark_reviewed(a, now)  # an accepted edit counts as a review
         await a.save()
@@ -743,7 +841,12 @@ async def accept_area_edit(uid: str, *, actor: str = "human") -> tuple[Area, lis
         )
     warnings = validate_area_edit(
         e,
-        [r for r in await _repo_area_rows(e.repository_uid) if r["key"] != a.key],
+        await _partition_rows(
+            repository_uid=e.repository_uid,
+            key=a.key,
+            source_run_uid=getattr(e, "source_run_uid", "") or "",
+            exclude_edit_uid=e.uid,
+        ),
     )
     e.status = "accepted"
     e.area_uid = a.uid

@@ -18,6 +18,7 @@ from fastapi import HTTPException
 from domains.campaigns.models import (
     CAMPAIGN_KINDS,
     CAMPAIGN_TEMPLATES,
+    DEFAULT_MAX_PARALLEL,
     Campaign,
     is_legal_status_transition,
 )
@@ -45,7 +46,7 @@ def to_dto(c: Campaign) -> CampaignDTO:
         k=int(getattr(c, "k", 3) or 3),
         area_prefix=str(getattr(c, "area_prefix", "") or ""),
         parts=[dict(p) for p in (c.parts or [])],
-        max_parallel=int(c.max_parallel or 2),
+        max_parallel=int(c.max_parallel or DEFAULT_MAX_PARALLEL),
         created_by=c.created_by or "",
         trigger_provenance=c.trigger_provenance or "",
         summary=dict(c.summary or {}),
@@ -56,10 +57,79 @@ def to_dto(c: Campaign) -> CampaignDTO:
     )
 
 
+async def _run_statuses(run_uids: list[str]) -> dict[str, str]:
+    """Live Run.status for the given uids, in one query."""
+    if not run_uids:
+        return {}
+    from neomodel import adb
+
+    rows, _ = await adb.cypher_query(
+        "MATCH (r:Run) WHERE r.uid IN $uids RETURN r.uid, r.status",
+        {"uids": run_uids},
+    )
+    return {uid: (status or "") for uid, status in rows}
+
+
+async def to_dto_live(c: Campaign) -> CampaignDTO:
+    """`to_dto` plus each part's LIVE run status.
+
+    A part's `state` is the PLANNER's bookkeeping — a 4-value vocabulary
+    that only moves forward, written once a minute by the tick, and frozen
+    entirely once the campaign leaves `running`. That is correct for
+    deciding what to dispatch next and wrong for showing a human what their
+    run is doing: `awaiting_input` reads as `done`, a replied-to run stays
+    `done`, and a cancelled campaign's parts stay `running` forever while
+    the Runs carry on.
+
+    So the DTO carries both: `state` for the planner, `run_status` for the
+    UI, which renders `run_status` when present. Detail reads only — the
+    list endpoint would turn one query into N.
+    """
+    dto = to_dto(c)
+    statuses = await _run_statuses(
+        [str(p.get("run_uid")) for p in dto.parts if p.get("run_uid")]
+    )
+    for part in dto.parts:
+        status = statuses.get(str(part.get("run_uid") or ""))
+        if status:
+            part["run_status"] = status
+    return dto
+
+
 async def get(uid: str) -> Campaign:
     c = await Campaign.nodes.get_or_none(uid=uid)
     if c is None:
         raise HTTPException(status_code=404, detail=f"Campaign {uid} not found")
+    return c
+
+
+async def update(uid: str, req, *, actor_uid: str = "") -> Campaign:
+    """Edit a live campaign's knobs. Only `max_parallel` and `title`.
+
+    Everything else (kind, selection, lens_keys, …) is baked into the plan
+    at create time — changing it after the fact would leave `parts`
+    describing work nobody asked for. `max_parallel` is pure scheduling, so
+    the next tick just picks it up.
+    """
+    c = await get(uid)
+    changed: dict = {}
+    if req.max_parallel is not None:
+        value = max(int(req.max_parallel), 1)
+        if value != int(c.max_parallel or DEFAULT_MAX_PARALLEL):
+            c.max_parallel = value
+            changed["max_parallel"] = value
+    if req.title is not None and req.title.strip() != (c.title or ""):
+        c.title = req.title.strip()
+        changed["title"] = c.title
+    if not changed:
+        return c
+    c.updated_at = datetime.now(UTC)
+    await c.save()
+    await record_event(c, "updated", actor=actor_uid, **changed)
+    await write_audit(
+        kind="campaign.updated", subject_uid=c.uid, subject_type="Campaign",
+        actor_uid=actor_uid, payload=changed,
+    )
     return c
 
 
@@ -545,7 +615,7 @@ async def create(
         area_prefix=(req.area_prefix or "").strip(),
         parts=parts,
         plan_summary=plan_summary,
-        max_parallel=max(int(req.max_parallel or 2), 1),
+        max_parallel=max(int(req.max_parallel or DEFAULT_MAX_PARALLEL), 1),
         created_by=created_by,
         trigger_provenance=trigger_provenance or "manual",
     )

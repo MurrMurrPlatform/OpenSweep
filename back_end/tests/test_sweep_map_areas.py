@@ -7,7 +7,7 @@ are monkeypatched (test_campaign_scanner.py style); Neo4j-bound behavior
 stays in integration tests.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -298,7 +298,7 @@ async def test_run_map_areas_captures_dispatch_failure(dispatch_seams, monkeypat
 
 # ── schedule scanner branch ─────────────────────────────────────────────────
 
-NOW = datetime(2026, 8, 1, 5, 30, tzinfo=timezone.utc)  # the 1st, 05:30
+NOW = datetime(2026, 8, 1, 5, 30, tzinfo=UTC)  # the 1st, 05:30
 
 
 class _FakeSA(SimpleNamespace):
@@ -485,6 +485,7 @@ def test_seeded_map_areas_binding_shape():
     assert MAP_AREAS_TITLE == "Map areas"
     assert MAP_AREAS_MONTHLY_TITLE == "Monthly area-map refresh"
     src = inspect.getsource(seed_map_areas)
-    # Manual anchor is inert-but-enabled; the monthly cron is seeded DISABLED.
-    assert '(MAP_AREAS_TITLE, "", True)' in src
+    # Both seed DISABLED: the manual anchor is inert (trigger="") and stays
+    # hand-dispatchable regardless; the monthly cron is opt-in.
+    assert '(MAP_AREAS_TITLE, "", False)' in src
     assert '(MAP_AREAS_MONTHLY_TITLE, "cron:0 5 1 * *", False)' in src

@@ -14,6 +14,7 @@ from domains.campaigns.schemas import (
     CampaignAreasPreview,
     CampaignDTO,
     CreateCampaignRequest,
+    UpdateCampaignRequest,
 )
 from domains.campaigns.services import campaign_service
 from domains.tenancy import require_repo_in_org
@@ -95,9 +96,31 @@ async def preview_campaign_areas(
     operation_id="opensweep_campaign_get",
 )
 async def get_campaign(uid: str, user: UserDTO = Depends(get_current_user)):
+    """Detail read — parts carry `run_status` (live) alongside the planner's
+    `state`. The list endpoint deliberately does not: it would turn one
+    query into one per campaign."""
     c = await campaign_service.get(uid)
     await require_repo_in_org(c.repository_uid, user.org_uid)
-    return campaign_service.to_dto(c)
+    return await campaign_service.to_dto_live(c)
+
+
+@router.patch(
+    "/campaigns/{uid}",
+    response_model=CampaignDTO,
+    operation_id="opensweep_campaign_update",
+)
+async def update_campaign(
+    uid: str,
+    req: UpdateCampaignRequest,
+    user: UserDTO = Depends(require_role("maintainer")),
+):
+    """Retune a campaign in place. `max_parallel` takes effect on the next
+    tick; the plan itself is immutable after create."""
+    c = await campaign_service.get(uid)
+    await require_repo_in_org(c.repository_uid, user.org_uid)
+    return await campaign_service.to_dto_live(
+        await campaign_service.update(uid, req, actor_uid=user.uid)
+    )
 
 
 @router.post(
@@ -108,7 +131,9 @@ async def get_campaign(uid: str, user: UserDTO = Depends(get_current_user)):
 async def launch_campaign(uid: str, user: UserDTO = Depends(require_role("maintainer"))):
     c = await campaign_service.get(uid)
     await require_repo_in_org(c.repository_uid, user.org_uid)
-    return campaign_service.to_dto(await campaign_service.launch(uid, actor_uid=user.uid))
+    return await campaign_service.to_dto_live(
+        await campaign_service.launch(uid, actor_uid=user.uid)
+    )
 
 
 @router.delete(
@@ -141,7 +166,7 @@ async def cancel_campaign(
 ):
     c = await campaign_service.get(uid)
     await require_repo_in_org(c.repository_uid, user.org_uid)
-    return campaign_service.to_dto(
+    return await campaign_service.to_dto_live(
         await campaign_service.cancel(
             uid, reason=(req.reason if req else ""), actor_uid=user.uid
         )

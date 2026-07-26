@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { Activity, Bot, MessagesSquare, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
+import { Activity, Bot, CircleStop, MessagesSquare, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
 import { useRunStore } from '@/stores/runStore'
 import { useCurrentUserStore } from '@/stores/currentUserStore'
 import { useCurrentRepo } from '@/composables/useCurrentRepo'
@@ -103,13 +103,52 @@ const sorted = computed(() =>
     }),
 )
 
+// ── Stop (settles a live run so it becomes deletable) ────────────────────────
+
+/** Active = still schedulable/in-flight; `cancel` accepts only these. An
+ *  awaiting_input run isn't active but still holds a workspace, so it needs
+ *  `end` instead. Either way the run reaches a terminal status. */
+function stoppable(r: RunDTO): boolean {
+  return ['queued', 'running', 'paused_quota', 'awaiting_input'].includes(r.status)
+}
+
+const stopTarget = ref<RunDTO | null>(null)
+const stoppingUid = ref<string | null>(null)
+
+function stopVerb(r: RunDTO | null): 'end' | 'cancel' {
+  return r?.status === 'awaiting_input' ? 'end' : 'cancel'
+}
+
+async function confirmStop() {
+  const target = stopTarget.value
+  stopTarget.value = null
+  if (!target || stoppingUid.value) return
+  stoppingUid.value = target.uid
+  try {
+    const updated =
+      stopVerb(target) === 'end' ? await runs.end(target.uid) : await runs.cancel(target.uid)
+    // Patch the row in place so the delete button unlocks without a refetch.
+    items.value = items.value.map((r) => (r.uid === updated.uid ? updated : r))
+    toast.success('Run stopped', runStatusLabel(updated))
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 409) {
+      toast.warn('Can’t stop run', 'The run is no longer active — refresh the list.')
+    } else {
+      const msg = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
+      toast.error('Couldn’t stop run', msg)
+    }
+  } finally {
+    stoppingUid.value = null
+  }
+}
+
 // ── Delete (active/awaiting-input runs must be cancelled or ended first) ─────
 
 const deleteTarget = ref<RunDTO | null>(null)
 const deleting = ref(false)
 
 function deletable(r: RunDTO): boolean {
-  return !['queued', 'running', 'paused_quota', 'awaiting_input'].includes(r.status)
+  return !stoppable(r)
 }
 
 async function confirmDelete() {
@@ -279,17 +318,41 @@ async function startChat() {
                 <td class="px-4 py-2 tabular-nums">{{ r.turns }}</td>
                 <td class="whitespace-nowrap px-4 py-2 font-mono">{{ r.executor }}</td>
                 <td class="whitespace-nowrap px-4 py-2 text-muted-foreground">{{ formatRelativeTime(r.last_activity_at || r.updated_at) }}</td>
-                <td class="px-2 py-2 text-right">
+                <!-- Clicks anywhere in the actions cell stop here: a disabled
+                     Button has `pointer-events: none`, so without this the
+                     click would fall through to the row and navigate away. -->
+                <td class="whitespace-nowrap px-2 py-2 text-right" @click.stop>
                   <Button
+                    v-if="stoppable(r)"
                     variant="ghost"
                     size="icon-sm"
                     class="text-muted-foreground hover:text-destructive"
-                    :disabled="!deletable(r)"
-                    :title="deletable(r) ? 'Delete run' : 'Cancel or end the run before deleting it'"
-                    @click.stop="deleteTarget = r"
+                    :loading="stoppingUid === r.uid"
+                    :title="
+                      stopVerb(r) === 'end'
+                        ? 'End run — destroys the workspace, keeps the transcript'
+                        : 'Cancel run — stops the in-flight turn'
+                    "
+                    @click="stopTarget = r"
                   >
-                    <Trash2 />
+                    <CircleStop />
                   </Button>
+                  <!-- title lives on the wrapper: a disabled Button takes no
+                       hover, so its own tooltip would never show. -->
+                  <span
+                    class="inline-block"
+                    :title="deletable(r) ? 'Delete run' : 'Stop the run before deleting it'"
+                  >
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      class="text-muted-foreground hover:text-destructive"
+                      :disabled="!deletable(r)"
+                      @click="deleteTarget = r"
+                    >
+                      <Trash2 />
+                    </Button>
+                  </span>
                 </td>
               </tr>
             </tbody>
@@ -330,6 +393,35 @@ async function startChat() {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    <AlertDialog :open="!!stopTarget" @update:open="(v: boolean) => { if (!v) stopTarget = null }">
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            {{ stopVerb(stopTarget) === 'end' ? 'End this run?' : 'Cancel this run?' }}
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            <template v-if="stopVerb(stopTarget) === 'end'">
+              “{{ stopTarget?.title || stopTarget?.uid.slice(0, 12) }}” closes and its workspace is
+              destroyed. The transcript stays readable, and a follow-up message reopens it.
+            </template>
+            <template v-else>
+              “{{ stopTarget?.title || stopTarget?.uid.slice(0, 12) }}” stops now and any in-flight
+              turn is killed. Work the agent hasn’t finished is lost.
+            </template>
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Keep running</AlertDialogCancel>
+          <AlertDialogAction
+            class="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            @click="confirmStop"
+          >
+            {{ stopVerb(stopTarget) === 'end' ? 'End run' : 'Cancel run' }}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
 
     <AlertDialog :open="!!deleteTarget" @update:open="(v: boolean) => { if (!v) deleteTarget = null }">
       <AlertDialogContent>

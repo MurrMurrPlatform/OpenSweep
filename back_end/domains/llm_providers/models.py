@@ -48,6 +48,19 @@ class LLMProvider(AsyncStructuredNode):
     # provider is quota-exhausted/unusable, the next healthy enabled provider
     # is picked by ascending fallback_priority (ties broken by label).
     fallback_priority = IntegerProperty(default=100)
+
+    # How many runs may execute on this provider at once — the provider's own
+    # capacity ceiling, independent of any one campaign's `max_parallel`. The
+    # campaign tick clamps its dispatch capacity to the remaining headroom
+    # (llm_providers.services.capacity.provider_headroom), so a fleet of
+    # campaigns cannot collectively stampede one subscription.
+    #
+    # This is a SOFT ceiling on how many runs we *start*. It is unrelated to
+    # the codex-subscription credential lease (codex_credential), which is a
+    # hard mutual exclusion of 1 per subscription on the `exec` path — set
+    # this to 1 for codex providers unless the app-server path is enabled.
+    max_concurrent_runs = IntegerProperty(default=5)
+
     notes = StringProperty(default="")
 
     # Sensitive credential (write-only via API; DTO returns a `has_credential_secret`

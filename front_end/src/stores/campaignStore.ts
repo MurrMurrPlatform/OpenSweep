@@ -1,7 +1,13 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { apiDelete, apiGet, apiPost } from '@/services/api'
-import type { CampaignAreasPreview, CampaignDTO, CampaignPlanPreview, CreateCampaignRequest } from '@/types/api'
+import { apiDelete, apiGet, apiPatch, apiPost } from '@/services/api'
+import type {
+  CampaignAreasPreview,
+  CampaignDTO,
+  CampaignPlanPreview,
+  CreateCampaignRequest,
+  UpdateCampaignRequest,
+} from '@/types/api'
 
 export const useCampaignStore = defineStore('campaigns', () => {
   const list = ref<CampaignDTO[]>([])
@@ -30,6 +36,14 @@ export const useCampaignStore = defineStore('campaigns', () => {
     return c
   }
 
+  /** Retune a live campaign. Only max_parallel/title — the plan itself is
+   *  fixed at create time. Takes effect on the next tick. */
+  async function update(uid: string, req: UpdateCampaignRequest): Promise<CampaignDTO> {
+    const c = await apiPatch<CampaignDTO>(`/campaigns/${uid}`, req)
+    list.value = list.value.map((x) => (x.uid === c.uid ? c : x))
+    return c
+  }
+
   async function launch(uid: string): Promise<CampaignDTO> {
     const c = await apiPost<CampaignDTO>(`/campaigns/${uid}/launch`)
     list.value = list.value.map((x) => (x.uid === c.uid ? c : x))
@@ -54,5 +68,5 @@ export const useCampaignStore = defineStore('campaigns', () => {
     return apiPost<CampaignPlanPreview>(`/repositories/${repository_uid}/campaign-plan-preview`, req)
   }
 
-  return { list, fetchForRepo, get, fetchAreas, create, previewPlan, launch, cancel, remove }
+  return { list, fetchForRepo, get, fetchAreas, create, update, previewPlan, launch, cancel, remove }
 })

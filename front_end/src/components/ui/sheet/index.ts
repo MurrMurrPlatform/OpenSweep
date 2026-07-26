@@ -11,7 +11,9 @@ export { default as SheetTitle } from "./SheetTitle.vue"
 export { default as SheetTrigger } from "./SheetTrigger.vue"
 
 export const sheetVariants = cva(
-  "fixed z-50 gap-4 bg-background p-6 shadow-lg transition ease-in-out data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:duration-300 data-[state=open]:duration-500",
+  // `max-h-dvh` + `overflow-y-auto` so a sheet taller than the viewport scrolls
+  // instead of running off screen (top/bottom sheets size to their content).
+  "fixed z-50 max-h-dvh gap-4 overflow-y-auto overscroll-contain bg-background p-6 shadow-lg transition ease-in-out data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:duration-300 data-[state=open]:duration-500",
   {
     variants: {
       side: {

@@ -21,6 +21,8 @@ import { PageHeader } from '@/components/ui/page-header'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ErrorState } from '@/components/ui/error-state'
 import {
@@ -42,7 +44,10 @@ import {
   campaignProgress,
   campaignStatusVariant,
   isLiveCampaignStatus,
+  isPartRunLive,
   partStateVariant,
+  partStatusLabel,
+  partStatusVariant,
 } from '@/lib/campaignStatus'
 import { formatRelativeTime } from '@/lib/utils'
 import type { CampaignDTO, CampaignEvent, CampaignPlanSummary } from '@/types/api'
@@ -88,6 +93,12 @@ async function load() {
 }
 
 // ── Polling — parts move server-side while running/finalizing ────────────────
+//
+// Also poll while any PART's run is still live, even once the campaign
+// itself is terminal: cancel deliberately leaves in-flight child runs
+// running (campaign_service.cancel), and the tick stops writing part state
+// the moment the campaign leaves `running`. Watching campaign status alone
+// froze this view on a snapshot while the runs carried on.
 let pollTimer: number | undefined
 async function poll() {
   try {
@@ -96,10 +107,14 @@ async function poll() {
     /* transient — the next tick catches up */
   }
 }
+const shouldPoll = computed(() => {
+  const c = campaign.value
+  if (!c) return false
+  return isLiveCampaignStatus(c.status) || (c.parts ?? []).some(isPartRunLive)
+})
 watch(
-  () => campaign.value?.status,
-  (status) => {
-    const live = !!status && isLiveCampaignStatus(status)
+  shouldPoll,
+  (live) => {
     if (live && pollTimer === undefined) {
       pollTimer = window.setInterval(() => void poll(), 10_000)
     } else if (!live && pollTimer !== undefined) {
@@ -145,6 +160,42 @@ async function cancelCampaign() {
 const isLive = computed(
   () => campaign.value?.status === 'running' || campaign.value?.status === 'finalizing',
 )
+
+// ── Max parallel ────────────────────────────────────────────────────────────
+// Editable while parts are still waiting to be scheduled. Pointless once the
+// campaign is finalizing or terminal — there is nothing left to dispatch.
+const savingParallel = ref(false)
+const maxParallelDraft = ref(1)
+const canRetune = computed(
+  () => campaign.value?.status === 'planning' || campaign.value?.status === 'running',
+)
+watch(
+  () => campaign.value?.max_parallel,
+  (v) => {
+    // Don't stomp what the user is mid-edit; the poll refetches every 10s.
+    if (!savingParallel.value && typeof v === 'number') maxParallelDraft.value = v
+  },
+  { immediate: true },
+)
+
+async function saveMaxParallel() {
+  const c = campaign.value
+  if (!c || savingParallel.value) return
+  const value = Math.max(Math.trunc(maxParallelDraft.value) || 1, 1)
+  maxParallelDraft.value = value
+  if (value === c.max_parallel) return
+  savingParallel.value = true
+  try {
+    campaign.value = await campaigns.update(c.uid, { max_parallel: value })
+    toast.success('Max parallel updated', `${value} parts in flight — applies on the next tick`)
+  } catch (e) {
+    maxParallelDraft.value = c.max_parallel // the server is the source of truth
+    const msg = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
+    toast.error('Couldn’t update max parallel', msg)
+  } finally {
+    savingParallel.value = false
+  }
+}
 
 async function deleteCampaign() {
   if (!campaign.value || deleting.value) return
@@ -400,6 +451,29 @@ function scopePathsLabel(paths: string[]): string {
         <span class="whitespace-nowrap text-sm tabular-nums text-muted-foreground">
           {{ progress.finished }}/{{ progress.total }} parts
         </span>
+        <!-- Max parallel — editable while there is still work to schedule.
+             Takes effect on the next tick (up to ~60s). -->
+        <div class="flex items-center gap-1.5 whitespace-nowrap">
+          <Label for="campaign-parallel" class="text-sm text-muted-foreground">
+            Max parallel
+          </Label>
+          <Input
+            v-if="canRetune"
+            id="campaign-parallel"
+            v-model.number="maxParallelDraft"
+            type="number"
+            min="1"
+            class="h-7 w-16 text-sm tabular-nums"
+            :disabled="savingParallel"
+            :title="
+              `Parts in flight at once. The effective number is the tighter of ` +
+              `this and the provider's max concurrent runs. Applies on the next tick.`
+            "
+            @change="saveMaxParallel"
+            @keyup.enter="saveMaxParallel"
+          />
+          <span v-else class="text-sm tabular-nums">{{ campaign.max_parallel }}</span>
+        </div>
       </div>
 
       <!-- Plan stat-header -->
@@ -499,14 +573,16 @@ function scopePathsLabel(paths: string[]): string {
           <div class="overflow-x-auto">
             <table class="w-full text-sm">
               <thead>
+                <!-- Part gets `w-full` so it absorbs all leftover width; the
+                     rest are `whitespace-nowrap` and shrink to their content. -->
                 <tr class="text-left text-xs uppercase tracking-wide text-muted-foreground">
                   <th class="w-6 px-2 py-2" />
-                  <th class="px-4 py-2 font-medium">#</th>
-                  <th class="px-4 py-2 font-medium">Part</th>
-                  <th class="px-4 py-2 font-medium">Files</th>
-                  <th class="px-4 py-2 font-medium">Lenses</th>
-                  <th class="px-4 py-2 font-medium">State</th>
-                  <th class="px-4 py-2 font-medium">Run</th>
+                  <th class="whitespace-nowrap px-4 py-2 font-medium">#</th>
+                  <th class="w-full px-4 py-2 font-medium">Part</th>
+                  <th class="whitespace-nowrap px-4 py-2 font-medium">Files</th>
+                  <th class="whitespace-nowrap px-4 py-2 font-medium">Lenses</th>
+                  <th class="whitespace-nowrap px-4 py-2 font-medium">State</th>
+                  <th class="whitespace-nowrap px-4 py-2 font-medium">Run</th>
                 </tr>
               </thead>
               <tbody>
@@ -532,17 +608,18 @@ function scopePathsLabel(paths: string[]): string {
                     </td>
                     <!-- Index -->
                     <td class="px-4 py-2 tabular-nums text-muted-foreground">{{ p.idx }}</td>
-                    <!-- Title (with kind badge, truncated) -->
+                    <!-- Title — wraps to 2 lines; expand the row for the full text.
+                         `items-start` keeps the icon/badge on the first line. -->
                     <td class="px-4 py-2">
-                      <span class="flex min-w-0 items-center gap-1.5">
+                      <span class="flex min-w-0 items-start gap-1.5">
                         <Globe
                           v-if="p.kind === 'global'"
-                          class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          class="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground"
                           aria-label="Global sweep"
                         />
                         <FolderTree
                           v-else
-                          class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          class="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground"
                           aria-label="Area sweep"
                         />
                         <Badge
@@ -553,7 +630,10 @@ function scopePathsLabel(paths: string[]): string {
                         >
                           feature
                         </Badge>
-                        <span class="max-w-[240px] truncate font-medium" :title="p.title || `Part ${p.idx}`">
+                        <span
+                          class="line-clamp-2 min-w-0 break-words font-medium"
+                          :title="p.title || `Part ${p.idx}`"
+                        >
                           {{ p.title || `Part ${p.idx}` }}
                         </span>
                       </span>
@@ -568,9 +648,18 @@ function scopePathsLabel(paths: string[]): string {
                         {{ p.lens_keys.length }} lens{{ p.lens_keys.length === 1 ? '' : 'es' }}
                       </Badge>
                     </td>
-                    <!-- State -->
+                    <!-- State — the run's live status, planner state as fallback -->
                     <td class="px-4 py-2">
-                      <Badge :variant="partStateVariant(p.state)">{{ p.state }}</Badge>
+                      <Badge
+                        :variant="partStatusVariant(p)"
+                        :title="
+                          p.run_status && p.run_status !== p.state
+                            ? `Run: ${p.run_status} · plan: ${p.state}`
+                            : undefined
+                        "
+                      >
+                        {{ partStatusLabel(p) }}
+                      </Badge>
                     </td>
                     <!-- Run link -->
                     <td class="px-4 py-2">
@@ -591,6 +680,11 @@ function scopePathsLabel(paths: string[]): string {
                     <td />
                     <td colspan="6" class="px-4 py-3">
                       <div class="space-y-2">
+                        <!-- Full title — the summary row clamps it to 2 lines. -->
+                        <div>
+                          <p class="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Title</p>
+                          <p class="break-words text-sm font-medium">{{ p.title || `Part ${p.idx}` }}</p>
+                        </div>
                         <!-- Scope paths -->
                         <div>
                           <p class="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Scope</p>
@@ -672,12 +766,14 @@ function scopePathsLabel(paths: string[]): string {
                   :key="cp.idx"
                   class="border-t border-border first:border-t-0"
                 >
-                  <td class="py-1.5 pr-3 tabular-nums text-muted-foreground">{{ cp.idx }}</td>
-                  <td class="max-w-[260px] truncate py-1.5 pr-3 font-medium">{{ cp.title || `Part ${cp.idx}` }}</td>
-                  <td class="whitespace-nowrap py-1.5 pr-3 tabular-nums">
+                  <td class="py-1.5 pr-3 align-top tabular-nums text-muted-foreground">{{ cp.idx }}</td>
+                  <!-- `w-full` absorbs the leftover width so the title wraps
+                       here rather than being cut off mid-word. -->
+                  <td class="w-full break-words py-1.5 pr-3 align-top font-medium">{{ cp.title || `Part ${cp.idx}` }}</td>
+                  <td class="whitespace-nowrap py-1.5 pr-3 align-top tabular-nums">
                     {{ cp.covered }} covered · {{ cp.skipped }} skipped
                   </td>
-                  <td class="py-1.5">
+                  <td class="py-1.5 align-top">
                     <Badge :variant="partStateVariant(cp.state)">{{ cp.state }}</Badge>
                   </td>
                 </tr>

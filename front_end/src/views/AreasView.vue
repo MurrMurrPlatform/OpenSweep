@@ -316,7 +316,10 @@ async function acceptEdit(edit: AreaEditDTO) {
   resolvingUid.value = edit.uid
   try {
     const { area, warnings } = await areaStore.acceptEdit(edit.uid)
-    if (warnings.length) {
+    if (!area) {
+      // A retirement of an area that was never mapped: nothing to create.
+      toast.success('Edit accepted', `${edit.key} was not mapped — nothing created`)
+    } else if (warnings.length) {
       // Warnings are advisory (partition overlaps, missing ignore reasons) —
       // the edit IS applied; surface them as a warning, never an error.
       toast.warn(`Accepted ${area.key} with warnings`, warnings.join('; '))

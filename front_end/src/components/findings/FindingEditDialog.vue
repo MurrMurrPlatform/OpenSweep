@@ -5,6 +5,7 @@ import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -184,7 +185,7 @@ async function save() {
         </DialogDescription>
       </DialogHeader>
 
-      <div class="-mx-6 max-h-[60vh] space-y-3 overflow-y-auto px-6">
+      <DialogBody class="space-y-3">
         <div class="space-y-1">
           <Label>Title</Label>
           <Input v-model="title" placeholder="Short, specific summary" />
@@ -246,7 +247,7 @@ async function save() {
           <Label>Tags (comma-separated)</Label>
           <Input v-model="tagsText" placeholder="e.g. security, flaky-test" />
         </div>
-      </div>
+      </DialogBody>
 
       <DialogFooter>
         <Button variant="ghost" @click="emit('update:open', false)">Cancel</Button>

@@ -6,6 +6,7 @@ import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogHeader,
   DialogTitle,
@@ -167,7 +168,7 @@ async function confirmRemove() {
         </DialogDescription>
       </DialogHeader>
 
-      <div class="max-h-[60vh] space-y-4 overflow-y-auto -mx-6 px-6">
+      <DialogBody class="space-y-4">
         <!-- Inline CRUD form -->
         <div class="space-y-3 rounded-md border border-border bg-card p-3">
           <div class="text-xs font-semibold">
@@ -228,7 +229,7 @@ async function confirmRemove() {
             </div>
           </li>
         </ul>
-      </div>
+      </DialogBody>
 
       <DialogFooter>
         <Button variant="ghost" size="sm" @click="emit('update:open', false)">Close</Button>
