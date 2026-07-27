@@ -4,14 +4,23 @@ One shared builder every dispatch path uses: pinned Docs verbatim, a
 likely-relevant listing for the run's target (linked doc_uids plus pages
 whose watch_paths overlap the target paths — docs are leads, not truth,
 so they're offered for `read_doc`, never force-fed), a folder-grouped
-one-line index of the remaining pages, and the memories anchored to the
-run's target docs. Prompt cost stays proportional to relevance —
-everything else is on-demand through the tools.
+one-line index of the remaining pages, and the repository's most relevant
+memories. Prompt cost stays proportional to relevance — everything else is
+on-demand through the tools.
+
+Memories used to be injected ONLY for `target_doc_uids`, which meant the
+majority of runs saw none at all: a repo-scoped audit, a deep scan, an
+implement or a fix run targets paths (or nothing), not a Doc, so the loop
+that writes memories fed nothing back into the loop that needs them. Every
+run for a repository now gets memories; the run's scope only decides which
+ones and in what order (see `_scope_query`), and a hard cap keeps a repo with
+hundreds of memories from eating the prompt.
 """
 
 from __future__ import annotations
 
 from domains.docs.models import Doc, doc_is_stale
+from domains.memory.schemas import MemoryDTO
 from domains.memory.services.memory_service import search_memory
 from domains.repositories.services.path_matching import watches_path
 
@@ -45,6 +54,94 @@ def _watch_overlaps_target(watch_paths: list[str], target_paths: list[str]) -> b
         for w in watch_paths
         for t in target_paths
     )
+
+
+#: Memory injection budget. These are hard caps, not targets: the briefing is
+#: prepended to EVERY first-turn prompt, so an unbounded memory section would
+#: tax every run on the repo forever and crowd out the pinned docs above it.
+#: ~10 memories at ~600 chars is on the order of a thousand tokens — enough to
+#: carry the facts a run keeps re-learning, small enough to stay affordable.
+_TARGET_MEMORY_LIMIT = 6  # per target Doc — these are the most on-point
+_REPO_MEMORY_LIMIT = 10  # scope-ranked, repo-wide
+_MEMORY_CHAR_BUDGET = 6000
+_MEMORY_BODY_CHARS = 600
+
+
+def _scope_query(target_paths: list[str], related_docs: list[Doc]) -> str:
+    """A bag of words describing what this run is about, for memory ranking.
+
+    There is no free-text description of a run's scope to search with, so it
+    is reconstructed from what the dispatch actually carries: the target paths
+    (which tokenise into module and directory names) and the titles/summaries
+    of the docs already judged relevant to the target. A repo-wide run with no
+    target yields "", which the ranker reads as "no scope" and answers with
+    the freshest memories rather than with nothing.
+    """
+    parts = list(target_paths)
+    for d in related_docs:
+        parts.extend([d.slug or "", d.title or "", d.summary or ""])
+    return " ".join(p for p in parts if p)
+
+
+def _memory_lines(memories: list[MemoryDTO]) -> list[str]:
+    """Render memories to prompt lines, stopping at the char budget.
+
+    Bodies are clipped rather than dropped: a memory's first sentences carry
+    the fact, and a truncated fact plus the tool hint above beats silently
+    omitting the memory the run needed. `search_memory` returns the full body
+    on demand.
+    """
+    lines: list[str] = []
+    spent = 0
+    for m in memories:
+        stale = " (possibly stale — code changed since)" if m.possibly_stale else ""
+        body = (m.body or "").strip()
+        if len(body) > _MEMORY_BODY_CHARS:
+            body = body[:_MEMORY_BODY_CHARS].rstrip() + "… (full text via search_memory)"
+        line = f"- **{m.title}**{stale}: {body}".rstrip(": ")
+        if spent + len(line) > _MEMORY_CHAR_BUDGET and lines:
+            break
+        spent += len(line)
+        lines.append(line)
+    return lines
+
+
+async def _briefing_memories(
+    *, repository_uid: str, target_doc_uids: list[str], scope_query: str
+) -> list[MemoryDTO]:
+    """The memories this run gets, most on-point first.
+
+    Two passes, because they answer different questions. The anchored pass
+    asks "what do we know about the exact Docs this run targets" — that is a
+    scope, so it stays a hard filter. The repo-wide pass asks "what else do we
+    know about this repository that touches this run's scope", ranked, and it
+    is the one that fixes the regression: it runs even when there are no
+    target docs, which is most runs.
+    """
+    memories: list[MemoryDTO] = []
+    for anchor_uid in target_doc_uids:
+        memories.extend(
+            await search_memory(
+                repository_uid=repository_uid,
+                anchor_uid=anchor_uid,
+                limit=_TARGET_MEMORY_LIMIT,
+            )
+        )
+    memories.extend(
+        await search_memory(
+            repository_uid=repository_uid,
+            query=scope_query,
+            limit=_REPO_MEMORY_LIMIT,
+        )
+    )
+    seen: set[str] = set()
+    deduped: list[MemoryDTO] = []
+    for m in memories:
+        if m.uid in seen:
+            continue
+        seen.add(m.uid)
+        deduped.append(m)
+    return deduped
 
 
 async def build_briefing(
@@ -102,22 +199,18 @@ async def build_briefing(
             + _grouped_index(indexed)
         )
 
-    memories = []
-    for anchor_uid in target_doc_uids or []:
-        memories.extend(
-            await search_memory(repository_uid=repository_uid, anchor_uid=anchor_uid, limit=10)
-        )
-    if memories:
-        seen: set[str] = set()
-        lines: list[str] = []
-        for m in memories:
-            if m.uid in seen:
-                continue
-            seen.add(m.uid)
-            stale = " (possibly stale — code changed since)" if m.possibly_stale else ""
-            lines.append(f"- **{m.title}**{stale}: {m.body}".rstrip(": "))
+    memories = await _briefing_memories(
+        repository_uid=repository_uid,
+        target_doc_uids=[uid for uid in (target_doc_uids or []) if uid],
+        scope_query=_scope_query(paths, related),
+    )
+    lines = _memory_lines(memories)
+    if lines:
         sections.append(
-            "## Memories for this target (search more with search_memory)\n\n" + "\n".join(lines)
+            "## What previous runs learned about this repository\n\n"
+            "Facts earlier runs recorded that the code does not state. Not "
+            "exhaustive and not authoritative — search_memory for more, and "
+            "trust the code where they disagree.\n\n" + "\n".join(lines)
         )
 
     return "\n\n".join(sections).strip()

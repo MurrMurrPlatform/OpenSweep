@@ -92,3 +92,24 @@ class GitProviderClient(Protocol):
         description: str = "",
         target_url: str = "",
     ) -> dict[str, Any]: ...
+
+    async def create_issue_comment(
+        self, owner: str, repo: str, number: int, body: str
+    ) -> dict[str, Any]:
+        """Post a plain conversation comment on a pull request."""
+        ...
+
+    async def create_review(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        *,
+        body: str,
+        event: str = "COMMENT",
+        commit_id: str = "",
+        comments: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Publish a review: a summary body plus optional inline comments,
+        each {"path", "line", "side", "body"}."""
+        ...

@@ -79,6 +79,37 @@ def resolution_is_blocking(
     return severity_blocks(severity, tags, blocking_policy)
 
 
+def count_blocking_findings(findings: list[dict], blocking_policy: dict) -> int:
+    """How many of these findings the MergePolicy makes blocking.
+
+    `findings`: [{severity, tags, override}] — `override` is the human
+    blocking_override from any FindingResolution already bound to the PR
+    ("allow" / "block" / ""), so a reviewer's explicit call still wins.
+
+    This is the derivation behind a verdict's `new_blocking_findings`. That
+    number gates the clean-round condition (§5.3) and therefore the published
+    `opensweep/converged` status, so it must not be whatever the reviewing
+    model reported about its own output — the review intent asks the agent to
+    "count how many of YOUR new findings are blocking", and an agent that
+    answers 0 would otherwise mint a clean round for itself.
+    """
+    total = 0
+    for f in findings:
+        override = str(f.get("override") or "")
+        if override == "allow":
+            continue
+        if override == "block":
+            total += 1
+            continue
+        if severity_blocks(
+            str(f.get("severity") or "medium"),
+            list(f.get("tags") or []),
+            blocking_policy,
+        ):
+            total += 1
+    return total
+
+
 def compute_convergence(
     *,
     head_sha: str,

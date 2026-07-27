@@ -5,6 +5,7 @@ import { Activity, Bot, CircleStop, MessagesSquare, Plus, RefreshCw, Trash2 } fr
 import { useRunStore } from '@/stores/runStore'
 import { useCurrentUserStore } from '@/stores/currentUserStore'
 import { useCurrentRepo } from '@/composables/useCurrentRepo'
+import { useActiveRuns } from '@/composables/useActiveRuns'
 import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
 import { PLAYBOOK_TO_PRODUCES, producesLabel } from '@/lib/produces'
@@ -65,9 +66,11 @@ const producesFilter = ref<ProducesKind | ''>('')
 /** Platform admins only: also list @opensweep comment replies + chat sessions. */
 const showAgentActivity = ref(false)
 
-async function reload() {
+/** `silent` skips the skeleton so the live heartbeat below never flickers the
+ *  table the user is reading. */
+async function reload({ silent = false } = {}) {
   if (!repoUid.value) return
-  loading.value = true
+  if (!silent) loading.value = true
   error.value = null
   try {
     items.value = await runs.fetchAll({
@@ -75,15 +78,29 @@ async function reload() {
       surface: showAgentActivity.value && currentUser.isPlatformAdmin ? 'all' : undefined,
     })
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    // A failed background refresh must not blank out a list that is on screen.
+    if (!silent) error.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
   }
 }
 
-onMounted(reload)
-watch(repoUid, reload)
-watch(showAgentActivity, reload)
+onMounted(() => void reload())
+watch(repoUid, () => void reload())
+watch(showAgentActivity, () => void reload())
+
+// Liveness: /runs/active is polled for this repo whether or not anything is in
+// flight, so a run dispatched from anywhere (a sweep, a PR review, another tab)
+// shows up here — and its status keeps updating — without a Refresh click.
+const { activeRuns, signature } = useActiveRuns(
+  () => (repoUid.value ? { repository_uid: repoUid.value } : null),
+  { pollWhenIdle: true },
+)
+// The heartbeat fires every tick; only re-fetch the list when the in-flight set
+// actually changed, or while something is running (turns/last-activity move).
+watch([signature, activeRuns], ([sig], [prevSig]) => {
+  if (sig !== prevSig || activeRuns.value.length > 0) void reload({ silent: true })
+})
 
 function surfaceLabel(r: RunDTO): string {
   if (r.surface === 'comment') return 'comment reply'
@@ -209,7 +226,7 @@ async function startChat() {
       title="Runs"
       subtitle="Every agent conversation — reviews, fixes, chats, one list."
     >
-      <Button variant="outline" size="sm" :disabled="loading" @click="reload">
+      <Button variant="outline" size="sm" :disabled="loading" @click="reload()">
         <RefreshCw :class="{ 'animate-spin': loading }" /> Refresh
       </Button>
       <Button size="sm" @click="chatOpen = true">
@@ -258,7 +275,7 @@ async function startChat() {
         <!-- Error -->
         <div v-else-if="error" class="p-4">
           <ErrorState title="Couldn't load runs" :message="error" class="border-0">
-            <Button variant="outline" size="sm" @click="reload">Retry</Button>
+            <Button variant="outline" size="sm" @click="reload()">Retry</Button>
           </ErrorState>
         </div>
 

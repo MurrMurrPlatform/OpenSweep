@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter, RouterLink } from 'vue-router'
 import {
   ArrowLeft,
+  Bot,
   ChevronRight,
   FileText,
   FolderTree,
@@ -20,6 +21,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
+import { EmptyState } from '@/components/ui/empty-state'
 import {
   Select,
   SelectContent,
@@ -49,6 +51,8 @@ const editingBody = ref(false)
 const body = ref('')
 const effort = ref<'short' | 'normal' | 'deep' | 'unlimited'>('normal')
 const submitting = ref(false)
+/** Guards the empty state: an unfinished fetch is not "no agents". */
+const loadingAgents = ref(true)
 
 // The Ask page dispatches ask runs: agents that produce findings or answers
 // are launchable here. System write/review/verification agents belong to
@@ -71,7 +75,11 @@ async function loadAreas() {
 
 onMounted(async () => {
   void loadAreas()
-  available.value = launchable(await agents.fetchAll({ enabled_only: true }))
+  try {
+    available.value = launchable(await agents.fetchAll({ enabled_only: true }))
+  } finally {
+    loadingAgents.value = false
+  }
 })
 watch(repoUid, () => {
   selectedAreaUids.value = new Set()
@@ -204,6 +212,22 @@ async function submit() {
         subtitle="Pick an agent — or write your own prompt — and dispatch a run. Output lands as Findings in your inbox."
       />
 
+      <!-- Nothing to launch: the library is empty (or every agent is disabled). -->
+      <EmptyState
+        v-if="!loadingAgents && !available.length"
+        :icon="Bot"
+        title="No agents available to ask"
+        description="Ask runs a saved agent, or a prompt you write here. The library has nothing enabled that produces findings or an answer yet."
+      >
+        <Button @click="startCustom">
+          <Pencil /> Write a custom prompt
+        </Button>
+        <Button variant="outline" as="router-link" :to="{ name: 'agent-library' }">
+          Open the agent library
+        </Button>
+      </EmptyState>
+
+      <template v-else>
       <!-- Tag filter -->
       <div class="flex flex-wrap gap-2">
         <button
@@ -269,6 +293,7 @@ async function submit() {
         Agents are managed in the
         <RouterLink :to="{ name: 'agent-library' }" class="text-primary hover:underline">Agent library</RouterLink>.
       </div>
+      </template>
     </template>
 
     <!-- ── Step 2: review the prompt, scope it, run ────────────────────────── -->

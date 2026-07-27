@@ -105,5 +105,14 @@ def test_severity_rank_unknown_defaults_to_medium():
 
 
 def test_whitelists_cover_expected_values():
-    assert FINDING_SORT_FIELDS == {"updated_at", "created_at", "severity", "confidence", "title"}
+    assert FINDING_SORT_FIELDS == {
+        "updated_at",
+        "created_at",
+        "severity",
+        "confidence",
+        "title",
+        # Composite credibility — corroboration + tool confirmation +
+        # confidence + skeptic outcome (findings/services/trust.py).
+        "trust",
+    }
     assert FINDING_SORT_DIRS == {"asc", "desc"}

@@ -5,6 +5,16 @@ import type { ActiveRunDTO, ActiveRunFilters, DispatchConflictDetail } from '@/t
 
 const POLL_MS = 5000
 
+export interface UseActiveRunsOptions {
+  /**
+   * Keep polling even while nothing is in flight. List views (Runs, Queue,
+   * Work items) use this as their liveness heartbeat: /runs/active is a cheap
+   * query, and a run dispatched from anywhere else shows up within a tick
+   * instead of waiting for a manual Refresh click.
+   */
+  pollWhenIdle?: boolean
+}
+
 /**
  * In-flight run awareness for dispatch surfaces (PR review/fix, ticket
  * implement, repo sweep).
@@ -12,15 +22,24 @@ const POLL_MS = 5000
  * Fetches GET /runs/active for the given subject filters on
  * mount (and whenever the filters resolve/change), then polls every ~5s while
  * at least one run is in flight. Polling stops on its own once every run
- * reaches a terminal state. Call `refresh()` after any dispatch, or
- * `noteDispatched()` to reflect a just-dispatched run immediately while the
- * next poll catches up.
+ * reaches a terminal state (unless `pollWhenIdle` keeps the heartbeat going).
+ * Call `refresh()` after any dispatch, or `noteDispatched()` to reflect a
+ * just-dispatched run immediately while the next poll catches up.
  */
-export function useActiveRuns(filters: MaybeRefOrGetter<ActiveRunFilters | null | undefined>) {
+export function useActiveRuns(
+  filters: MaybeRefOrGetter<ActiveRunFilters | null | undefined>,
+  options: UseActiveRunsOptions = {},
+) {
   const runs = useRunStore()
   const activeRuns = ref<ActiveRunDTO[]>([])
   let timer: number | undefined
   let generation = 0 // drops stale responses when the subject changes mid-flight
+
+  /** No resolved subject → nothing to poll for (and nothing to show). */
+  function hasSubject(): boolean {
+    const f = toValue(filters)
+    return !!f && Object.values(f).some((v) => !!v)
+  }
 
   // Chat runs are conversations, not work: they never gate a dispatch
   // surface (useDiscussions feeds the non-blocking DiscussionChip instead).
@@ -28,10 +47,21 @@ export function useActiveRuns(filters: MaybeRefOrGetter<ActiveRunFilters | null 
   const activeRun = computed<ActiveRunDTO | null>(() => workRuns.value[0] ?? null)
   const hasActive = computed(() => workRuns.value.length > 0)
 
+  /** Stable fingerprint of what is in flight. List views watch this instead of
+   *  the array itself: it only changes when a run appears, changes status, or
+   *  finishes — which is exactly when their list is worth re-fetching. */
+  const signature = computed(() =>
+    activeRuns.value
+      .map((r) => `${r.run_uid}:${r.status}`)
+      .sort()
+      .join('|'),
+  )
+
   function syncTimer() {
-    if (activeRuns.value.length && timer === undefined) {
+    const wanted = hasSubject() && (activeRuns.value.length > 0 || options.pollWhenIdle === true)
+    if (wanted && timer === undefined) {
       timer = window.setInterval(() => void refresh(), POLL_MS)
-    } else if (!activeRuns.value.length && timer !== undefined) {
+    } else if (!wanted && timer !== undefined) {
       window.clearInterval(timer)
       timer = undefined
     }
@@ -39,7 +69,7 @@ export function useActiveRuns(filters: MaybeRefOrGetter<ActiveRunFilters | null 
 
   async function refresh(): Promise<ActiveRunDTO[]> {
     const f = toValue(filters)
-    if (!f || Object.values(f).every((v) => !v)) {
+    if (!hasSubject() || !f) {
       generation += 1
       activeRuns.value = []
       syncTimer()
@@ -96,7 +126,7 @@ export function useActiveRuns(filters: MaybeRefOrGetter<ActiveRunFilters | null 
     }
   })
 
-  return { activeRuns, workRuns, activeRun, hasActive, refresh, noteDispatched }
+  return { activeRuns, workRuns, activeRun, hasActive, signature, refresh, noteDispatched }
 }
 
 /**

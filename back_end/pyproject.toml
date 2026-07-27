@@ -8,6 +8,12 @@ requires-python = ">=3.12"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+# `integration` = needs the dedicated test Neo4j on :7999 (tests/conftest.py).
+# Registered so `-m integration` / `-m "not integration"` — how CI splits the
+# two tiers — don't emit PytestUnknownMarkWarning.
+markers = [
+    "integration: requires the dedicated test Neo4j on localhost:7999",
+]
 
 [tool.ruff]
 line-length = 110

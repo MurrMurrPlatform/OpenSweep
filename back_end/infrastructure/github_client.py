@@ -230,6 +230,47 @@ class GitHubClient:
             payload["target_url"] = target_url
         return await self._post(f"/repos/{owner}/{repo}/statuses/{sha}", json=payload)
 
+    async def create_issue_comment(
+        self, owner: str, repo: str, number: int, body: str
+    ) -> dict[str, Any]:
+        """Post a plain conversation comment on a PR (PRs are issues here)."""
+        return await self._post(
+            f"/repos/{owner}/{repo}/issues/{number}/comments", json={"body": body}
+        )
+
+    async def create_review(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        *,
+        body: str,
+        event: str = "COMMENT",
+        commit_id: str = "",
+        comments: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Publish a PR review: a summary body plus optional inline comments.
+
+        `comments` entries are GitHub's shape — {"path", "line", "side",
+        "body"}. GitHub rejects the WHOLE review with 422 if any comment
+        anchors to a line outside the diff, so callers must filter to the
+        PR's changed lines; `review_publisher` also retries body-only on 422
+        so a bad anchor degrades to a summary rather than losing the review.
+
+        `event` stays COMMENT by default on purpose: APPROVE and
+        REQUEST_CHANGES make the app a real reviewer, which interacts with
+        branch protection and required-review counts. Whether OpenSweep should
+        hold that power is a repo-owner decision, not a default.
+        """
+        payload: dict[str, Any] = {"body": body, "event": event}
+        if commit_id:
+            payload["commit_id"] = commit_id
+        if comments:
+            payload["comments"] = comments
+        return await self._post(
+            f"/repos/{owner}/{repo}/pulls/{number}/reviews", json=payload
+        )
+
     # ── Internals ────────────────────────────────────────────────────────
 
     async def _get(self, path: str) -> Any:

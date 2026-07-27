@@ -33,8 +33,8 @@ async def test_worker_dispatch_hands_off_to_celery(monkeypatch, restore_role):
     process_role.set_role(process_role.WORKER)
     enqueued: list[str] = []
     monkeypatch.setattr(
-        "domains.runs.tasks.dispatch_runs.dispatch_run.delay",
-        lambda run_uid: enqueued.append(run_uid),
+        "domains.runs.tasks.dispatch_runs.dispatch_run.apply_async",
+        lambda args=None, **kw: enqueued.append((args[0], kw)),
     )
     ran: list[bool] = []
 
@@ -50,8 +50,13 @@ async def test_worker_dispatch_hands_off_to_celery(monkeypatch, restore_role):
     out = await lifecycle._launch_dispatch(run, make_pipeline, wait_for_completion=False)
 
     assert out is run
-    assert enqueued == ["run-worker"]
     assert ran == []  # pipeline was NOT started in the tick's loop
+    assert len(enqueued) == 1
+    uid, kwargs = enqueued[0]
+    assert uid == "run-worker"
+    # Policy-derived limits ride along, so the task ceiling sits above the
+    # wall ceiling the executor enforces rather than a flat 3900s.
+    assert kwargs["time_limit"] > kwargs["soft_time_limit"]
 
 
 async def test_backend_dispatch_runs_inline(monkeypatch, restore_role):
@@ -59,8 +64,8 @@ async def test_backend_dispatch_runs_inline(monkeypatch, restore_role):
     process_role.set_role(process_role.BACKEND)
     enqueued: list[str] = []
     monkeypatch.setattr(
-        "domains.runs.tasks.dispatch_runs.dispatch_run.delay",
-        lambda run_uid: enqueued.append(run_uid),
+        "domains.runs.tasks.dispatch_runs.dispatch_run.apply_async",
+        lambda args=None, **kw: enqueued.append((args[0], kw)),
     )
     ran = asyncio.Event()
 
@@ -83,8 +88,8 @@ async def test_wait_for_completion_runs_inline_even_in_worker(monkeypatch, resto
     process_role.set_role(process_role.WORKER)
     enqueued: list[str] = []
     monkeypatch.setattr(
-        "domains.runs.tasks.dispatch_runs.dispatch_run.delay",
-        lambda run_uid: enqueued.append(run_uid),
+        "domains.runs.tasks.dispatch_runs.dispatch_run.apply_async",
+        lambda args=None, **kw: enqueued.append((args[0], kw)),
     )
     ran: list[bool] = []
     reloaded = object()

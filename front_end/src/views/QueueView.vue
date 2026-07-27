@@ -4,6 +4,7 @@ import { GitPullRequest, Plus, RefreshCw } from 'lucide-vue-next'
 import { useDeliveryStore } from '@/stores/deliveryStore'
 import { useRepositoryStore } from '@/stores/repositoryStore'
 import { useCurrentRepo } from '@/composables/useCurrentRepo'
+import { useActiveRuns } from '@/composables/useActiveRuns'
 import { PageHeader } from '@/components/ui/page-header'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -24,21 +25,32 @@ const error = ref<string | null>(null)
 const syncOpen = ref(false)
 const syncingRepo = ref(false)
 
-async function reload() {
+/** `silent` skips the skeleton so the live heartbeat below never flickers the
+ *  board the user is reading. */
+async function reload({ silent = false } = {}) {
   if (!repoUid.value) return
-  loading.value = true
+  if (!silent) loading.value = true
   error.value = null
   try {
     // The list DTO carries waive_requested_count — no per-PR resolutions fetch.
     prs.value = await delivery.fetchPullRequests({ state: 'open', repository_uid: repoUid.value })
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    // A failed background refresh must not blank out a board that is on screen.
+    if (!silent) error.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
   }
 }
 
 watch(repoUid, () => void reload(), { immediate: true })
+
+// Review/fix runs are what move a PR between these columns. Ride the shared
+// /runs/active heartbeat: when the in-flight set changes, the board is stale.
+const { signature } = useActiveRuns(
+  () => (repoUid.value ? { repository_uid: repoUid.value } : null),
+  { pollWhenIdle: true },
+)
+watch(signature, () => void reload({ silent: true }))
 
 /** 2-way reconcile with GitHub — imports PRs opened outside OpenSweep and
  *  drops externally merged/closed ones. */
@@ -115,7 +127,7 @@ const columns = computed<QueueColumn[]>(() => [
 <template>
   <div class="space-y-4">
     <PageHeader title="Queue" subtitle="Every open PR, sorted by what it needs next.">
-      <Button variant="outline" size="sm" :disabled="loading" @click="reload">
+      <Button variant="outline" size="sm" :disabled="loading" @click="reload()">
         <RefreshCw :class="{ 'animate-spin': loading }" /> Refresh
       </Button>
       <Button variant="outline" size="sm" :disabled="syncingRepo" @click="syncFromGitHub">
@@ -139,7 +151,7 @@ const columns = computed<QueueColumn[]>(() => [
 
     <!-- Error -->
     <ErrorState v-else-if="error" title="Couldn't load the queue" :message="error">
-      <Button variant="outline" size="sm" @click="reload">Retry</Button>
+      <Button variant="outline" size="sm" @click="reload()">Retry</Button>
     </ErrorState>
 
     <!-- Empty -->
@@ -180,6 +192,6 @@ const columns = computed<QueueColumn[]>(() => [
       </Card>
     </div>
 
-    <SyncPrDialog v-model:open="syncOpen" :repositories="repo ? [repo] : []" @synced="reload" />
+    <SyncPrDialog v-model:open="syncOpen" :repositories="repo ? [repo] : []" @synced="reload()" />
   </div>
 </template>

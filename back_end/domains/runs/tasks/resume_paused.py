@@ -6,7 +6,8 @@ Two tasks:
     `opensweep.runs.resume_run` per run. It never re-dispatches
     anything itself — a re-dispatched CLI run can take an hour, far beyond
     the global 600/900s task limits that apply to the beat tick.
-  - `opensweep.runs.resume_run` (per run, soft/hard limits 3600/3900s):
+  - `opensweep.runs.resume_run` (per run, limits derived from the run's
+    policy wall ceiling — see tasks/task_limits.py):
     - EXHAUSTED (retry_count >= OPENSWEEP_QUOTA_MAX_RETRIES) → fail for real
       ("quota retries exhausted"), destroy the discovery sandbox;
     - RETRY (an unexhausted fallback provider exists → immediately; otherwise
@@ -23,7 +24,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from celery_app import app
+from domains.runs.tasks.task_limits import (
+    DEFAULT_DISPATCH_SECONDS,
+    dispatch_time_limits,
+    limits_for_run,
+)
 from logging_config import logger
+
+_FALLBACK_SOFT, _FALLBACK_HARD = dispatch_time_limits(DEFAULT_DISPATCH_SECONDS)
 
 
 @app.task(name="opensweep.runs.resume_paused_runs")
@@ -41,22 +49,27 @@ async def _scan_and_enqueue() -> dict:
     """Select eligible runs and fan out one resume_run task per run."""
     from domains.runs.models import Run
 
-    run_uids = [
-        r.uid for r in await Run.nodes.all() if r.status == "paused_quota"
-    ]
-    for run_uid in run_uids:
-        resume_run.delay(run_uid)
-    return {"scanned": len(run_uids), "enqueued": len(run_uids)}
+    paused = [r for r in await Run.nodes.all() if r.status == "paused_quota"]
+    for run in paused:
+        # A resumed run re-executes from the original intent, so it needs the
+        # same headroom as a first dispatch — a `deep` run resumed under the
+        # flat fallback would be killed at the old 3900s.
+        soft, hard = await limits_for_run(run)
+        resume_run.apply_async(
+            args=[run.uid], soft_time_limit=soft, time_limit=hard
+        )
+    return {"scanned": len(paused), "enqueued": len(paused)}
 
 
 @app.task(
     name="opensweep.runs.resume_run",
-    soft_time_limit=3600,
-    time_limit=3900,
+    soft_time_limit=_FALLBACK_SOFT,
+    time_limit=_FALLBACK_HARD,
 )
 def resume_run(run_uid: str) -> dict:
     """Resume ONE quota-paused run — may execute a full CLI run, hence the
-    per-task 3600/3900s limits overriding the global 600/900s."""
+    per-task limits overriding the global 600/900s. `_scan_and_enqueue`
+    passes policy-derived limits per invocation; these are the fallback."""
     from infrastructure.celery_async import run_async_task
     from infrastructure.neomodel_config import configure_neomodel
 
