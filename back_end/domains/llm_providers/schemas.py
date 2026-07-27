@@ -294,6 +294,17 @@ KIND_CATALOG: dict[LLMProviderKind, dict] = {
         # `{{model_q}}` (shlex-quoted): the model slug is config-controlled data,
         # so it must land as ONE argv token — raw {{model}} would let a slug
         # like "x --flag" inject flags into the CLI invocation.
+        #
+        # DELIBERATELY MINIMAL — do not add `--format json` or `-s` here.
+        # OpenSweep's transport flags are appended at dispatch by
+        # `llm_executor.with_opencode_transport_flags`, for two reasons this
+        # field cannot satisfy: (1) it is user-editable, so a flag baked into
+        # the default would be missing from every row an operator has already
+        # customised — precisely the users whose runs would then silently lose
+        # session continuity and token telemetry; (2) `-s <session id>` is
+        # per-pass runtime data with no placeholder to carry it. The injector
+        # skips any flag already present, so an operator who deliberately sets
+        # `--format default` here still wins.
         "default_cli": 'opencode run -m {{model_q}} {{instruction_q}}',
         "needs_api_key": False,
         "needs_base_url": True,

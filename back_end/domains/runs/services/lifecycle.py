@@ -221,11 +221,14 @@ async def trigger_run(
         raise LifecycleError(
             "No LLM provider configured for this organization. An org admin must add one in Settings → LLM Providers and mark it active."
         )
-    chosen_executor = executor or _executor_for_provider(active_provider)
     # A normal run is read-only investigation work. Only write playbooks
     # (implement/fix, §6) pass an explicit execution_mode — and they must
     # bring their own write sandbox (made or deferred).
     chosen_mode = execution_mode or ExecutionMode.ANALYZE_ONLY
+    chosen_executor = (
+        write_executor_for_provider(executor, active_provider, chosen_mode)
+        or _executor_for_provider(active_provider)
+    )
     if (
         chosen_mode != ExecutionMode.ANALYZE_ONLY
         and prepared_sandbox is None
@@ -1172,16 +1175,92 @@ def _executor_for_provider(provider: LLMProvider) -> Executor:
 
 
 # Executors whose adapters have a write surface (IMPLEMENT mode: edit, test,
-# commit in a write sandbox). claude_code is the only one: internal_llm is
-# HTTP + read tools, and the codex/opencode tracking adapters are deliberately
-# read/report only — the write playbooks (fix/implement) always dispatch with
-# Executor.CLAUDE_CODE.
+# commit in a write sandbox) on ANY provider. internal_llm is HTTP + read tools
+# and codex's `exec --json` tracking adapter stays read/report only, so
+# claude_code is the only unconditional member.
 _WRITE_CAPABLE_EXECUTORS = frozenset({Executor.CLAUDE_CODE})
+
+# Executors that get a write surface ONLY when the model behind them is the
+# user's own. "Bring your own agent" was Discovery-only before this: opencode
+# drives a real edit/bash tool suite in the sandbox clone, so the reason to
+# withhold write was never capability — it was that an unattended write run on
+# someone else's metered endpoint is a cost and trust decision the operator
+# never made. `resolved_provider_kind` answers that: it maps an opencode row to
+# the LOCAL server behind its base_url, or to "" when the endpoint is off-box.
+_LOCAL_ONLY_WRITE_CAPABLE_EXECUTORS = frozenset({Executor.OPENCODE})
+
+# The backends an opencode row may hold a write surface against. Deliberately
+# NARROWER than `is_local_provider_kind`, which also admits ollama, and admits
+# "opencode"/"aider" themselves (an agent row pointed at a local host on a port
+# the catalog doesn't recognise). Those are all genuinely local — they are just
+# not what this capability was scoped to. Write autonomy is granted backend by
+# backend, on evidence that the pairing behaves, so it is an allowlist rather
+# than "anything that isn't metered".
+#
+# Consequence worth knowing: LM Studio moved off its catalog port resolves to
+# "opencode" and is refused. That is a deliberate false negative — the safe
+# direction for a gate that decides whether an unattended agent may edit code.
+_LOCAL_WRITE_PROVIDER_KINDS = frozenset({"lmstudio", "mlx"})
 
 
 def _provider_supports_write(provider: LLMProvider) -> bool:
-    """Whether a run in IMPLEMENT mode may resume on this provider."""
+    """Whether a run in IMPLEMENT mode may run (or resume) on this provider.
+
+    Prevents two concrete failures:
+      - an IMPLEMENT run landing on a read-only executor (internal_llm, codex
+        tracking), which burns the round and produces no commits;
+      - an IMPLEMENT run landing on an opencode row whose `base_url` points at
+        a cloud endpoint — write autonomy is granted here on the strength of
+        the model being local, so the gate has to check the endpoint, not just
+        the row's kind (`is_local_provider_kind("opencode")` is True whatever
+        it is pointed at).
+    """
+    from domains.llm_providers.services.llm_executor import resolved_provider_kind
+
     try:
-        return _executor_for_provider(provider) in _WRITE_CAPABLE_EXECUTORS
+        executor = _executor_for_provider(provider)
     except LifecycleError:
         return False
+    if executor in _WRITE_CAPABLE_EXECUTORS:
+        return True
+    if executor in _LOCAL_ONLY_WRITE_CAPABLE_EXECUTORS:
+        return resolved_provider_kind(provider) in _LOCAL_WRITE_PROVIDER_KINDS
+    return False
+
+
+def write_executor_for_provider(
+    requested: Executor | None, provider: LLMProvider, mode: ExecutionMode
+) -> Executor | None:
+    """The executor an IMPLEMENT run should actually use, given the executor
+    its caller asked for and the provider the chain picked.
+
+    The three IMPLEMENT-mode callers (implement_run_service, fix_run_service,
+    thread_service) pin `Executor.CLAUDE_CODE` at their call sites, from the
+    days when it was the only write-capable executor. On an org with no Claude
+    subscription that pin is a guaranteed failure: the claude_code adapter
+    resolves providers by kind and returns "active provider is not
+    kind=claude_subscription". So when the pinned executor does not match the
+    chosen provider AND the provider is write-capable in its own right,
+    re-point the run at the provider's own executor. This lives here rather
+    than at those call sites because `redispatch_run` (quota resume) already
+    re-derives the executor from the provider — the two must not disagree about
+    which executor a write run belongs on.
+
+    Only IMPLEMENT-mode runs are touched: an ANALYZE_ONLY run pinned to
+    claude_code (review, verify) is a deliberate depth choice, not a write
+    decision.
+
+    Deliberately conservative — the caller's pin is kept whenever the provider
+    is NOT write-capable (a codex/internal_llm/cloud-opencode provider), so the
+    existing "no Claude subscription → the write run fails loudly" behaviour is
+    unchanged for every provider this feature does not cover.
+    """
+    if mode != ExecutionMode.IMPLEMENT or requested is None:
+        return requested
+    try:
+        provider_executor = _executor_for_provider(provider)
+    except LifecycleError:
+        return requested
+    if provider_executor is requested:
+        return requested
+    return provider_executor if _provider_supports_write(provider) else requested
