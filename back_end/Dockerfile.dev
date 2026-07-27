@@ -11,16 +11,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Node.js 20 + headless coding-agent CLIs:
 #   - @anthropic-ai/claude-code  (claude CLI, reads ~/.claude / OAuth token env)
 #   - @openai/codex              (codex CLI, reads ~/.codex/auth.json)
-#   - opencode-ai                (sst/opencode, reads ~/.config/opencode/opencode.json)
+#   - opencode-ai                (opencode, reads ~/.config/opencode/opencode.json)
 # All three are bind-mounted from the host's config dirs in docker-compose so the
 # in-container CLIs reuse the user's host-side subscription / model config.
+#
+# opencode is PINNED because OpenSweep now drives it through a contract, not
+# just a prompt: `--format json` (whose event schema — sessionID on every
+# event, `text`/`tool_use`/`step_finish` shapes, tokens+cost on step_finish —
+# llm_executor.OpenCodeEventReducer parses field by field) and `-s <session>`
+# for the continuation pass. 1.15.10 is the exact build every one of those
+# facts was captured from, by running the binary. Upstream stable is 1.18.5,
+# but the project moved orgs (sst → anomalyco) between them and its flags are
+# already known to drift across minors — 1.15.10 has
+# `--dangerously-skip-permissions` where current docs say `--auto` — so
+# floating to a newer build would be shipping an unverified wire format to
+# every user. Bumping this line is a deliberate act: re-run the capture
+# (`opencode run --format json …`), re-check `opencode run --help`, and check
+# whether https://github.com/anomalyco/opencode/issues/26855 (json mode can
+# exit before the final step_finish) is fixed — the reducer tolerates it, so
+# the pin can move once, not continuously.
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g \
         @anthropic-ai/claude-code \
         @openai/codex@0.145.0 \
-        opencode-ai \
+        opencode-ai@1.15.10 \
         mcp-remote \
     && npm cache clean --force
 # mcp-remote bridges remote SSE/HTTP MCP servers (like the one fastapi-mcp

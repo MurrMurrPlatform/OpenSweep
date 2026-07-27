@@ -30,7 +30,11 @@ from domains.runs.schemas import Effort, normalize_effort
 from infrastructure.code_graph import CODE_GRAPH_PROMPT
 
 PromptKind = Literal[
-    "claude_code_read", "claude_code_write", "internal_llm", "cli_tracking"
+    "claude_code_read",
+    "claude_code_write",
+    "internal_llm",
+    "cli_tracking",
+    "cli_tracking_write",
 ]
 
 
@@ -209,6 +213,37 @@ non-compliant work:
 - NEVER touch paths matching the forbidden patterns listed in the intent.
 - Commit with clear conventional commit messages as instructed in the intent."""
 
+# Same hard rules for the envelope-transport CLI agents (opencode). Kept as a
+# separate constant rather than parameterising `_WRITE_HARD_RULES`, because
+# that string is pinned byte-for-byte by the claude_code_write golden and the
+# wording differences below are real: a tracking CLI has no subagents, and it
+# reports through the JSON envelope rather than over MCP.
+#
+# The "never push" rule is not decoration. `delivery.write_gate` is what
+# validates the sandbox's commits against the denylist/protected branches and
+# performs the push with the platform's own credential; an agent that pushed
+# itself would route around the only gate there is. The agent's write surface
+# ends at `git commit` inside the disposable clone.
+_WRITE_HARD_RULES_CLI = """You are a coding agent running inside OpenSweep on a WRITE run (implement or
+fix). You are working in a disposable sandbox clone of the repository with the
+correct work branch already checked out, and you have your own file-editing and
+shell tools.
+
+Your job: make the minimal code change described in the intent, run the
+relevant tests, and COMMIT the result inside this working copy.
+
+Hard rules — the platform enforces these after the run and will discard
+non-compliant work:
+- NEVER push. NEVER run `git push`, `git pull`, or `git fetch`. The platform
+  validates your commits and pushes with its own credentials; a commit that
+  stays local is how your work gets shipped, not a failure.
+- NEVER switch branches, force anything, or rewrite history (no rebase,
+  no --amend on commits you did not create in this run, no reset --hard).
+- NEVER touch paths matching the forbidden patterns listed in the intent.
+- Commit with clear conventional commit messages as instructed in the intent.
+- Leaving the working copy dirty is NOT delivering the change: uncommitted
+  edits are discarded with the sandbox. Commit before you finish."""
+
 # Envelope output contracts — the ```json examples and their surrounding
 # instructions are preserved VERBATIM from the pre-consolidation prompts, so
 # `extract_envelope` keeps seeing exactly the shape it was tuned for.
@@ -386,11 +421,32 @@ def _cli_tracking() -> str:
     )
 
 
+def _cli_tracking_write() -> str:
+    """The cli_tracking prompt for a WRITE run.
+
+    Deliberately NOT `_cli_tracking()` plus an addendum: that prompt's core is
+    `READ_ONLY_RULE` ("do not edit repository files, produce patches, … or ask
+    OpenSweep to apply changes"), which flatly contradicts an implement/fix
+    intent. An agent handed both ends the run having filed a finding about the
+    change it was asked to make."""
+    return "\n\n".join(
+        [
+            _WRITE_HARD_RULES_CLI,
+            "You also have OpenSweep's platform tools — call them natively when they\n"
+            "appear in your tool list as `opensweep_*`, otherwise through the JSON\n"
+            "envelope below:\n\n" + render_tool_list(PLATFORM_WRITE_TOOLS),
+            _report_contract(write_run=True),
+            _ENVELOPE_CONTRACT_CLI,
+        ]
+    )
+
+
 _KIND_BUILDERS = {
     "claude_code_read": _claude_code_read,
     "claude_code_write": _claude_code_write,
     "internal_llm": _internal_llm,
     "cli_tracking": _cli_tracking,
+    "cli_tracking_write": _cli_tracking_write,
 }
 
 
