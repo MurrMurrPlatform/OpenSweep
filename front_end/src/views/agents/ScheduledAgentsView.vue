@@ -10,6 +10,7 @@ import { PageHeader } from '@/components/ui/page-header'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { EmptyState } from '@/components/ui/empty-state'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import AgentPickerDialog from '@/components/agents/AgentPickerDialog.vue'
@@ -88,16 +89,17 @@ function open(s: ScheduledAgentDTO) {
       <Skeleton class="h-16" />
     </template>
 
-    <Card v-else-if="!scheduled.list.length">
-      <CardContent class="flex flex-col items-center gap-2 p-8 text-center">
-        <Bot class="h-8 w-8 text-muted-foreground" />
-        <p class="text-sm text-muted-foreground">
-          No agents are bound to this repository yet. Add one from the library to
-          schedule recurring audits, doc upkeep, or any saved prompt.
-        </p>
-        <Button size="sm" class="mt-2" @click="pickerOpen = true"><Plus /> Add agent</Button>
-      </CardContent>
-    </Card>
+    <EmptyState
+      v-else-if="!scheduled.list.length"
+      :icon="Bot"
+      title="No agents bound to this repository"
+      description="Bind an agent to run work on a schedule or on every push — recurring audits, doc upkeep, or any prompt you saved from the Ask page."
+    >
+      <Button size="sm" @click="pickerOpen = true"><Plus /> Add agent</Button>
+      <Button size="sm" variant="outline" as="router-link" :to="{ name: 'agent-library' }">
+        Browse the agent library
+      </Button>
+    </EmptyState>
 
     <Card v-else>
       <CardContent class="p-0">

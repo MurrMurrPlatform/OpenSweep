@@ -322,9 +322,16 @@ async def seed_audit_agents(repository_uid: str) -> list[ScheduledAgent]:
       launches a rotation campaign over the k least-recently covered areas
       (run-campaign anchor).
 
-    All seed with autonomy="ask-before-run": once enabled, a binding's cron
-    tick proposes a run for approval rather than auto-billing. Dial up to
-    auto-run-cheap/auto-run-any for unattended operation.
+    All seed with autonomy="ask-before-run", but note what that does and does
+    NOT mean on the cron path: a due tick on an ENABLED binding dispatches
+    immediately — setting/keeping a cron is itself the approval
+    (`schedule_scanner.cron_dispatch_allowed`). `ask-before-run` gates the
+    on-event path only (`event_triggers._autonomy_allows_run`, where only
+    auto-run-cheap/auto-run-any auto-run). Set autonomy="disabled" — or
+    `enabled=False` — to stop a cron binding from billing runs.
+
+    This docstring previously claimed cron ticks propose for approval rather
+    than auto-billing. They never have.
     """
     seeded: list[ScheduledAgent] = []
     for key, title, trigger, enabled, target in (

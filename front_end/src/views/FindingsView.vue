@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
-import { Archive, FileCode2, Inbox, Plus, Search, ShieldCheck, SquareKanban, Trash2, X } from 'lucide-vue-next'
-import { useFindingStore } from '@/stores/findingStore'
+import { Archive, FileCode2, Inbox, Plus, Repeat2, Search, ShieldCheck, SquareKanban, Trash2, Wrench, X } from 'lucide-vue-next'
+import { useFindingStore, type FindingSortBy } from '@/stores/findingStore'
 import { useTicketStore } from '@/stores/ticketStore'
 import { formatRelativeTime } from '@/lib/utils'
 import { useCurrentRepo } from '@/composables/useCurrentRepo'
@@ -44,7 +44,15 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 import { ErrorState } from '@/components/ui/error-state'
 import FindingEditDialog from '@/components/findings/FindingEditDialog.vue'
-import { SEVERITY_RANK, severityVariant } from '@/components/findings/findingMeta'
+import TrustBadge from '@/components/findings/TrustBadge.vue'
+import {
+  corroborationCount,
+  SEVERITY_RANK,
+  severityVariant,
+  TRUST_HIGH,
+  TRUST_MEDIUM,
+  trustPercent,
+} from '@/components/findings/findingMeta'
 import type { FindingDTO, FindingStatus, Severity, TicketPriority, TicketSize } from '@/types/api'
 
 const findings = useFindingStore()
@@ -64,7 +72,13 @@ const tagSearch = ref('')
 const tagPopoverOpen = ref(false)
 const severityFilter = ref<'' | Severity>('')
 const statusFilter = ref<FindingStatus | 'all'>('open')
-const sortKey = ref('updated_desc')
+const trustFilter = ref<TrustFilter>('all')
+// This is a triage inbox: the first question is "what is most likely real and
+// worth my time", not "what happened last". Trust answers that directly —
+// cross-run corroboration and static-analyzer confirmation are evidence the
+// platform verified itself, unlike a model's self-reported confidence.
+// Recency stays one click away in the same control.
+const sortKey = ref('trust_desc')
 const selected = ref<Set<string>>(new Set())
 
 const SEVERITY_OPTIONS = [
@@ -83,7 +97,22 @@ const STATUS_OPTIONS = [
   { label: 'All statuses', value: 'all' },
 ]
 
+type TrustFilter = 'all' | 'high' | 'medium'
+
+const TRUST_OPTIONS: { label: string; value: TrustFilter }[] = [
+  { label: 'Any trust', value: 'all' },
+  { label: `High trust · ≥${trustPercent(TRUST_HIGH)}%`, value: 'high' },
+  { label: `Medium+ · ≥${trustPercent(TRUST_MEDIUM)}%`, value: 'medium' },
+]
+
+const TRUST_THRESHOLD: Record<TrustFilter, number> = {
+  all: 0,
+  high: TRUST_HIGH,
+  medium: TRUST_MEDIUM,
+}
+
 const SORT_OPTIONS = [
+  { label: 'Most credible', value: 'trust_desc' },
   { label: 'Newest first', value: 'updated_desc' },
   { label: 'Oldest first', value: 'updated_asc' },
   { label: 'First found', value: 'created_asc' },
@@ -94,6 +123,21 @@ const SORT_OPTIONS = [
   { label: 'Title A–Z', value: 'title_asc' },
 ]
 
+/** Sort key → the server's whitelisted `sort_by`/`sort_dir`. The list is also
+ *  re-sorted client-side (below) so switching sort stays instant, but the
+ *  fetch asks for the same order so the first paint is already correct. */
+const SORT_TO_API: Record<string, { sort_by: FindingSortBy; sort_dir: 'asc' | 'desc' }> = {
+  trust_desc: { sort_by: 'trust', sort_dir: 'desc' },
+  updated_desc: { sort_by: 'updated_at', sort_dir: 'desc' },
+  updated_asc: { sort_by: 'updated_at', sort_dir: 'asc' },
+  created_desc: { sort_by: 'created_at', sort_dir: 'desc' },
+  created_asc: { sort_by: 'created_at', sort_dir: 'asc' },
+  severity_desc: { sort_by: 'severity', sort_dir: 'desc' },
+  severity_asc: { sort_by: 'severity', sort_dir: 'asc' },
+  confidence_desc: { sort_by: 'confidence', sort_dir: 'desc' },
+  title_asc: { sort_by: 'title', sort_dir: 'asc' },
+}
+
 // reka SelectItem values can't be empty strings; 'all' is the "no filter"
 // sentinel, translated back to '' (the item.filter treats '' as no severity).
 function onSeverity(v: unknown) {
@@ -101,6 +145,9 @@ function onSeverity(v: unknown) {
 }
 function onStatus(v: unknown) {
   statusFilter.value = v as FindingStatus | 'all'
+}
+function onTrust(v: unknown) {
+  trustFilter.value = v as TrustFilter
 }
 function onSort(v: unknown) {
   sortKey.value = v as string
@@ -112,19 +159,21 @@ function ts(value?: string | null): number {
 
 function sortFindings(list: FindingDTO[], key: string): FindingDTO[] {
   const recency = (f: FindingDTO) => ts(f.updated_at) || ts(f.created_at)
+  const sev = (f: FindingDTO) => SEVERITY_RANK[f.severity] ?? 1
   const cmp: Record<string, (a: FindingDTO, b: FindingDTO) => number> = {
+    // Mirrors the server's `sort_by=trust`: severity breaks trust ties, because
+    // of two equally credible findings the worse one is worth opening first.
+    trust_desc: (a, b) => b.trust - a.trust || sev(b) - sev(a) || recency(b) - recency(a),
     updated_desc: (a, b) => recency(b) - recency(a),
     updated_asc: (a, b) => recency(a) - recency(b),
     created_desc: (a, b) => ts(b.created_at) - ts(a.created_at),
     created_asc: (a, b) => ts(a.created_at) - ts(b.created_at),
-    severity_desc: (a, b) =>
-      (SEVERITY_RANK[b.severity] ?? 1) - (SEVERITY_RANK[a.severity] ?? 1) || recency(b) - recency(a),
-    severity_asc: (a, b) =>
-      (SEVERITY_RANK[a.severity] ?? 1) - (SEVERITY_RANK[b.severity] ?? 1) || recency(b) - recency(a),
+    severity_desc: (a, b) => sev(b) - sev(a) || recency(b) - recency(a),
+    severity_asc: (a, b) => sev(a) - sev(b) || recency(b) - recency(a),
     confidence_desc: (a, b) => b.confidence - a.confidence || recency(b) - recency(a),
     title_asc: (a, b) => (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' }),
   }
-  return [...list].sort(cmp[key] ?? cmp.updated_desc)
+  return [...list].sort(cmp[key] ?? cmp.trust_desc)
 }
 
 const counts = computed(() => ({
@@ -186,6 +235,12 @@ const items = computed(() => {
   else if (filter.value === 'proposals') out = out.filter((f) => f.kind === 'proposal')
   if (tagFilter.value) out = out.filter((f) => (f.tags || []).includes(tagFilter.value))
   if (severityFilter.value) out = out.filter((f) => f.severity === severityFilter.value)
+  // The API has no trust threshold param — the whole list is already loaded,
+  // so the cut happens here.
+  if (trustFilter.value !== 'all') {
+    const floor = TRUST_THRESHOLD[trustFilter.value]
+    out = out.filter((f) => f.trust >= floor)
+  }
   const q = search.value.trim().toLowerCase()
   if (q) {
     out = out.filter((f) =>
@@ -204,8 +259,13 @@ const filtersActive = computed(
     search.value.trim() !== '' ||
     filter.value !== 'all' ||
     tagFilter.value !== '' ||
-    severityFilter.value !== '',
+    severityFilter.value !== '' ||
+    trustFilter.value !== 'all',
 )
+
+/** How much noise the high-trust cut would remove — makes the filter
+ *  discoverable without the user having to try it. */
+const highTrustCount = computed(() => all.value.filter((f) => f.trust >= TRUST_HIGH).length)
 
 const visibleSelectedCount = computed(() => items.value.filter((f) => selected.value.has(f.uid)).length)
 const allVisibleSelected = computed(() => items.value.length > 0 && visibleSelectedCount.value === items.value.length)
@@ -228,6 +288,7 @@ async function reload() {
       status: statusFilter.value === 'all' ? undefined : statusFilter.value,
       repository_uid: repoUid.value,
       exclude_kind: 'feature-idea',
+      ...(SORT_TO_API[sortKey.value] ?? SORT_TO_API.trust_desc),
     })
     if (gen !== reloadGeneration) return
     all.value = data
@@ -252,7 +313,7 @@ const CHIPS: { id: typeof filter.value; label: string }[] = [
   { id: 'proposals', label: 'Proposals' },
 ]
 
-watch([filter, tagFilter, severityFilter, search], () => {
+watch([filter, tagFilter, severityFilter, trustFilter, search], () => {
   selected.value = new Set()
 })
 
@@ -498,6 +559,12 @@ async function confirmRatchet() {
 }
 
 const emptyCopy = computed(() => {
+  if (trustFilter.value !== 'all' && all.value.length) {
+    return {
+      title: 'Nothing clears that trust bar',
+      description: `No finding here reaches ${trustPercent(TRUST_THRESHOLD[trustFilter.value])}% trust. Loosen the trust filter, or launch verification runs to corroborate the ones you have.`,
+    }
+  }
   if (search.value.trim()) {
     return {
       title: 'No matching findings',
@@ -521,7 +588,7 @@ const emptyCopy = computed(() => {
   <div class="space-y-4">
     <PageHeader
       title="Findings"
-      subtitle="Everything the agents have surfaced — open items by default."
+      subtitle="Everything the agents have surfaced — open items first, most credible first."
     >
       <Button size="sm" :disabled="!repoUid" @click="createOpen = true">
         <Plus /> File finding
@@ -598,6 +665,16 @@ const emptyCopy = computed(() => {
               <SelectItem v-for="o in STATUS_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</SelectItem>
             </SelectContent>
           </Select>
+          <!-- Trust cut: the fastest way from "200 findings" to "the ones
+               something other than the model vouched for". -->
+          <Select :model-value="trustFilter" @update:model-value="onTrust">
+            <SelectTrigger class="h-9 w-full sm:w-40">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem v-for="o in TRUST_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</SelectItem>
+            </SelectContent>
+          </Select>
           <Select :model-value="sortKey" @update:model-value="onSort">
             <SelectTrigger class="h-9 w-full sm:w-44">
               <SelectValue />
@@ -631,6 +708,16 @@ const emptyCopy = computed(() => {
           >
             {{ c.label }}
             <span class="text-muted-foreground">· {{ counts[c.id] }}</span>
+          </Button>
+          <!-- One-click cut to the corroborated / tool-confirmed subset. -->
+          <Button
+            v-if="trustFilter === 'all' && highTrustCount > 0 && highTrustCount < all.length"
+            variant="ghost"
+            size="sm"
+            class="text-good"
+            @click="trustFilter = 'high'"
+          >
+            <ShieldCheck /> {{ highTrustCount }} high-trust
           </Button>
           <template v-if="tagCounts.length">
             <span class="mx-1 hidden h-4 w-px bg-border sm:block" />
@@ -744,8 +831,20 @@ const emptyCopy = computed(() => {
               class="-mx-2 block rounded-sm px-2 py-1 transition-colors hover:bg-accent"
             >
               <div class="flex flex-wrap items-center gap-1.5">
+                <TrustBadge :finding="f" compact />
                 <Badge :variant="severityVariant(f.severity)" class="px-1.5 text-[10px]">{{ f.severity }}</Badge>
                 <Badge variant="outline" class="px-1.5 text-[10px]">{{ f.kind }}</Badge>
+                <!-- A deterministic analyzer matched — categorically stronger
+                     evidence than an LLM assertion, so it gets its own chip. -->
+                <Badge
+                  v-if="f.detected_by_tool"
+                  variant="info"
+                  class="px-1.5 text-[10px]"
+                  :title="f.detected_by_rule ? `rule ${f.detected_by_rule}` : undefined"
+                >
+                  <Wrench class="size-2.5" />
+                  {{ f.detected_by_tool }}
+                </Badge>
                 <span v-if="f.subtype" class="font-mono text-[10px] uppercase text-muted-foreground">{{ f.subtype }}</span>
                 <!-- Capped at 3 — a heavily-tagged finding would otherwise push
                      its own title off the row. Full list is on the detail page. -->
@@ -778,6 +877,14 @@ const emptyCopy = computed(() => {
                   <span v-if="(f.affected_paths || []).length > 1" class="shrink-0">
                     +{{ (f.affected_paths || []).length - 1 }} more
                   </span>
+                </span>
+                <span
+                  v-if="corroborationCount(f) > 1"
+                  class="inline-flex items-center gap-1 text-good"
+                  title="Independent runs that filed or re-confirmed this finding"
+                >
+                  <Repeat2 class="size-3 shrink-0" />
+                  confirmed by {{ corroborationCount(f) }} runs
                 </span>
                 <span>{{ f.executor }}</span>
               </div>

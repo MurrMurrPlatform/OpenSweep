@@ -22,10 +22,26 @@ def test_resume_beat_entry_still_scheduled():
 
 
 def test_resume_run_task_registered_with_long_limits():
+    """The registered limits are the FALLBACK for an invocation without
+    explicit ones — `_scan_and_enqueue` passes policy-derived limits per run
+    (domains/runs/tasks/task_limits.py). What matters here is that the per-run
+    task exists and is bounded far above the global tick limits, not the
+    specific numbers.
+    """
+    from domains.runs.tasks.task_limits import (
+        DEFAULT_DISPATCH_SECONDS,
+        dispatch_time_limits,
+    )
+
     task = app.tasks.get("opensweep.runs.resume_run")
     assert task is not None, "per-run resume task missing — beat tick would redispatch inline"
-    assert task.soft_time_limit == 3600
-    assert task.time_limit == 3900
+
+    expected_soft, expected_hard = dispatch_time_limits(DEFAULT_DISPATCH_SECONDS)
+    assert task.soft_time_limit == expected_soft
+    assert task.time_limit == expected_hard
+    # The whole point of a per-run task: it outlives the beat tick's limits.
+    assert task.soft_time_limit > celery_app.app.conf.task_soft_time_limit
+    assert task.time_limit > celery_app.app.conf.task_time_limit
 
 
 def test_global_limits_unchanged_for_ticks():

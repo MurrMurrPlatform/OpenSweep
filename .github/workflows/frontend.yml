@@ -1,0 +1,39 @@
+name: Frontend
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontend-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: front_end
+
+jobs:
+  build:
+    name: Type-check and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Matches front_end/Dockerfile.dev (node:20-alpine).
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: front_end/package-lock.json
+      # `npm ci` needs the lockfile to agree with package.json; the repo also
+      # carries a pnpm-lock.yaml, but Dockerfile.dev installs with npm, so npm
+      # is the one that has to keep working.
+      - run: npm ci
+      # `build` already runs `vue-tsc -b`, but running the type-check on its
+      # own first means a type error reports as a type error rather than as a
+      # failed build step.
+      - run: npm run type-check
+      - run: npm run build

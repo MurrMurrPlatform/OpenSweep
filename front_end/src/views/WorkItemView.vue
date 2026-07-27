@@ -32,6 +32,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { EmptyState } from '@/components/ui/empty-state'
 import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
 import CiStateBadge from '@/components/delivery/CiStateBadge.vue'
@@ -357,9 +358,20 @@ const focusedUid = computed(() => {
     </p>
 
     <!-- ── Focused facet ─────────────────────────────────────────────────── -->
+    <!-- Nothing resolved from the route anchor: deleted, or a bad deep link.
+         Say so instead of handing a null uid to the PR pane. -->
+    <EmptyState
+      v-if="!resolving && !ticket && !thread && !pr"
+      :icon="SquareKanban"
+      title="This work item no longer exists"
+      description="The ticket, thread or pull request behind this link was deleted, or the link points at something in another workspace."
+    >
+      <Button as="router-link" :to="{ name: 'root' }">Back to your workspace</Button>
+    </EmptyState>
+
     <!-- Adopt pane: a ticketless PR's Ticket tab offers creation instead of
          a dead end. -->
-    <Card v-if="activeFacet === 'ticket' && !ticket && pr">
+    <Card v-else-if="activeFacet === 'ticket' && !ticket && pr">
       <CardContent class="flex flex-col items-center gap-3 p-10 text-center">
         <SquareKanban class="size-8 text-muted-foreground" />
         <h2 class="text-base font-semibold">No ticket for this pull request</h2>

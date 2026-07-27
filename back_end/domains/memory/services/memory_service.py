@@ -2,8 +2,10 @@
 
 write_memory is an upsert: an identical fingerprint touches the existing
 row; a same-titled memory on the same (repo, anchor) is overwritten. Search
-is substring over title+body with fresh-before-stale ranking. Staleness is a
-query, not a state.
+RANKS by relevance (services/relevance.py) instead of the substring filter it
+used to be — a near-miss phrasing returned nothing, and a broad word returned
+everything in write order. Staleness is a query, not a state; it now costs a
+memory rank instead of banishing it below every fresh one.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from fastapi import HTTPException
 
 from domains.memory.models import Memory
 from domains.memory.schemas import MemoryDTO
+from domains.memory.services.relevance import rank_memories
 from infrastructure.audit import write_audit
 
 
@@ -130,20 +133,25 @@ async def search_memory(
     anchor_uid: str = "",
     limit: int = 10,
 ) -> list[MemoryDTO]:
-    """Substring search over title+body, fresh-before-stale, newest first.
-    Returns full bodies — memories are small; there is no get tool."""
-    q = (query or "").strip().lower()
+    """Relevance-ranked search over title+body. Returns full bodies —
+    memories are small; there is no get tool.
+
+    `anchor_uid` stays a hard filter (it names one Doc, so it is a scope, not
+    a hint). The query is not: it is scored by `relevance.rank_memories`, so
+    "redis fixture flake" still finds "Flaky Redis fixture in the worker
+    tests", which the old `query in title+body` test missed entirely.
+    """
     change_times = await _anchor_change_times(repository_uid)
-    matched: list[tuple[bool, datetime, Memory]] = []
-    for m in await Memory.nodes.filter(repository_uid=repository_uid):
-        if anchor_uid and (m.anchor_uid or "") != anchor_uid:
-            continue
-        if q and q not in f"{m.title or ''}\n{m.body or ''}".lower():
-            continue
-        stale = _possibly_stale(m, change_times)
-        matched.append((stale, m.updated_at or datetime.min.replace(tzinfo=UTC), m))
-    matched.sort(key=lambda t: (t[0], -t[1].timestamp()))
-    return [memory_to_dto(m, possibly_stale=stale) for stale, _, m in matched[: max(1, limit)]]
+    rows = [
+        m
+        for m in await Memory.nodes.filter(repository_uid=repository_uid)
+        if not anchor_uid or (m.anchor_uid or "") == anchor_uid
+    ]
+    stale_uids = {m.uid for m in rows if _possibly_stale(m, change_times)}
+    ranked = rank_memories(
+        query=query or "", memories=rows, stale_uids=stale_uids, limit=max(1, limit)
+    )
+    return [memory_to_dto(m, possibly_stale=m.uid in stale_uids) for m in ranked]
 
 
 async def list_memories(

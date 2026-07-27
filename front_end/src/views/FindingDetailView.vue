@@ -44,7 +44,15 @@ import CommentThread from '@/components/comments/CommentThread.vue'
 import DiscussionChip from '@/components/runs/DiscussionChip.vue'
 import TicketDialog from '@/components/tickets/TicketDialog.vue'
 import FindingEditDialog from '@/components/findings/FindingEditDialog.vue'
-import { severityVariant } from '@/components/findings/findingMeta'
+import TrustSignalList from '@/components/findings/TrustSignalList.vue'
+import {
+  corroborationCount,
+  severityVariant,
+  trustPercent,
+  trustSignals,
+  trustTier,
+  type VerificationOutcome,
+} from '@/components/findings/findingMeta'
 import { extractCodeIdentifiersFrom } from '@/lib/codeHints'
 import { isLiveRunStatus, runStatusLabel, runStatusVariant } from '@/lib/runStatus'
 import type {
@@ -317,7 +325,10 @@ async function launchRefine() {
 
 const verdictPattern = /verdict\s*[:\-]\s*(resolved-properly|partially-resolved|not-resolved|cannot-determine)/i
 
+type VerdictKey = 'resolved-properly' | 'partially-resolved' | 'not-resolved' | 'cannot-determine'
+
 interface VerdictInfo {
+  key: VerdictKey
   label: string
   variant: BadgeVariants['variant']
   icon: typeof CheckCircle2
@@ -340,11 +351,11 @@ function summaryHaystack(run: RunDTO): string {
 function verdictFor(run: RunDTO): VerdictInfo | null {
   const match = summaryHaystack(run).match(verdictPattern)
   if (!match) return null
-  const key = match[1].toLowerCase()
-  if (key === 'resolved-properly') return { label: 'Resolved properly', variant: 'success', icon: CheckCircle2 }
-  if (key === 'partially-resolved') return { label: 'Partially resolved', variant: 'warn', icon: AlertTriangle }
-  if (key === 'not-resolved') return { label: 'Not resolved', variant: 'destructive', icon: XCircle }
-  return { label: 'Cannot determine', variant: 'secondary', icon: Info }
+  const key = match[1].toLowerCase() as VerdictKey
+  if (key === 'resolved-properly') return { key, label: 'Resolved properly', variant: 'success', icon: CheckCircle2 }
+  if (key === 'partially-resolved') return { key, label: 'Partially resolved', variant: 'warn', icon: AlertTriangle }
+  if (key === 'not-resolved') return { key, label: 'Not resolved', variant: 'destructive', icon: XCircle }
+  return { key: 'cannot-determine', label: 'Cannot determine', variant: 'secondary', icon: Info }
 }
 
 function summaryFor(run: RunDTO): string {
@@ -387,6 +398,27 @@ const enrichedVerifications = computed<EnrichedVerification[]>(() =>
   })),
 )
 
+/** A verification run's verdict answers "was it fixed"; read here for what it
+ *  implies about whether the finding was REAL in the first place. A skeptic
+ *  that re-read the code and still saw the problem is independent evidence. */
+const VERDICT_TO_TRUST: Record<VerdictKey, VerificationOutcome> = {
+  'not-resolved': 'still-present',
+  'partially-resolved': 'partly-present',
+  'resolved-properly': 'resolved',
+  'cannot-determine': 'inconclusive',
+}
+
+const verificationOutcome = computed<VerificationOutcome>(() => {
+  if (liveVerification.value) return 'running'
+  // Newest first — launchVerification prepends, and the API lists in that order.
+  const latest = enrichedVerifications.value.find((e) => e.verdict)
+  return latest?.verdict ? VERDICT_TO_TRUST[latest.verdict.key] : 'none'
+})
+
+const trustSignalRows = computed(() =>
+  item.value ? trustSignals(item.value, verificationOutcome.value) : [],
+)
+
 watch(
   () => route.params.uid,
   async (uid) => {
@@ -427,6 +459,10 @@ watch(
             <Badge variant="outline">size: {{ item.size }}</Badge>
             <Badge v-if="item.subtype" variant="outline">{{ item.subtype }}</Badge>
             <Badge :variant="statusTone">status: {{ item.status }}</Badge>
+            <Badge :variant="trustTier(item.trust).variant">
+              <ShieldCheck class="h-3 w-3" />
+              trust {{ trustPercent(item.trust) }}%
+            </Badge>
           </div>
         </template>
 
@@ -623,6 +659,29 @@ watch(
 
         <!-- ── Sidebar ────────────────────────────────────────────────── -->
         <div class="space-y-4">
+          <!-- Why the score is what it is. A bare 0..1 float is not a triage
+               input; the signals behind it are. -->
+          <Card>
+            <CardHeader class="flex-row items-center justify-between gap-2 space-y-0 p-4">
+              <CardTitle class="flex items-center gap-2 text-base">
+                <ShieldCheck class="h-4 w-4 text-muted-foreground" />
+                Trust
+              </CardTitle>
+              <Badge :variant="trustTier(item.trust).variant">
+                {{ trustTier(item.trust).label }} · {{ trustPercent(item.trust) }}%
+              </Badge>
+            </CardHeader>
+            <CardContent class="space-y-3 p-4 pt-0">
+              <p class="text-xs text-muted-foreground">
+                Evidence the platform can check independently of what the model asserted.
+              </p>
+              <TrustSignalList :signals="trustSignalRows" />
+              <p v-if="verificationOutcome === 'none'" class="text-xs text-muted-foreground">
+                No verification run yet — launching one adds a second, skeptical opinion.
+              </p>
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader class="p-4">
               <CardTitle class="text-base">Triage</CardTitle>
@@ -674,8 +733,14 @@ watch(
                     <div v-if="item.provider_model" class="font-mono text-muted-foreground">{{ item.provider_model }}</div>
                   </dd>
                 </template>
+                <template v-if="item.detected_by_tool">
+                  <dt class="text-muted-foreground">analyzer</dt>
+                  <dd class="font-mono break-all">
+                    {{ item.detected_by_tool }}<span v-if="item.detected_by_rule"> · {{ item.detected_by_rule }}</span>
+                  </dd>
+                </template>
                 <dt class="text-muted-foreground">confidence</dt>
-                <dd>{{ (item.confidence * 100).toFixed(0) }}%</dd>
+                <dd>{{ trustPercent(item.confidence) }}% self-reported</dd>
                 <template v-if="item.created_at">
                   <dt class="text-muted-foreground">created</dt>
                   <dd>{{ item.created_at }}</dd>
@@ -686,14 +751,19 @@ watch(
                 </template>
                 <template v-if="item.last_confirmed_at">
                   <dt class="text-muted-foreground">confirmed</dt>
+                  <dd>{{ item.last_confirmed_at }}</dd>
+                </template>
+                <template v-if="corroborationCount(item) > 1">
+                  <dt class="text-muted-foreground">corroborated</dt>
                   <dd>
-                    {{ item.last_confirmed_at }}
-                    <span
-                      v-if="(item.source_run_uids?.length ?? 0) > 1"
-                      class="text-muted-foreground"
+                    <RouterLink
+                      v-for="uid in item.source_run_uids || []"
+                      :key="uid"
+                      :to="{ name: 'run-detail', params: { uid } }"
+                      class="mr-2 inline-block font-mono text-primary hover:underline"
                     >
-                      · {{ item.source_run_uids!.length }} runs
-                    </span>
+                      {{ uid.slice(0, 8) }}
+                    </RouterLink>
                   </dd>
                 </template>
               </dl>

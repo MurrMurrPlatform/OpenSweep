@@ -99,6 +99,13 @@ class FindingDTO(BaseModel):
     detected_by_tool: str = ""
     detected_by_rule: str = ""
 
+    # Composite 0..1 credibility, DERIVED at the DTO boundary from signals the
+    # platform can check independently of what the model asserted: how many
+    # separate runs corroborated it, whether a static analyzer confirmed it,
+    # the executor's own confidence, and any skeptic-pass outcome. Sortable
+    # via sort_by="trust". See findings/services/trust.py.
+    trust: float = 0.7
+
     # Provider that produced this finding, resolved from the source Run
     # when available. Empty for manual or pre-provider-tracking findings.
     provider_uid: Optional[str] = None

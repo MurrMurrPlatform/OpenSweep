@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Bot, Plus, RefreshCw } from 'lucide-vue-next'
+import { Bot, Plus, RefreshCw, SearchX } from 'lucide-vue-next'
 import { useAgentStore } from '@/stores/agentStore'
 import { useToast } from '@/composables/useToast'
 import { PageHeader } from '@/components/ui/page-header'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { EmptyState } from '@/components/ui/empty-state'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
@@ -45,6 +46,16 @@ const producesChips = computed(() => {
   const kinds = new Set(agents.list.map((a) => a.produces))
   return ['', ...kinds]
 })
+
+const filtering = computed(
+  () => !!search.value.trim() || !!producesFilter.value || !!provenanceFilter.value,
+)
+
+function clearFilters() {
+  search.value = ''
+  producesFilter.value = ''
+  provenanceFilter.value = ''
+}
 
 const filtered = computed(() => {
   const q = search.value.trim().toLowerCase()
@@ -119,14 +130,26 @@ function open(a: AgentDTO) {
       <Skeleton class="h-20" />
     </template>
 
-    <Card v-else-if="!filtered.length">
-      <CardContent class="flex flex-col items-center gap-2 p-8 text-center">
-        <Bot class="h-8 w-8 text-muted-foreground" />
-        <p class="text-sm text-muted-foreground">
-          No agents match. Create one, or save a prompt as an agent from the Ask page.
-        </p>
-      </CardContent>
-    </Card>
+    <!-- Filtered-to-nothing and genuinely-empty need different next actions. -->
+    <EmptyState
+      v-else-if="!filtered.length && filtering"
+      :icon="SearchX"
+      title="No agents match these filters"
+      :description="`${agents.list.length} agent${agents.list.length === 1 ? '' : 's'} in the library — none of them match the current search and filters.`"
+    >
+      <Button size="sm" variant="outline" @click="clearFilters">Clear filters</Button>
+    </EmptyState>
+
+    <EmptyState
+      v-else-if="!filtered.length"
+      :icon="Bot"
+      title="No agents yet"
+      description="An agent is a reusable prompt plus what it produces. Create one here, or save a prompt you already wrote on the Ask page."
+    >
+      <Button size="sm" @click="router.push({ name: 'agent-create' })">
+        <Plus /> New agent
+      </Button>
+    </EmptyState>
 
     <div v-else class="stagger-children space-y-2">
       <Card

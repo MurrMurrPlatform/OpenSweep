@@ -424,8 +424,16 @@ async def _launch_dispatch(run: Run, make_pipeline, *, wait_for_completion: bool
         return await Run.nodes.get(uid=run.uid)
     if get_role() == WORKER:
         from domains.runs.tasks.dispatch_runs import dispatch_run
+        from domains.runs.tasks.task_limits import limits_for_run
 
-        dispatch_run.delay(run.uid)
+        # Per-invocation limits derived from the run's policy: this task hosts
+        # the whole pipeline, so its ceiling has to sit above the wall ceiling
+        # the executor enforces on the agent. A flat limit silently truncated
+        # every tier above `normal`.
+        soft, hard = await limits_for_run(run)
+        dispatch_run.apply_async(
+            args=[run.uid], soft_time_limit=soft, time_limit=hard
+        )
         return run
     task = asyncio.create_task(make_pipeline())
     task.add_done_callback(lambda done: _log_task_failure(run.uid, done))

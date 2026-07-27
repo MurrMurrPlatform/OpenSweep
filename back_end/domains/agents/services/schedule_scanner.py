@@ -37,10 +37,28 @@ def is_due(expression: str, *, last: datetime | None, now: datetime) -> bool:
     return prev_fire > last
 
 
+def cron_dispatch_allowed(autonomy: str) -> bool:
+    """Whether a due cron tick may dispatch at this autonomy level.
+
+    On the cron path, setting a cron expression IS the approval — a due tick
+    launches immediately, and `disabled` is the kill-safety that keeps working
+    even with a cron set. This is deliberately NOT the on-event ladder
+    (`event_triggers._autonomy_allows_run`, where only `auto-run-cheap` /
+    `auto-run-any` auto-run): a push is not a user decision, a cron expression
+    is. Tightening this to the full ladder would silently stop every existing
+    binding, since `ask-before-run` is the model default.
+
+    Every cron branch in `scan_and_dispatch` routes through here so the four
+    of them cannot drift — the generic fallthrough previously checked nothing
+    at all, so a `disabled` binding still dispatched.
+    """
+    return (autonomy or "") != "disabled"
+
+
 def should_auto_audit(key: str, autonomy: str) -> bool:
     """audit-stale bindings fan out via run_auto_audit instead of a single
     dispatch; `disabled` is the kill-safety even with a cron set."""
-    return (key or "") == "audit-stale" and (autonomy or "") != "disabled"
+    return (key or "") == "audit-stale" and cron_dispatch_allowed(autonomy)
 
 
 async def scan_and_dispatch(*, now: datetime | None = None) -> ScanResult:
@@ -110,7 +128,7 @@ async def scan_and_dispatch(*, now: datetime | None = None) -> ScanResult:
             # the binding's target instead of dispatching a single run. A
             # scheduled campaign is pre-approved — launch immediately;
             # `disabled` stays the kill-safety even with a cron set.
-            if (sa.autonomy or "") == "disabled":
+            if not cron_dispatch_allowed(sa.autonomy or ""):
                 sa.last_scheduled_at = moment
                 await sa.save()
                 continue
@@ -170,7 +188,7 @@ async def scan_and_dispatch(*, now: datetime | None = None) -> ScanResult:
             # Area-map refresh: a due tick dispatches one map-areas run that
             # re-proposes the repository's audit partition; `disabled` stays
             # the kill-safety even with a cron set.
-            if (sa.autonomy or "") == "disabled":
+            if not cron_dispatch_allowed(sa.autonomy or ""):
                 sa.last_scheduled_at = moment
                 await sa.save()
                 continue
@@ -230,6 +248,16 @@ async def scan_and_dispatch(*, now: datetime | None = None) -> ScanResult:
                 f"schedule map-areas sa={sa.uid} expr={payload} run={mapped.run_uid}",
                 extra={"tag": "schedule"},
             )
+            continue
+        # Generic binding (deep issue hunt, security audit, …). This branch
+        # used to dispatch unconditionally, so `disabled` — honoured by all
+        # three anchor branches above — did nothing here: the one autonomy
+        # level that means "never run this" still auto-billed a run every
+        # time the cron came due. Stamp the tick so a disabled binding does
+        # not re-evaluate every beat.
+        if not cron_dispatch_allowed(sa.autonomy or ""):
+            sa.last_scheduled_at = moment
+            await sa.save()
             continue
         try:
             await trigger_scheduled_agent(

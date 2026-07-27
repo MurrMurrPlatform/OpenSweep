@@ -1,0 +1,85 @@
+name: Backend
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: back_end
+
+jobs:
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: back_end/requirements.txt
+      - run: pip install -r requirements.txt
+      # Integration tests skip themselves when the dedicated test Neo4j on
+      # :7999 is unreachable (tests/conftest.py). Nothing listens on 7999 in
+      # this job, so this is the DB-less tier; `integration` below exercises
+      # the store. Selecting explicitly rather than relying on the skip keeps
+      # the two tiers honest.
+      - run: pytest -q -m "not integration"
+
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    services:
+      neo4j:
+        image: neo4j:5-community
+        env:
+          # Must match tests/conftest.py's TEST_NEO4J_* defaults.
+          NEO4J_AUTH: neo4j/testpassword123
+          NEO4J_server_memory_pagecache_size: 512M
+        ports:
+          # conftest's destructive wipe only arms against ":7999" — the
+          # dedicated test instance, never the dev DB on 7688.
+          - 7999:7687
+        options: >-
+          --health-cmd "wget -qO- http://localhost:7474 || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: back_end/requirements.txt
+      - run: pip install -r requirements.txt
+      - run: pytest -q -m integration
+
+  lint:
+    name: Ruff (advisory)
+    runs-on: ubuntu-latest
+    # ADVISORY, NOT A GATE. `ruff check .` currently reports ~820 findings on
+    # main, 432 of them B008 (function-call-in-default-argument) firing on
+    # FastAPI's idiomatic `Depends()` in route signatures. Making this
+    # blocking needs two decisions first, neither of which belongs in a CI
+    # patch: exempt Depends via lint.flake8-bugbear.extend-immutable-calls,
+    # then land the ~358 autofixable findings as their own cleanup PR.
+    # Until then this job reports the delta without gating merges.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Pinned: a ruff release must not change this job's output on its own.
+      - run: pip install ruff==0.15.22
+      - run: ruff check . --output-format=github

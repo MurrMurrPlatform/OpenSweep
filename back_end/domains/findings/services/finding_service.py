@@ -24,6 +24,7 @@ from domains.findings.schemas import (
     normalize_tags,
 )
 from domains.findings.services.dedupe import build_dedupe_key
+from domains.findings.services.trust import trust_score_for
 from domains.runs.services.run_provider import provider_info_for_run
 from infrastructure.audit import write_audit
 
@@ -33,7 +34,7 @@ from infrastructure.audit import write_audit
 from infrastructure.ranking import severity_rank  # noqa: F401
 
 FINDING_SORT_FIELDS = frozenset(
-    {"updated_at", "created_at", "severity", "confidence", "title"}
+    {"updated_at", "created_at", "severity", "confidence", "title", "trust"}
 )
 FINDING_SORT_DIRS = frozenset({"asc", "desc"})
 
@@ -54,6 +55,10 @@ def sort_findings(
         key = lambda f: (severity_rank(f.severity.value), recency(f))  # noqa: E731
     elif sort_by == "confidence":
         key = lambda f: (f.confidence, recency(f))  # noqa: E731
+    elif sort_by == "trust":
+        # Severity breaks trust ties: of two equally-credible findings the
+        # worse one should be looked at first.
+        key = lambda f: (f.trust, severity_rank(f.severity.value), recency(f))  # noqa: E731
     elif sort_by == "title":
         key = lambda f: (f.title or "").casefold()  # noqa: E731
         reverse = sort_dir == "desc"
@@ -88,6 +93,9 @@ def finding_to_dto(f: Finding) -> FindingDTO:
         parse_status=ParseStatus(f.parse_status or "ok"),
         detected_by_tool=f.detected_by_tool or "",
         detected_by_rule=f.detected_by_rule or "",
+        # Derived, never stored: computing it at the DTO boundary means it
+        # cannot drift from the signals behind it (services/trust.py).
+        trust=trust_score_for(f),
         status=FindingStatus(f.status or "open"),
         created_at=f.created_at,
         updated_at=f.updated_at,

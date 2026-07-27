@@ -8,6 +8,7 @@ import {
 import { useTicketStore } from '@/stores/ticketStore'
 import { useDeliveryStore } from '@/stores/deliveryStore'
 import { useCurrentRepo } from '@/composables/useCurrentRepo'
+import { useActiveRuns } from '@/composables/useActiveRuns'
 import { useBoardPrefs } from '@/composables/useBoardPrefs'
 import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
@@ -71,16 +72,19 @@ const epicBuilderOpen = ref(false)
 const proposing = ref(false)
 const proposalsPanel = ref<InstanceType<typeof EpicProposalsPanel> | null>(null)
 
-async function reload() {
+/** `silent` skips the skeleton so the live heartbeat below never flickers the
+ *  board the user is reading. */
+async function reload({ silent = false } = {}) {
   if (!repoUid.value) return
-  loading.value = true
+  if (!silent) loading.value = true
   error.value = null
   try {
     tickets.value = await store.fetchTickets({ repository_uid: repoUid.value })
     void proposalsPanel.value?.reload()
     void loadOrphanPrs()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    // A failed background refresh must not blank out a board that is on screen.
+    if (!silent) error.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
   }
@@ -107,6 +111,14 @@ async function loadOrphanPrs() {
 }
 
 watch(repoUid, () => void reload(), { immediate: true })
+
+// Implement/refine runs move tickets across lanes and open PRs. Ride the shared
+// /runs/active heartbeat: when the in-flight set changes, the board is stale.
+const { signature } = useActiveRuns(
+  () => (repoUid.value ? { repository_uid: repoUid.value } : null),
+  { pollWhenIdle: true },
+)
+watch(signature, () => void reload({ silent: true }))
 
 /** Tickets a group can absorb: ungrouped and not finished. */
 const groupableTickets = computed(() =>
@@ -403,7 +415,7 @@ function onTicketCreated(ticket: TicketDTO) {
           </p>
         </PopoverContent>
       </Popover>
-      <Button variant="outline" size="sm" :disabled="loading" @click="reload">
+      <Button variant="outline" size="sm" :disabled="loading" @click="reload()">
         <RefreshCw :class="{ 'animate-spin': loading }" /> Refresh
       </Button>
       <DropdownMenu>
@@ -469,7 +481,7 @@ function onTicketCreated(ticket: TicketDTO) {
       ref="proposalsPanel"
       :repository-uid="repoUid"
       :tickets="tickets"
-      @applied="reload"
+      @applied="reload()"
     />
 
     <!-- Externally-opened PRs with no ticket yet: work that exists on GitHub
@@ -516,7 +528,7 @@ function onTicketCreated(ticket: TicketDTO) {
 
     <!-- Error -->
     <ErrorState v-else-if="error" title="Couldn't load tickets" :message="error">
-      <Button variant="outline" size="sm" @click="reload">Retry</Button>
+      <Button variant="outline" size="sm" @click="reload()">Retry</Button>
     </ErrorState>
 
     <!-- Empty -->

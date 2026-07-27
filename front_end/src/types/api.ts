@@ -183,6 +183,17 @@ export interface FindingDTO {
   executor: string
   source_path: SourcePath
   parse_status: ParseStatus
+  /** Static-analysis provenance: which deterministic analyzer surfaced this
+   *  (empty for agent-discovered findings) and the rule/check id it carried. */
+  detected_by_tool?: string
+  detected_by_rule?: string
+  /**
+   * Composite 0..1 credibility, derived server-side from signals the platform
+   * can check independently of what the model asserted: cross-run
+   * corroboration, static-analyzer confirmation, the executor's confidence,
+   * and any skeptic-pass outcome. Sort with `sort_by=trust`.
+   */
+  trust: number
   provider_uid?: string | null
   provider_label?: string
   provider_kind?: string

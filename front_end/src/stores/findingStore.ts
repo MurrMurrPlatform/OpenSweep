@@ -11,7 +11,8 @@ import type {
   Severity,
 } from '@/types/api'
 
-export type FindingSortBy = 'updated_at' | 'created_at' | 'severity' | 'confidence' | 'title'
+/** Whitelisted server-side sort fields (see back_end api/v1/findings.py). */
+export type FindingSortBy = 'updated_at' | 'created_at' | 'severity' | 'confidence' | 'title' | 'trust'
 
 export const useFindingStore = defineStore('findings', () => {
   const list = ref<FindingDTO[]>([])

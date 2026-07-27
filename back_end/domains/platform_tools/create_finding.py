@@ -18,7 +18,11 @@ from domains.findings.schemas import (
     SourcePath,
     normalize_tags,
 )
-from domains.findings.services.dedupe import build_dedupe_key, titles_similar
+from domains.findings.services.dedupe import (
+    build_dedupe_key,
+    path_basename,
+    titles_similar,
+)
 from infrastructure.audit import write_audit
 from logging_config import logger
 
@@ -171,14 +175,22 @@ async def create_finding(
     # it must never lose the finding the agent has in hand.
     if paths:
         try:
-            incoming_paths = {p for p in paths if p}
+            # Match on basenames, not full paths: a moved file otherwise
+            # defeats BOTH dedupe layers (the key and this fallback), so the
+            # same issue forks into a second Finding and splits its cross-run
+            # corroboration count.
+            incoming_paths = {path_basename(p) for p in paths if p}
+            incoming_paths.discard("")
             candidates = await Finding.nodes.filter(
                 repository_uid=repository_uid,
                 status=FindingStatus.OPEN.value,
                 kind=kind_member.value,
             )
             for candidate in candidates:
-                if not incoming_paths & {p for p in (candidate.affected_paths or []) if p}:
+                candidate_paths = {
+                    path_basename(p) for p in (candidate.affected_paths or []) if p
+                }
+                if not incoming_paths & candidate_paths:
                     continue
                 if not titles_similar(candidate.title or "", title):
                     continue

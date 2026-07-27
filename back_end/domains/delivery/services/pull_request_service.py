@@ -21,7 +21,11 @@ from domains.delivery.schemas import (
     VerdictDTO,
 )
 from domains.delivery.services import write_gate
-from domains.delivery.services.convergence import compute_convergence, status_description
+from domains.delivery.services.convergence import (
+    compute_convergence,
+    count_blocking_findings,
+    status_description,
+)
 from domains.delivery.services.resolution_service import ensure_merge_policy
 from domains.findings.models import Finding
 from domains.repositories.models import Repository
@@ -477,17 +481,62 @@ class PullRequestService:
 
     # ── Verdicts ─────────────────────────────────────────────────────────
 
+    async def _derive_blocking_count(
+        self, pr: PullRequest, finding_uids: list[str] | None
+    ) -> int:
+        """How many of the findings this verdict raised actually block merge,
+        per the repo's MergePolicy.
+
+        Unknown finding uids are ignored rather than assumed blocking: a
+        verdict citing a finding that no longer exists must not wedge the PR
+        forever. Any human `blocking_override` already recorded on the PR's
+        resolution for a finding wins over the policy default.
+        """
+        uids = [u for u in (finding_uids or []) if u]
+        if not uids:
+            return 0
+
+        from domains.delivery.models import FindingResolution
+
+        policy = await ensure_merge_policy(pr.repository_uid)
+        overrides: dict[str, str] = {}
+        for r in await FindingResolution.nodes.filter(pull_request_uid=pr.uid):
+            if r.blocking_override:
+                overrides[r.finding_uid] = r.blocking_override
+
+        items: list[dict] = []
+        for uid in uids:
+            finding = await Finding.nodes.get_or_none(uid=uid)
+            if finding is None:
+                continue
+            items.append(
+                {
+                    "severity": (finding.severity or "medium"),
+                    "tags": list(finding.tags or []),
+                    "override": overrides.get(uid, ""),
+                }
+            )
+        return count_blocking_findings(items, dict(policy.blocking or {}))
+
     async def submit_verdict(
         self, pr_uid: str, req: SubmitVerdictRequest, *, actor_uid: str | None = None
     ) -> VerdictDTO:
         pr = await self.get_node(pr_uid)
+        # The blocking count is DERIVED from the raised findings + the repo's
+        # MergePolicy, never taken from the submitter. It feeds the clean-round
+        # condition and therefore the published `opensweep/converged` status,
+        # and the review agent is asked to count its own blocking findings — so
+        # trusting `req.new_blocking_findings` let the graded model mark its own
+        # paper. The reported value is kept as advisory telemetry.
+        blocking = await self._derive_blocking_count(pr, req.finding_uids)
+        reported = int(req.new_blocking_findings or 0)
         v = Verdict(
             uid=uuid4().hex,
             pull_request_uid=pr.uid,
             repository_uid=pr.repository_uid,
             sha=req.sha,
             result=req.result.value,
-            new_blocking_findings=req.new_blocking_findings,
+            new_blocking_findings=blocking,
             finding_uids=req.finding_uids,
             ac_results=[a.model_dump() for a in req.ac_results],
             source_run_uid=req.source_run_uid,
@@ -495,10 +544,11 @@ class PullRequestService:
         )
         # Skeptic pass (§A): a blocking review verdict is provisional while a
         # verification run challenges its findings. Adjusted verdicts
-        # (executor="verification") are never re-verified.
+        # (executor="verification") are never re-verified. Gated on the DERIVED
+        # count so a self-reported 0 cannot skip verification.
         if (
             req.result.value == "request_changes"
-            and req.new_blocking_findings > 0
+            and blocking > 0
             and req.finding_uids
             and req.executor != "verification"
         ):
@@ -507,14 +557,30 @@ class PullRequestService:
             if await stage_auto(pr.repository_uid, "verify"):
                 v.verification_status = "pending"
         await v.save()
+        if reported != blocking:
+            # Divergence is the signal that a reviewer mis-scored its own
+            # output — under-reporting is the one that would have minted a
+            # clean round. Audited (not just logged) so it is queryable.
+            logger.warning(
+                f"verdict {v.uid} on {pr.pr_key}: reported {reported} blocking "
+                f"finding(s), policy derives {blocking}",
+                extra={"tag": "delivery"},
+            )
         await write_audit(
             kind="verdict.submitted",
             subject_uid=v.uid,
             subject_type="Verdict",
             actor_uid=actor_uid,
-            payload={"pr": pr.pr_key, "sha": req.sha, "result": req.result.value},
+            payload={
+                "pr": pr.pr_key,
+                "sha": req.sha,
+                "result": req.result.value,
+                "blocking_findings": blocking,
+                "reported_blocking_findings": reported,
+                "blocking_count_diverged": reported != blocking,
+            },
         )
-        await self.recompute_and_publish(pr)
+        state = await self.recompute_and_publish(pr)
 
         # Thread follow-through: the verdict lands on the PR's thread timeline.
         from domains.threads.services.hooks import note_verdict_for_pr
@@ -529,7 +595,48 @@ class PullRequestService:
                 v.verification_status or "",
             )
             await publish_review_status(repo, pr, state=gh_state, description=description)
+            # The reasoning, not just the check: publish the verdict as a real
+            # GitHub review so a developer on github.com sees the findings
+            # inline on the diff instead of a bare status context. A verdict
+            # still pending the skeptic pass is provisional — publishing it
+            # would show findings that verification may retract, so the
+            # adjusted verdict (executor="verification") carries the review.
+            if v.verification_status != "pending":
+                await self._publish_review_to_git(repo, pr, v, state)
         return verdict_to_dto(v)
+
+    async def _publish_review_to_git(self, repo, pr, v, state) -> None:
+        """Best-effort: render the verdict's findings as a GitHub review."""
+        from domains.delivery.services.review_publisher import publish_verdict_review
+
+        findings: list[dict] = []
+        for uid in list(v.finding_uids or []):
+            finding = await Finding.nodes.get_or_none(uid=uid)
+            if finding is None:
+                continue
+            findings.append(
+                {
+                    "title": finding.title,
+                    "severity": finding.severity or "medium",
+                    "tags": list(finding.tags or []),
+                    "affected_paths": list(finding.affected_paths or []),
+                    "description": finding.description or "",
+                    "why_it_matters": finding.why_it_matters or "",
+                    "suggested_fix": finding.suggested_fix or "",
+                }
+            )
+        await publish_verdict_review(
+            repo=repo,
+            pr=pr,
+            verdict={
+                "result": v.result,
+                "sha": v.sha,
+                "new_blocking_findings": int(v.new_blocking_findings or 0),
+                "ac_results": list(v.ac_results or []),
+            },
+            findings=findings,
+            convergence_summary=status_description(state) if state else "",
+        )
 
 
 # ── Ledger-mutation follow-through ───────────────────────────────────────────
