@@ -128,11 +128,19 @@ class _FakeNodes:
         return None
 
     async def filter(self, **kwargs):
-        return [
-            f
-            for f in self._store
-            if all(getattr(f, k, None) == v for k, v in kwargs.items())
-        ]
+        # Supports neomodel's `field__in=[...]` alongside plain equality — the
+        # similarity fallback matches several live statuses at once, and a
+        # fake that only understood `==` would silently return nothing.
+        def matches(f) -> bool:
+            for key, expected in kwargs.items():
+                if key.endswith("__in"):
+                    if getattr(f, key[: -len("__in")], None) not in expected:
+                        return False
+                elif getattr(f, key, None) != expected:
+                    return False
+            return True
+
+        return [f for f in self._store if matches(f)]
 
 
 def _make_fake_finding_class(store: list):
@@ -285,6 +293,40 @@ async def test_similarity_hit_merges_instead_of_creating(finding_store):
     assert existing.source_run_uids == ["run-1", "run-3"]
     assert existing.last_confirmed_at is not None
     assert len(finding_store) == 1
+
+
+async def test_similarity_hit_merges_into_an_already_ticketed_finding(finding_store):
+    # Promotion is not a resolution: a re-found instance of a finding that
+    # already has a ticket is the SAME issue and must merge into it. If the
+    # similarity fallback only matched "open", promoting a finding would make
+    # the next rephrased sighting fork a duplicate node.
+    existing = _seed_existing(finding_store, status="ticketed", ticket_uid="t-1")
+
+    result = await create_finding(
+        repository_uid="r1",
+        title="SQL injection in users endpoint",
+        affected_paths=["api/users.py", "api/db.py"],
+        source_run_uid="run-3",
+    )
+
+    assert result["deduplicated"] is True
+    assert result["finding_uid"] == existing.uid
+
+
+async def test_similarity_does_not_reopen_a_resolved_finding(finding_store):
+    # A fixed finding is settled — a new sighting is a REGRESSION and deserves
+    # its own node, not a silent merge into something marked done.
+    _seed_existing(finding_store, status="fixed")
+
+    result = await create_finding(
+        repository_uid="r1",
+        title="SQL injection in users endpoint",
+        affected_paths=["api/users.py", "api/db.py"],
+        source_run_uid="run-3",
+    )
+
+    assert result["deduplicated"] is False
+    assert len(finding_store) == 2, "the regression gets its own node"
 
 
 async def test_similarity_requires_same_kind(finding_store):

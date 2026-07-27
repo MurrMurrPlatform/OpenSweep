@@ -301,7 +301,7 @@ def test_by_lens_groups_on_kind():
     assert by_key == {"defect": ["a", "b"], "gap": ["c", "d"]}
 
 
-def test_by_class_mirrors_the_ratchet_tag_slash_subtype_key():
+def test_by_class_groups_on_the_tag_slash_subtype_key():
     pool = [
         _t("a", tags=("security",), subtype="missing-authz"),
         _t("b", tags=("security",), subtype="missing-authz"),

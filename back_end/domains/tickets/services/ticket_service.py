@@ -201,6 +201,19 @@ class TicketService:
             actor_uid=actor_uid,
             payload={"repository_uid": t.repository_uid, "origin": origin, "title": t.title},
         )
+        # A promoted finding should not keep sitting on the board as untouched
+        # work — mark_ticketed moves it to "ticketed" and links it forward.
+        # Deliberately NOT wrapped in try/except: the finding was already
+        # existence-checked by _require_finding_in_repo above, so a failure
+        # here is a real fault and should surface as a 500 rather than a
+        # success that quietly did half the job. (Either way the ticket is
+        # already committed — this buys a loud signal, not atomicity.)
+        if finding is not None:
+            from domains.findings.services.finding_service import FindingService
+
+            await FindingService().mark_ticketed(
+                finding.uid, ticket_uid=t.uid, actor_uid=actor_uid
+            )
         return t
 
     async def update(
@@ -526,7 +539,12 @@ class TicketService:
                 status_code=409,
                 detail=f"only backlog tickets are deletable (status={t.status})",
             )
+        # Read the origin off the node while it still exists.
+        origin_finding_uid = t.origin_finding_uid or ""
         await t.delete()
+        # Audit BEFORE the release: the release is two more round-trips, and if
+        # either raises, the ticket is already gone — writing the record last
+        # would make a completed deletion invisible to the audit trail.
         await write_audit(
             kind="ticket.deleted",
             subject_uid=uid,
@@ -534,3 +552,13 @@ class TicketService:
             actor_uid=actor_uid,
             payload={},
         )
+        # This ticket may be the only reason a finding left the board, so
+        # deleting it must put that finding back rather than stranding it as
+        # "ticketed" pointing at nothing. No-ops unless the finding still
+        # points at this ticket.
+        if origin_finding_uid:
+            from domains.findings.services.finding_service import FindingService
+
+            await FindingService().clear_ticket(
+                origin_finding_uid, ticket_uid=uid, actor_uid=actor_uid
+            )

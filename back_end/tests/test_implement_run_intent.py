@@ -6,7 +6,6 @@ from domains.delivery.services.fix_run_service import build_fix_intent
 from domains.delivery.services.implement_run_service import (
     branch_name_for_ticket,
     build_implement_intent,
-    build_ratchet_addendum,
     slug,
 )
 from domains.tickets.models import Ticket
@@ -119,10 +118,10 @@ def test_implement_intent_continuation_and_addendum():
         base_branch="main",
         denylist=[],
         continuation=True,
-        addendum="## Extra\nratchet details here",
+        addendum="## Extra\nappended details here",
     )
     assert "already contains earlier work" in intent
-    assert intent.rstrip().endswith("ratchet details here")
+    assert intent.rstrip().endswith("appended details here")
 
 
 # ── Fix intent ───────────────────────────────────────────────────────────────
@@ -175,24 +174,3 @@ def test_fix_intent_mandates_doc_and_memory_upkeep():
     assert "opensweep_platform_propose_doc_edit" in intent
     assert "opensweep_platform_confirm_doc_current" in intent
     assert "opensweep_platform_write_memory" in intent
-
-
-# ── Ratchet addendum ─────────────────────────────────────────────────────────
-
-
-def test_ratchet_addendum_cites_instances_and_demands_a_structural_guard():
-    class _F:
-        def __init__(self, title, paths):
-            self.title = title
-            self.affected_paths = paths
-
-    addendum = build_ratchet_addendum(
-        "security",
-        "missing-timeout",
-        [_F("HTTP call without timeout in sync job", ["src/sync.py"])],
-    )
-    assert "security/missing-timeout" in addendum
-    assert "HTTP call without timeout in sync job" in addendum
-    assert "src/sync.py" in addendum
-    assert "lint rule" in addendum.lower()
-    assert "STRUCTURALLY" in addendum

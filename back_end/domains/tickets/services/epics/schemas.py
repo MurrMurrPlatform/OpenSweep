@@ -32,7 +32,8 @@ class EpicAxis(StrEnum):
     FILES = "files"
     #: Members share a finding kind/lens (security, test-gaps, …).
     LENS = "lens"
-    #: Members share a `tag/subtype` finding class — the ratchet dimension.
+    #: Members share a `tag/subtype` finding class — the same kind of problem,
+    #: so one structural fix can cover all of them.
     CLASS = "class"
     #: Members are explicitly linked through the finding graph.
     LINKED = "linked"

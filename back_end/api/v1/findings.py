@@ -1,7 +1,6 @@
 """Finding routes — list, get, file, dismiss, acknowledge, mark fixed."""
 
 from datetime import UTC, datetime
-from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -53,6 +52,12 @@ async def list_findings(
     sort_dir: str = Query("desc"),
     user: UserDTO = Depends(get_current_user),
 ):
+    """List findings.
+
+    `status` takes any stored status, or the pseudo-value "processed" for
+    everything a human has already dealt with (anything not "open") — that is
+    what backs the board's Processed filter. Omitting it returns all statuses.
+    """
     if sort_by not in FINDING_SORT_FIELDS:
         raise HTTPException(
             status_code=422,
@@ -98,100 +103,6 @@ async def find_similar_route(
         title_substring=title_substring,
     )
     return [finding_to_dto(n) for n in nodes]
-
-
-class RatchetRequest(BaseModel):
-    repository_uid: str = Field(min_length=1)
-    tag: str = Field(min_length=1)
-    subtype: str = Field(min_length=1)
-
-
-@router.post("/ratchet", operation_id="opensweep_trigger_ratchet")
-async def trigger_ratchet(
-    req: RatchetRequest, user: UserDTO = Depends(require_role("maintainer"))
-) -> dict:
-    """Ratchet-run (§6): a recurring finding class becomes a permanent guard.
-
-    Creates a Ticket ("Ratchet: prevent {tag}/{subtype} recurrence") that
-    is born approved — the maintainer's button click IS Gate 1 — and
-    immediately dispatches an implement run whose intent is to add a lint
-    rule / CI check / test that structurally prevents the class, citing the
-    existing instances."""
-    from domains.delivery.services.implement_run_service import (
-        build_ratchet_addendum,
-        trigger_implement_run,
-    )
-    from domains.findings.models import Finding
-    from domains.runs.services.lifecycle import LifecycleError
-    from domains.tickets.models import Ticket
-
-    await require_repo_in_org(req.repository_uid, user.org_uid)
-    candidates = await Finding.nodes.filter(
-        repository_uid=req.repository_uid, subtype=req.subtype
-    )
-    findings = [f for f in candidates if req.tag in (f.tags or [])]
-    if not findings:
-        raise HTTPException(
-            status_code=404,
-            detail=f"no findings with tag={req.tag!r} subtype={req.subtype!r} in this repository",
-        )
-
-    now = datetime.now(UTC)
-    ticket = Ticket(
-        uid=uuid4().hex,
-        repository_uid=req.repository_uid,
-        title=f"Ratchet: prevent {req.tag}/{req.subtype} recurrence",
-        description=(
-            f"The finding class `{req.tag}/{req.subtype}` has occurred "
-            f"{len(findings)} time(s). Add a lint rule, CI check, or test that "
-            "structurally prevents new instances."
-        ),
-        acceptance_criteria=[
-            f"A lint rule, CI check, or test exists that fails when a new "
-            f"{req.tag}/{req.subtype} instance is introduced.",
-            "The guard is wired into the repository's normal CI/test entrypoint.",
-        ],
-        labels=[req.tag, "ratchet"],
-        origin="human",
-        status="todo",  # the button click IS Gate 1
-        approved_by=user.uid,
-        approved_at=now,
-        linked_finding_uids=[f.uid for f in findings[:50]],
-    )
-    await ticket.save()
-    await write_audit(
-        kind="ticket.created",
-        subject_uid=ticket.uid,
-        subject_type="Ticket",
-        actor_uid=user.uid,
-        payload={
-            "repository_uid": req.repository_uid,
-            "origin": "human",
-            "title": ticket.title,
-            "cause": "ratchet",
-        },
-    )
-    await write_audit(
-        kind="ticket.approved",
-        subject_uid=ticket.uid,
-        subject_type="Ticket",
-        actor_uid=user.uid,
-        payload={"approved_by": user.uid, "cause": "ratchet"},
-    )
-
-    addendum = build_ratchet_addendum(req.tag, req.subtype, list(findings))
-    try:
-        run = await trigger_implement_run(
-            ticket, triggered_by=user.uid, intent_addendum=addendum
-        )
-    except LifecycleError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {
-        "ticket_uid": ticket.uid,
-        "run_uid": run.uid,
-        "scheduled_agent_uid": run.scheduled_agent_uid,
-        "finding_count": len(findings),
-    }
 
 
 @router.get("/{uid}", response_model=FindingDTO, operation_id="opensweep_get_finding")

@@ -45,6 +45,7 @@ class FindingSize(StrEnum):
 
 class FindingStatus(StrEnum):
     OPEN = "open"
+    TICKETED = "ticketed"
     ACKNOWLEDGED = "acknowledged"
     WONT_FIX = "wont-fix"
     FIXED = "fixed"
@@ -115,6 +116,11 @@ class FindingDTO(BaseModel):
 
     status: FindingStatus = FindingStatus.OPEN
 
+    # Ticket this finding was promoted into; set with status "ticketed" and
+    # empty otherwise. Server-derived (see UpdateFindingRequest) — the UI reads
+    # it only to render a forward link.
+    ticket_uid: str = ""
+
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -152,8 +158,9 @@ class UpdateFindingRequest(BaseModel):
     Only editable prose + classification is exposed — machine provenance
     (confidence, evidence, detected_by_*, executor, dedupe_key, source) stays
     immutable so the audit trail of *how* the finding was surfaced is intact.
-    Status has its own transition routes and is not editable here. Every field
-    is optional; only those sent are applied.
+    Status has its own transition routes and is not editable here, and
+    ticket_uid moves with it — both are set by promotion, not by hand. Every
+    field is optional; only those sent are applied.
     """
 
     tags: Optional[list[str]] = None

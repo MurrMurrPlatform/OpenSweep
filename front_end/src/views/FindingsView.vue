@@ -7,7 +7,6 @@ import { useTicketStore } from '@/stores/ticketStore'
 import { formatRelativeTime } from '@/lib/utils'
 import { useCurrentRepo } from '@/composables/useCurrentRepo'
 import { useToast } from '@/composables/useToast'
-import { ApiError } from '@/services/api'
 import { PageHeader } from '@/components/ui/page-header'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -23,14 +22,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
 import {
   Select,
   SelectContent,
@@ -49,11 +40,20 @@ import {
   corroborationCount,
   SEVERITY_RANK,
   severityVariant,
+  statusLabel,
+  statusVariant,
   TRUST_HIGH,
   TRUST_MEDIUM,
   trustPercent,
 } from '@/components/findings/findingMeta'
-import type { FindingDTO, FindingStatus, Severity, TicketPriority, TicketSize } from '@/types/api'
+import type {
+  FindingDTO,
+  FindingStatus,
+  FindingStatusFilter,
+  Severity,
+  TicketPriority,
+  TicketSize,
+} from '@/types/api'
 
 const findings = useFindingStore()
 const ticketStore = useTicketStore()
@@ -71,7 +71,7 @@ const tagFilter = ref('')
 const tagSearch = ref('')
 const tagPopoverOpen = ref(false)
 const severityFilter = ref<'' | Severity>('')
-const statusFilter = ref<FindingStatus | 'all'>('open')
+const statusFilter = ref<FindingStatusFilter | 'all'>('open')
 const trustFilter = ref<TrustFilter>('all')
 // This is a triage inbox: the first question is "what is most likely real and
 // worth my time", not "what happened last". Trust answers that directly —
@@ -88,8 +88,13 @@ const SEVERITY_OPTIONS = [
   { label: 'Low', value: 'low' },
 ]
 
+// "Processed" is a server-side pseudo-status meaning "not open" — it is what
+// you reach for after promoting or triaging something and wanting to find it
+// again. The individual statuses below it narrow that same set.
 const STATUS_OPTIONS = [
   { label: 'Open', value: 'open' },
+  { label: 'Processed', value: 'processed' },
+  { label: 'Ticketed', value: 'ticketed' },
   { label: 'Acknowledged', value: 'acknowledged' },
   { label: "Won't fix", value: 'wont-fix' },
   { label: 'Fixed', value: 'fixed' },
@@ -144,7 +149,7 @@ function onSeverity(v: unknown) {
   severityFilter.value = v === 'all' ? '' : (v as Severity)
 }
 function onStatus(v: unknown) {
-  statusFilter.value = v as FindingStatus | 'all'
+  statusFilter.value = v as FindingStatusFilter | 'all'
 }
 function onTrust(v: unknown) {
   trustFilter.value = v as TrustFilter
@@ -425,6 +430,27 @@ function ticketRequestFor(f: FindingDTO) {
   }
 }
 
+/**
+ * Reflect a status transition in the loaded list without a refetch.
+ *
+ * Status is filtered SERVER-side, so a transition can push a finding out of
+ * the view it is currently in — that is the whole point of "processed". Patch
+ * the findings that still match the active filter; drop the ones that no
+ * longer do. `changed` maps each affected uid to any extra fields that move
+ * with the status (ticket_uid), so one pass applies the whole transition.
+ */
+function applyStatusLocally(
+  changed: Map<string, Partial<FindingDTO>>,
+  status: FindingStatus,
+) {
+  const active = statusFilter.value
+  const stillMatches =
+    active === 'all' || (active === 'processed' ? status !== 'open' : active === status)
+  all.value = stillMatches
+    ? all.value.map((f) => (changed.has(f.uid) ? { ...f, status, ...changed.get(f.uid) } : f))
+    : all.value.filter((f) => !changed.has(f.uid))
+}
+
 async function bulkCreateTickets() {
   const targets = selectedFindings.value
   if (!targets.length || bulkBusy.value) return
@@ -434,6 +460,18 @@ async function bulkCreateTickets() {
     const failed = results.filter((r) => r.status === 'rejected').length
     const ok = results.length - failed
     if (ok) {
+      // Promotion moves a finding to "ticketed" and off the open board — but
+      // ONLY if it was open. The server refuses to overwrite an existing
+      // triage decision, so an already-acknowledged finding keeps its status
+      // and must not be patched here either.
+      const promoted = new Map<string, Partial<FindingDTO>>()
+      targets.forEach((f, i) => {
+        const r = results[i]
+        if (r.status === 'fulfilled' && f.status === 'open') {
+          promoted.set(f.uid, { ticket_uid: r.value.uid })
+        }
+      })
+      applyStatusLocally(promoted, 'ticketed')
       toast.success(
         `Created ${ok} ticket${ok === 1 ? '' : 's'} in Backlog`,
         'Each stays linked to its origin finding. Approve them (Gate 1) to make them implementable.',
@@ -456,12 +494,7 @@ async function bulkDismiss() {
     const results = await Promise.allSettled(targets.map((f) => findings.dismiss(f.uid)))
     const okUids = new Set(targets.filter((_, i) => results[i].status === 'fulfilled').map((f) => f.uid))
     const failed = results.length - okUids.size
-    if (statusFilter.value === 'all') {
-      all.value = all.value.map((f) => (okUids.has(f.uid) ? { ...f, status: 'dismissed' as FindingStatus } : f))
-    } else {
-      // The list is server-filtered by status — dismissed items no longer match.
-      all.value = all.value.filter((f) => !okUids.has(f.uid))
-    }
+    applyStatusLocally(new Map(Array.from(okUids, (uid) => [uid, {}])), 'dismissed')
     selected.value = new Set(Array.from(selected.value).filter((uid) => !okUids.has(uid)))
     if (okUids.size) toast.success(`Dismissed ${okUids.size} finding${okUids.size === 1 ? '' : 's'}`)
     if (failed) toast.error(`${failed} dismissal${failed === 1 ? '' : 's'} failed`, 'The affected findings stay selected.')
@@ -495,66 +528,6 @@ function onFiled(finding: FindingDTO) {
   }
   if (finding.status === 'open' && !all.value.some((f) => f.uid === finding.uid)) {
     all.value = [finding, ...all.value]
-  }
-}
-
-// ── Ratchet: recurring finding classes → permanent guards ───────────────────
-
-interface RatchetGroup {
-  tag: string
-  subtype: string
-  count: number
-}
-
-/** Open finding classes with ≥2 instances — ratchet candidates. The backend
- *  identifies a class as a (tag, subtype) pair ("prevent {tag}/{subtype}
- *  recurrence"), so a finding with several tags belongs to several classes. */
-const ratchetGroups = computed<RatchetGroup[]>(() => {
-  const counts = new Map<string, RatchetGroup>()
-  for (const f of all.value) {
-    // Only open findings justify a guard — the status filter may have
-    // loaded dismissed/fixed items into `all`.
-    if (f.status !== 'open' || !f.subtype) continue
-    for (const tag of f.tags || []) {
-      const key = `${tag} ${f.subtype}`
-      const existing = counts.get(key)
-      if (existing) existing.count += 1
-      else counts.set(key, { tag, subtype: f.subtype, count: 1 })
-    }
-  }
-  return [...counts.values()].filter((g) => g.count >= 2).sort((a, b) => b.count - a.count)
-})
-
-const ratchetTarget = ref<RatchetGroup | null>(null)
-const ratcheting = ref(false)
-const lastRatchet = ref<{ ticketUid: string; tag: string; subtype: string } | null>(null)
-
-async function confirmRatchet() {
-  const group = ratchetTarget.value
-  if (!group || !repoUid.value || ratcheting.value) return
-  ratcheting.value = true
-  try {
-    const dispatch = await findings.triggerRatchet({
-      repository_uid: repoUid.value,
-      tag: group.tag,
-      subtype: group.subtype,
-    })
-    ratchetTarget.value = null
-    const ticketUid = typeof dispatch.ticket_uid === 'string' ? dispatch.ticket_uid : ''
-    const runUid = typeof dispatch.run_uid === 'string' ? dispatch.run_uid : ''
-    if (ticketUid) lastRatchet.value = { ticketUid, tag: group.tag, subtype: group.subtype }
-    toast.success(
-      'Ratchet ticket created',
-      [
-        ticketUid ? `ticket ${ticketUid.slice(0, 8)}` : null,
-        runUid ? `implement run ${runUid.slice(0, 8)} dispatched` : null,
-      ].filter(Boolean).join(' · ') || `${group.tag}/${group.subtype}`,
-    )
-  } catch (e) {
-    const msg = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
-    toast.error('Ratchet failed', msg)
-  } finally {
-    ratcheting.value = false
   }
 }
 
@@ -594,42 +567,6 @@ const emptyCopy = computed(() => {
         <Plus /> File finding
       </Button>
     </PageHeader>
-
-    <!-- Recurring classes → ratchet into a permanent guard -->
-    <Card v-if="ratchetGroups.length && !loading">
-      <CardContent class="space-y-2 p-4">
-        <div class="flex items-center gap-2 text-sm font-semibold">
-          <ShieldCheck class="h-4 w-4 text-muted-foreground" /> Recurring finding classes
-        </div>
-        <p class="text-xs text-muted-foreground">
-          These classes keep coming back. A ratchet run adds a lint rule, CI check, or test that
-          structurally prevents new instances — the ticket is born approved.
-        </p>
-        <div class="divide-y">
-          <div
-            v-for="g in ratchetGroups"
-            :key="`${g.tag}/${g.subtype}`"
-            class="flex flex-wrap items-center justify-between gap-2 py-2 text-sm"
-          >
-            <span class="font-mono text-xs">
-              {{ g.tag }}/{{ g.subtype }}
-              <span class="text-muted-foreground">· {{ g.count }} findings</span>
-            </span>
-            <Button variant="outline" size="sm" :disabled="ratcheting" @click="ratchetTarget = g">
-              <ShieldCheck /> Prevent recurrence
-            </Button>
-          </div>
-        </div>
-        <RouterLink
-          v-if="lastRatchet"
-          :to="{ name: 'ticket-detail', params: { uid: lastRatchet.ticketUid } }"
-          class="inline-flex items-center gap-1.5 text-xs text-primary hover:underline"
-        >
-          <SquareKanban class="h-3.5 w-3.5" />
-          Ratchet ticket for {{ lastRatchet.tag }}/{{ lastRatchet.subtype }} created — view it →
-        </RouterLink>
-      </CardContent>
-    </Card>
 
     <Card class="overflow-hidden">
       <div class="space-y-3 border-b p-4">
@@ -832,6 +769,12 @@ const emptyCopy = computed(() => {
             >
               <div class="flex flex-wrap items-center gap-1.5">
                 <TrustBadge :finding="f" compact />
+                <!-- Only outside the open view: there, every row is 'Open'. -->
+                <Badge
+                  v-if="statusFilter !== 'open'"
+                  :variant="statusVariant(f.status)"
+                  class="px-1.5 text-[10px]"
+                >{{ statusLabel(f.status) }}</Badge>
                 <Badge :variant="severityVariant(f.severity)" class="px-1.5 text-[10px]">{{ f.severity }}</Badge>
                 <Badge variant="outline" class="px-1.5 text-[10px]">{{ f.kind }}</Badge>
                 <!-- A deterministic analyzer matched — categorically stronger
@@ -893,35 +836,6 @@ const emptyCopy = computed(() => {
         </ul>
       </CardContent>
     </Card>
-
-    <!-- Ratchet confirm -->
-    <Dialog :open="!!ratchetTarget" @update:open="(v) => { if (!v) ratchetTarget = null }">
-      <DialogContent class="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>Prevent recurrence</DialogTitle>
-          <DialogDescription>
-            Ratchet-run: a recurring finding class becomes a permanent guard.
-          </DialogDescription>
-        </DialogHeader>
-        <div v-if="ratchetTarget" class="space-y-3 text-sm">
-          <p>
-            <span class="font-mono text-xs">{{ ratchetTarget.tag }}/{{ ratchetTarget.subtype }}</span>
-            has occurred <strong>{{ ratchetTarget.count }}</strong> times in this repository.
-          </p>
-          <ul class="list-disc space-y-1 pl-5 text-muted-foreground">
-            <li>Creates a ticket that is <strong>born approved</strong> — this click is Gate 1.</li>
-            <li>Immediately dispatches an implement run to add a lint rule, CI check, or test that blocks the class.</li>
-            <li>The guard cites the existing instances as evidence.</li>
-          </ul>
-        </div>
-        <DialogFooter>
-          <Button variant="ghost" @click="ratchetTarget = null">Cancel</Button>
-          <Button :loading="ratcheting" @click="confirmRatchet">
-            <ShieldCheck /> Create guard ticket
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
 
     <!-- Floating bulk-action bar — appears while a selection exists -->
     <div class="pointer-events-none fixed inset-x-0 bottom-6 z-40 flex justify-center px-4">

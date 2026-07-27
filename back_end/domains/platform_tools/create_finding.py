@@ -181,9 +181,14 @@ async def create_finding(
             # corroboration count.
             incoming_paths = {path_basename(p) for p in paths if p}
             incoming_paths.discard("")
+            # "ticketed" counts as live here alongside "open": promotion is
+            # not a resolution, so a re-found instance of a finding that
+            # already has a ticket is still the SAME issue and must merge into
+            # it. Matching only "open" would fork a second node the moment
+            # anyone promoted the original.
             candidates = await Finding.nodes.filter(
                 repository_uid=repository_uid,
-                status=FindingStatus.OPEN.value,
+                status__in=[FindingStatus.OPEN.value, FindingStatus.TICKETED.value],
                 kind=kind_member.value,
             )
             for candidate in candidates:

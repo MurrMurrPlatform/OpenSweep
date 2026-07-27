@@ -1,7 +1,7 @@
 // Display metadata for findings, shared by the list, detail and ledger views.
 
 import type { BadgeVariants } from '@/components/ui/badge'
-import type { FindingDTO, Severity } from '@/types/api'
+import type { FindingDTO, FindingStatus, Severity } from '@/types/api'
 
 export const SEVERITY_RANK: Record<string, number> = { low: 0, medium: 1, high: 2, critical: 3 }
 
@@ -9,6 +9,32 @@ export function severityVariant(sev: Severity): BadgeVariants['variant'] {
   if (sev === 'critical' || sev === 'high') return 'destructive'
   if (sev === 'medium') return 'warn'
   return 'secondary'
+}
+
+// ── Status ──────────────────────────────────────────────────────────────────
+//
+// Anything that is not `open` counts as PROCESSED — already dealt with, and
+// hidden from the board's default view. The board labels the status only when
+// you are looking at processed findings; in the open view every row would
+// carry the same chip, which is noise.
+
+const STATUS_META: Record<FindingStatus, { label: string; variant: BadgeVariants['variant'] }> = {
+  open: { label: 'Open', variant: 'warn' },
+  ticketed: { label: 'Ticketed', variant: 'info' },
+  acknowledged: { label: 'Acknowledged', variant: 'info' },
+  'wont-fix': { label: "Won't fix", variant: 'secondary' },
+  fixed: { label: 'Fixed', variant: 'success' },
+  accepted: { label: 'Accepted', variant: 'success' },
+  superseded: { label: 'Superseded', variant: 'secondary' },
+  dismissed: { label: 'Dismissed', variant: 'secondary' },
+}
+
+export function statusLabel(status: FindingStatus): string {
+  return STATUS_META[status]?.label ?? status
+}
+
+export function statusVariant(status: FindingStatus): BadgeVariants['variant'] {
+  return STATUS_META[status]?.variant ?? 'secondary'
 }
 
 // ── Trust ───────────────────────────────────────────────────────────────────

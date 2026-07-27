@@ -16,7 +16,10 @@ async def prior_findings(
     repository_uid: str,
     tag: Optional[str] = None,
     kind: Optional[str] = None,
-    statuses: tuple[str, ...] = ("open", "acknowledged"),
+    # "Already recorded" includes findings someone has since opened a ticket
+    # for — a ticket in flight is the strongest possible reason not to
+    # re-discover something, so "ticketed" has to be in the default set.
+    statuses: tuple[str, ...] = ("open", "acknowledged", "ticketed"),
     title_substring: Optional[str] = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:

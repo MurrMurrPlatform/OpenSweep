@@ -38,6 +38,12 @@ FINDING_SORT_FIELDS = frozenset(
 )
 FINDING_SORT_DIRS = frozenset({"asc", "desc"})
 
+# Pseudo-status accepted by list(status=...): every finding a human has already
+# dealt with, i.e. anything that is no longer "open". It lives on the service
+# rather than in the route so it travels with the query it modifies. It is NOT
+# a storable status — nothing ever writes "processed" to a node.
+STATUS_PROCESSED = "processed"
+
 
 def sort_findings(
     items: list[FindingDTO], *, sort_by: str = "updated_at", sort_dir: str = "desc"
@@ -97,6 +103,7 @@ def finding_to_dto(f: Finding) -> FindingDTO:
         # cannot drift from the signals behind it (services/trust.py).
         trust=trust_score_for(f),
         status=FindingStatus(f.status or "open"),
+        ticket_uid=f.ticket_uid or "",
         created_at=f.created_at,
         updated_at=f.updated_at,
     )
@@ -135,7 +142,10 @@ class FindingService:
                 continue
             if exclude_kind and f.kind == exclude_kind:
                 continue
-            if status and f.status != status:
+            if status == STATUS_PROCESSED:
+                if (f.status or "open") == "open":
+                    continue
+            elif status and f.status != status:
                 continue
             if severity and (f.severity or "medium") != severity:
                 continue
@@ -251,11 +261,30 @@ class FindingService:
         )
         return finding_to_dto(f)
 
-    async def _set_status(
-        self, uid: str, status: FindingStatus, *, actor_uid: str | None = None, audit_kind: str
-    ) -> FindingDTO:
-        f = await self.get_node(uid)
+    async def _apply_status(
+        self,
+        f: Finding,
+        status: FindingStatus,
+        *,
+        actor_uid: str | None = None,
+        audit_kind: str,
+        extra: dict[str, object] | None = None,
+    ) -> Finding:
+        """Move an already-loaded finding to `status`, writing `extra` too.
+
+        `extra` exists so fields that only make sense *with* a given status
+        (today: ticket_uid, meaningless unless the status is "ticketed") are
+        written in the same save, rather than in a second round-trip that could
+        leave the pair half-applied.
+
+        Returns the NODE. Callers that must answer the API get the DTO from
+        `_set_status`; internal callers stay here, because building a DTO runs
+        trust scoring they would only throw away.
+        """
+        uid = f.uid
         f.status = status.value
+        for field, value in (extra or {}).items():
+            setattr(f, field, value)
         f.updated_at = datetime.now(UTC)
         await f.save()
         await write_audit(
@@ -277,7 +306,24 @@ class FindingService:
                 extra={"tag": "delivery"},
                 exc_info=True,
             )
-        return finding_to_dto(f)
+        return f
+
+    async def _set_status(
+        self,
+        uid: str,
+        status: FindingStatus,
+        *,
+        actor_uid: str | None = None,
+        audit_kind: str,
+        extra: dict[str, object] | None = None,
+    ) -> FindingDTO:
+        """Load `uid`, transition it, and return the DTO the routes respond with."""
+        f = await self.get_node(uid)
+        return finding_to_dto(
+            await self._apply_status(
+                f, status, actor_uid=actor_uid, audit_kind=audit_kind, extra=extra
+            )
+        )
 
     async def dismiss(self, uid: str, *, actor_uid: str | None = None) -> FindingDTO:
         return await self._set_status(
@@ -298,6 +344,64 @@ class FindingService:
         return await self._set_status(
             uid, FindingStatus.FIXED, actor_uid=actor_uid, audit_kind="finding.fixed"
         )
+
+    async def mark_ticketed(
+        self, uid: str, *, ticket_uid: str, actor_uid: str | None = None
+    ) -> bool:
+        """Record that `uid` was promoted into `ticket_uid`. True if it moved.
+
+        NO-OP unless the finding is still open. Promotion is a mechanical
+        consequence of creating a ticket, so it must never overwrite a triage
+        decision a human already made: a finding someone marked won't-fix and
+        then promoted anyway keeps "won't-fix". That same guard makes the FIRST
+        ticket built from a finding the one it links to — a second promotion
+        finds it non-open and leaves the existing link alone.
+        """
+        f = await Finding.nodes.get_or_none(uid=uid)
+        if f is None or (f.status or "open") != FindingStatus.OPEN.value:
+            return False
+        await self._apply_status(
+            f,
+            FindingStatus.TICKETED,
+            actor_uid=actor_uid,
+            audit_kind="finding.ticketed",
+            extra={"ticket_uid": ticket_uid},
+        )
+        return True
+
+    async def clear_ticket(
+        self, uid: str, *, ticket_uid: str, actor_uid: str | None = None
+    ) -> bool:
+        """Undo mark_ticketed when `ticket_uid` is deleted. True if anything moved.
+
+        TWO INDEPENDENT effects, because they answer different questions:
+
+        - The LINK is dropped whenever it still points at the deleted ticket.
+          A link to a ticket that no longer exists is always wrong: it renders
+          as a dead "Became a ticket →" and blocks re-promotion.
+        - The STATUS returns to "open" only if it is still "ticketed". Someone
+          who promoted a finding and then marked it fixed meant "fixed";
+          deleting the ticket must not drag it back onto the board.
+
+        Collapsing these into one guard (the obvious reading) leaves a dangling
+        ticket_uid on exactly the promote-then-triage-then-delete path.
+
+        A MISSING finding is not an error: findings are deletable, and deleting
+        the ticket of an already-deleted finding must not 404 — hence
+        get_or_none rather than get_node.
+        """
+        f = await Finding.nodes.get_or_none(uid=uid)
+        if f is None or (f.ticket_uid or "") != ticket_uid:
+            return False
+        still_ticketed = (f.status or "") == FindingStatus.TICKETED.value
+        await self._apply_status(
+            f,
+            FindingStatus.OPEN if still_ticketed else FindingStatus(f.status),
+            actor_uid=actor_uid,
+            audit_kind="finding.ticket_removed",
+            extra={"ticket_uid": ""},
+        )
+        return True
 
     async def delete(self, uid: str, *, actor_uid: str | None = None) -> None:
         f = await self.get_node(uid)

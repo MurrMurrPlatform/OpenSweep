@@ -91,7 +91,7 @@ const AXIS_OPTIONS: AxisOption[] = [
   {
     value: 'class',
     label: 'Finding class',
-    hint: 'tickets of one finding class, the unit a ratchet guard covers',
+    hint: 'tickets of one finding class — the same kind of problem, one fix',
     empty: 'No tickets share a finding class.',
   },
   {

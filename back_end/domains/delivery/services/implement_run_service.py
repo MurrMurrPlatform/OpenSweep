@@ -137,27 +137,6 @@ def build_implement_intent(
     return intent
 
 
-def build_ratchet_addendum(tag: str, subtype: str, findings: list) -> str:
-    """Ratchet-run intent addendum (§6): make the finding class structurally
-    impossible, citing the existing instances."""
-    lines = []
-    for f in findings[:20]:
-        paths = ", ".join((f.affected_paths or [])[:5]) or "n/a"
-        lines.append(f"- {f.title} (paths: {paths})")
-    listed = "\n".join(lines) or "- (instances exist but carry no titles)"
-    return (
-        "## Ratchet objective\n"
-        f"This is a RATCHET ticket: the finding class `{tag}/{subtype}` has recurred\n"
-        f"{len(findings)} time(s) in this repository. Do NOT just fix instances — add a lint rule,\n"
-        "CI check, or test that STRUCTURALLY prevents new instances of this class from being\n"
-        "introduced (fail the build when one appears). Prefer extending existing lint/CI\n"
-        "configuration over inventing new infrastructure.\n"
-        "\n"
-        f"Existing instances of `{tag}/{subtype}`:\n"
-        f"{listed}\n"
-    )
-
-
 async def trigger_implement_run(
     ticket: Ticket,
     *,

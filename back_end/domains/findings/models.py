@@ -72,7 +72,22 @@ class Finding(AsyncStructuredNode):
     # a semgrep check_id) — free-form, for cross-referencing the raw output.
 
     status = StringProperty(default="open", index=True)
-    # open | acknowledged | wont-fix | fixed | accepted | superseded | dismissed
+    # open | ticketed | acknowledged | wont-fix | fixed | accepted | superseded
+    # | dismissed
+    #
+    # Anything that is not "open" counts as PROCESSED: the findings board hides
+    # it by default and surfaces it behind the "Processed" filter. That is a
+    # view over this one field, not a second stored flag.
+
+    ticket_uid = StringProperty(default="")
+    # The ticket this finding was promoted into, set alongside status
+    # "ticketed" so the detail view can link forward. DISPLAY ONLY — never a
+    # filter axis. Deleting that ticket clears this (see
+    # findings/services/finding_service.py clear_ticket), INDEPENDENTLY of
+    # whether the status reverts, so the link cannot outlive its ticket even
+    # when the finding was triaged in between. The authoritative edge is still
+    # Ticket.origin_finding_uid; this is denormalised because resolving it the
+    # other way means scanning every ticket in the org.
 
     created_at = DateTimeProperty(default_now=True)
     updated_at = DateTimeProperty(default_now=True)
@@ -86,6 +101,7 @@ FINDING_SIZES = {"trivial", "small", "medium", "large"}
 
 FINDING_STATUSES = {
     "open",
+    "ticketed",
     "acknowledged",
     "wont-fix",
     "fixed",

@@ -4,9 +4,7 @@ import { apiDelete, apiGet, apiPatch, apiPost } from '@/services/api'
 import type {
   FindingDTO,
   FindingKind,
-  FindingStatus,
-  RatchetDispatch,
-  RatchetRequest,
+  FindingStatusFilter,
   RunDTO,
   Severity,
 } from '@/types/api'
@@ -23,7 +21,8 @@ export const useFindingStore = defineStore('findings', () => {
     tag?: string
     kind?: FindingKind
     exclude_kind?: string
-    status?: FindingStatus
+    /** A stored status, or `processed` for everything that is not open. */
+    status?: FindingStatusFilter
     severity?: Severity
     sort_by?: FindingSortBy
     sort_dir?: 'asc' | 'desc'
@@ -92,12 +91,6 @@ export const useFindingStore = defineStore('findings', () => {
     return result
   }
 
-  /** Ratchet-run: turn a recurring finding class (subtype) into a
-   *  born-approved guard ticket + implement run. 404 when nothing matches. */
-  async function triggerRatchet(req: RatchetRequest): Promise<RatchetDispatch> {
-    return apiPost<RatchetDispatch>('/findings/ratchet', req)
-  }
-
   async function launchVerification(uid: string): Promise<RunDTO> {
     return apiPost<RunDTO>(`/findings/${uid}/verify`)
   }
@@ -124,7 +117,6 @@ export const useFindingStore = defineStore('findings', () => {
     markFixed,
     remove,
     removeMany,
-    triggerRatchet,
     launchVerification,
     launchRefine,
     listVerifications,

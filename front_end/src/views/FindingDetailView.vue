@@ -48,6 +48,7 @@ import TrustSignalList from '@/components/findings/TrustSignalList.vue'
 import {
   corroborationCount,
   severityVariant,
+  statusVariant,
   trustPercent,
   trustSignals,
   trustTier,
@@ -177,24 +178,9 @@ const kindIcon = computed(() => {
   }
 })
 
-const statusTone = computed<BadgeVariants['variant']>(() => {
-  if (!item.value) return 'secondary'
-  switch (item.value.status) {
-    case 'open':
-      return 'warn'
-    case 'fixed':
-    case 'accepted':
-      return 'success'
-    case 'wont-fix':
-    case 'dismissed':
-    case 'superseded':
-      return 'secondary'
-    case 'acknowledged':
-      return 'info'
-    default:
-      return 'secondary'
-  }
-})
+const statusTone = computed<BadgeVariants['variant']>(() =>
+  item.value ? statusVariant(item.value.status) : 'secondary',
+)
 
 onMounted(async () => {
   await load()
@@ -463,6 +449,16 @@ watch(
               <ShieldCheck class="h-3 w-3" />
               trust {{ trustPercent(item.trust) }}%
             </Badge>
+            <!-- Where this finding went. Set with status 'ticketed'; cleared
+                 server-side if that ticket is deleted, so it never dangles. -->
+            <RouterLink
+              v-if="item.ticket_uid"
+              :to="{ name: 'ticket-detail', params: { uid: item.ticket_uid } }"
+              class="inline-flex items-center gap-1.5 text-xs text-primary hover:underline"
+            >
+              <Ticket class="h-3.5 w-3.5" />
+              Became a ticket →
+            </RouterLink>
           </div>
         </template>
 
@@ -471,7 +467,7 @@ watch(
           <Button variant="outline" size="sm" @click="editOpen = true">
             <Pencil /> Edit
           </Button>
-          <Button variant="outline" size="sm" @click="promoteOpen = true">
+          <Button v-if="!item.ticket_uid" variant="outline" size="sm" @click="promoteOpen = true">
             <Ticket /> Promote to ticket
           </Button>
           <Button variant="outline" size="sm" :loading="discussing" @click="discussInRun">

@@ -134,15 +134,17 @@ def by_lens(facts: list[TicketFacts]) -> list[_Group]:
 
 
 def by_class(facts: list[TicketFacts]) -> list[_Group]:
-    """Group on the ratchet class — the `tag/subtype` pair that
-    `POST /findings/ratchet` turns into a permanent guard, and that the
-    findings ratchet card counts instances of.
+    """Group on the finding class — the `tag/subtype` pair.
 
-    A finding with several tags belongs to several classes, so the card can
-    show a ticket twice; an epic cannot. Each ticket is therefore assigned to
-    its STRONGEST candidate class (the one with the most instances in this
-    pool, ties lexicographic) — the same class the ratchet card would rank
-    first, and the one whose guard is worth writing.
+    Two tickets sharing a class describe the same KIND of problem, so one epic
+    can carry a single structural fix for all of them rather than n scattered
+    patches.
+
+    A finding with several tags belongs to several classes, but an epic member
+    can only sit in one group. Each ticket is therefore assigned to its
+    STRONGEST candidate class — the one with the most instances in this pool,
+    ties broken lexicographically — since that is the class whose shared fix
+    pays for itself most.
     """
     candidates = {
         f.uid: [f"{tag}/{f.subtype}" for tag in f.tags if tag] if f.subtype else []

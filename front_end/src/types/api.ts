@@ -12,12 +12,18 @@ export type Severity = 'low' | 'medium' | 'high' | 'critical'
 export type FindingSize = 'trivial' | 'small' | 'medium' | 'large'
 export type FindingStatus =
   | 'open'
+  | 'ticketed'
   | 'acknowledged'
   | 'wont-fix'
   | 'fixed'
   | 'accepted'
   | 'superseded'
   | 'dismissed'
+
+/** Stored statuses, plus the `processed` pseudo-status the list endpoint
+ *  accepts for "anything that is not open". Never returned on a finding — it
+ *  is only ever sent as a filter. */
+export type FindingStatusFilter = FindingStatus | 'processed'
 
 export type SourcePath = 'tool-call' | 'parsed-blob' | 'raw-derived'
 export type ParseStatus = 'ok' | 'degraded'
@@ -199,6 +205,9 @@ export interface FindingDTO {
   provider_kind?: string
   provider_model?: string
   status: FindingStatus
+  /** Ticket this finding was promoted into; set with status `ticketed`, empty
+   *  otherwise. Display only — read it to link forward, never to filter. */
+  ticket_uid?: string
   created_at?: string | null
   updated_at?: string | null
 }
@@ -1232,20 +1241,6 @@ export type FixRunDispatch = {
 export interface TriggerFixRequest {
   finding_uids?: string[]
 }
-
-export interface RatchetRequest {
-  repository_uid: string
-  /** The finding class is a (tag, subtype) pair — both are required. */
-  tag: string
-  subtype: string
-}
-
-/** Response of POST /findings/ratchet — inspect loosely. */
-export type RatchetDispatch = {
-  ticket_uid?: string
-  run_uid?: string
-  finding_count?: number
-} & Record<string, unknown>
 
 // ── Tickets (delivery work items, PLATFORM_V2_DESIGN.md §2/§12) ─────────────
 
