@@ -254,8 +254,8 @@ async def build_ticket_epics(
     This is the "top X issues in Y runs" path. Six of the eight axes (area,
     feature, files, lens, class, linked) are arithmetic over data the tickets
     already carry, so asking a model to eyeball them only added latency and
-    variance. `root-cause` is the exception and still goes through
-    `POST /propose-groups`.
+    variance. `root-cause` is the exception and still goes through the agent
+    proposal tool (`opensweep_platform_propose_epic`).
 
     `dry_run` returns the identical plan without persisting, so the counts a
     reviewer approves against come from the code that builds them.

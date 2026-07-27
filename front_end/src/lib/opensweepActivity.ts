@@ -7,7 +7,7 @@ const TOOL_LABELS: Record<string, string> = {
   opensweep_platform_update_ticket: 'updating the ticket…',
   opensweep_platform_update_finding: 'updating the finding…',
   opensweep_platform_create_finding: 'filing a finding…',
-  opensweep_platform_propose_ticket_group: 'grouping tickets…',
+  opensweep_platform_propose_epic: 'proposing an epic…',
   opensweep_platform_write_memory: 'writing a memory…',
   opensweep_platform_search_memory: 'searching memories…',
   opensweep_platform_list_docs: 'browsing the docs…',

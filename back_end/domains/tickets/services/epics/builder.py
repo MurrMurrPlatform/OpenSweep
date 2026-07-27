@@ -45,7 +45,8 @@ def _axis_or_422(raw: str) -> EpicAxis:
             status_code=422,
             detail=(
                 f"axis '{raw}' is not computable — it requires agent judgment. "
-                "Use POST /tickets/propose-groups for that."
+                "Propose it instead via POST /api/v1/platform-tools/tickets/"
+                "propose-group (tool opensweep_platform_propose_epic)."
             ),
         )
     return axis

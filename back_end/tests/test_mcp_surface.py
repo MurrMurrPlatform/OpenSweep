@@ -65,6 +65,70 @@ def test_no_duplicates():
     assert len(OPENSWEEP_MCP_OPERATIONS) == len(set(OPENSWEEP_MCP_OPERATIONS))
 
 
+# ── The allowlists must describe REALITY ─────────────────────────────────────
+#
+# Every other test in this file compares a hardcoded set against
+# OPENSWEEP_*_OPERATIONS — i.e. one list against another list. That can prove
+# the allowlist SAYS the right thing, never that the names RESOLVE. When an
+# operation_id is renamed and the allowlist is not, FastApiMCP's
+# `include_operations` silently drops the entry: the mount succeeds, the tool
+# vanishes, and the agent reports a tool it cannot find.
+#
+# That is exactly how `opensweep_platform_propose_epic` was unreachable — the
+# allowlist still named the pre-rename `opensweep_platform_propose_ticket_group`.
+# These two tests are the only ones here that consult the real OpenAPI schema,
+# so they are the only ones that can catch the next rename.
+
+
+def _real_operation_ids() -> set[str]:
+    from app import app
+
+    return {
+        op["operationId"]
+        for methods in app.openapi().get("paths", {}).values()
+        for op in methods.values()
+        if isinstance(op, dict) and op.get("operationId")
+    }
+
+
+def test_every_allowlisted_operation_resolves_to_a_real_route():
+    real = _real_operation_ids()
+    for label, listed in (
+        ("external", OPENSWEEP_MCP_OPERATIONS),
+        ("platform-tool", OPENSWEEP_PLATFORM_TOOL_OPERATIONS),
+    ):
+        missing = sorted(set(listed) - real)
+        assert not missing, (
+            f"{label} allowlist names operations that no route registers: {missing}. "
+            "FastApiMCP drops these silently, so the tools are simply absent from "
+            "the surface. Fix the name in mcp_app.py to match the route's "
+            "operation_id (this is what a rename looks like)."
+        )
+
+
+def test_every_platform_route_is_exposed_to_executors():
+    """The converse: a platform tool nobody allowlisted is a tool no run can call.
+
+    `opensweep_platform_*` is by definition the executor-facing surface, so a
+    route carrying that prefix and missing from the allowlist is a wiring
+    mistake, not a deliberate omission. If one ever IS deliberate, add it to
+    DELIBERATELY_UNEXPOSED with a comment saying why.
+    """
+    DELIBERATELY_UNEXPOSED: set[str] = set()
+
+    unexposed = sorted(
+        op
+        for op in _real_operation_ids()
+        if op.startswith("opensweep_platform_")
+        and op not in set(OPENSWEEP_PLATFORM_TOOL_OPERATIONS)
+        and op not in DELIBERATELY_UNEXPOSED
+    )
+    assert not unexposed, (
+        f"platform routes exist but no run can reach them: {unexposed}. "
+        "Add them to OPENSWEEP_PLATFORM_TOOL_OPERATIONS in mcp_app.py."
+    )
+
+
 def test_platform_tools_are_tracking_safe():
     """All platform-mounted tools must be tracking-safe.
 
@@ -127,10 +191,10 @@ def test_platform_tools_are_tracking_safe():
         "opensweep_platform_update_ticket",
         "opensweep_platform_get_ticket",
         "opensweep_platform_list_tickets",
-        # Grouping — writes a TicketGroupProposal (OpenSweep state only); the
-        # parent ticket is only materialized by a human approving the
-        # proposal, so agents can never apply their own groupings.
-        "opensweep_platform_propose_ticket_group",
+        # Epics — writes an EpicProposal (OpenSweep state only); the parent
+        # ticket is only materialized by a human approving the proposal, so
+        # agents can never apply their own groupings.
+        "opensweep_platform_propose_epic",
         # Comments — the human↔agent conversation on any data item. Reading
         # shows human instructions; add_comment writes OpenSweep STATE only (a
         # thread reply attributed to the run), never the source repository.

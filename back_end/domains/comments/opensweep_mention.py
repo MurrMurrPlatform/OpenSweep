@@ -63,7 +63,7 @@ def build_opensweep_comment_intent(
         "modify code).\n"
         "2. Perform the request with the opensweep_platform_* tools (for example "
         "opensweep_platform_update_ticket, opensweep_platform_update_finding, "
-        "opensweep_platform_propose_ticket_group).\n"
+        "opensweep_platform_propose_epic).\n"
         "3. REQUIRED: reply on the thread by calling opensweep_platform_add_comment "
         f"with subject_type={subject_type.value!r} and "
         f"subject_uid={subject.uid!r}. Summarize what you did (or why you "

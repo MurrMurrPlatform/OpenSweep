@@ -120,9 +120,9 @@ OPENSWEEP_PLATFORM_TOOL_OPERATIONS = [
     "opensweep_platform_update_ticket",
     "opensweep_platform_get_ticket",
     "opensweep_platform_list_tickets",
-    # Grouping — agents may PROPOSE batching related tickets under one parent;
+    # Epics — agents may PROPOSE grouping related tickets under one parent;
     # approval (which materializes the parent) is human-only, like Gate 1.
-    "opensweep_platform_propose_ticket_group",
+    "opensweep_platform_propose_epic",
     # Threads (unified dev flow) — the session agent persists its plan
     # (drafts only; approval is human-only), signals ready-for-review, and
     # asks the user structured questions the thread UI renders as answer
@@ -218,9 +218,24 @@ def mount_mcp(app: FastAPI) -> None:
             headers=MCP_FORWARD_HEADERS,
         )
         platform.mount_http(mount_path=platform_mount_path)
+        # Report what was actually SERVED, not what was requested. These differ
+        # whenever an allowlist entry names an operation_id no route registers
+        # — FastApiMCP drops it silently, so logging len(allowlist) would
+        # cheerfully claim a tool is available that no agent can see. A rename
+        # that missed this file is exactly that case, and it went unnoticed
+        # because the log asserted the intent instead of the outcome.
+        served = {t.name for t in platform.tools}
+        dropped = sorted(set(OPENSWEEP_PLATFORM_TOOL_OPERATIONS) - served)
+        if dropped:
+            logger.error(
+                f"MCP (platform-tools) allowlist names {len(dropped)} operation(s) "
+                f"no route registers — these tools are ABSENT from the executor "
+                f"surface: {dropped}",
+                extra={"tag": "mcp"},
+            )
         logger.info(
             f"MCP (platform-tools) mounted at {platform_mount_path} "
-            f"with {len(OPENSWEEP_PLATFORM_TOOL_OPERATIONS)} tools",
+            f"with {len(served)} tools",
             extra={"tag": "mcp"},
         )
     except Exception as exc:
