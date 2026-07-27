@@ -21,7 +21,7 @@ def _openapi_operation_ids() -> set[str]:
 
 def test_phase3_routes_are_mounted():
     ops = _openapi_operation_ids()
-    for op_id in ("opensweep_trigger_fix_run", "opensweep_trigger_ratchet", "opensweep_ticket_implement"):
+    for op_id in ("opensweep_trigger_fix_run", "opensweep_ticket_implement"):
         assert op_id in ops, f"missing Phase 3 operation {op_id}"
 
 
@@ -30,8 +30,17 @@ def test_phase3_route_paths():
     # so assert against the schema paths.
     paths = set(app.openapi().get("paths", {}).keys())
     assert "/api/v1/delivery/pull-requests/{uid}/fix" in paths
-    assert "/api/v1/findings/ratchet" in paths
     assert "/api/v1/tickets/{uid}/implement" in paths
+
+
+def test_ratchet_surface_is_gone():
+    # The recurring-finding-classes card and its born-approved guard ticket
+    # were removed. Assert the operation is absent from the schema, not just
+    # unrouted: the same schema backs the MCP tool surface, so a lingering
+    # operationId would leave agents calling an endpoint nothing serves.
+    schema = app.openapi()
+    assert "/api/v1/findings/ratchet" not in schema.get("paths", {})
+    assert "opensweep_trigger_ratchet" not in _openapi_operation_ids()
 
 
 def test_merge_policy_dto_exposes_path_denylist():

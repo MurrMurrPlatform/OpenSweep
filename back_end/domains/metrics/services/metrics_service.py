@@ -16,7 +16,14 @@ from domains.metrics.schemas import (
     RepoSummary,
 )
 
-_OPEN_FINDING_STATUSES = {"open", "acknowledged"}
+# Statuses that still represent REAL, OUTSTANDING work. This is not the same
+# question the findings board asks: the board hides anything not "open" so the
+# triage inbox stays actionable, but a problem does not stop existing because
+# someone acknowledged it or opened a ticket for it. `ticketed` belongs here
+# for the same reason `acknowledged` always has — dropping it would have made
+# the headline count fall by every historically-promoted finding the moment
+# m0020 backfilled them.
+_OPEN_FINDING_STATUSES = {"open", "acknowledged", "ticketed"}
 _HIGH_SEVERITY = {"high", "critical"}
 
 # Kinds that count as "real work" in the open-findings tally. Proposals are

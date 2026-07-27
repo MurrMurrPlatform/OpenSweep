@@ -73,6 +73,10 @@ class FakeFinding(_Node):
     kind = ""
     tags: list[str] = []
     subtype = ""
+    # Promotion also moves the finding off the open board — status "ticketed"
+    # plus a forward link — so the fake carries what that transition writes.
+    status = "open"
+    ticket_uid = ""
 
 
 @pytest.fixture(autouse=True)
@@ -86,6 +90,15 @@ def fakes(monkeypatch):
         pass
 
     monkeypatch.setattr(svc_mod, "write_audit", no_audit)
+
+    # Promotion now marks the finding via FindingService, which resolves nodes
+    # through its OWN module-level `Finding`. Without patching that too, these
+    # DB-free tests would open a real Neo4j connection the moment a promotion
+    # succeeds.
+    import domains.findings.services.finding_service as finding_mod
+
+    monkeypatch.setattr(finding_mod, "Finding", FakeFinding)
+    monkeypatch.setattr(finding_mod, "write_audit", no_audit)
     yield
     _STORE.clear()
 

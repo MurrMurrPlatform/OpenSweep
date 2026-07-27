@@ -321,6 +321,17 @@ class ResolutionService:
         )
         await ticket.save()
 
+        # This path builds the Ticket directly instead of going through
+        # TicketService.create, so it has to mark the finding itself — a
+        # deferral is a promotion like any other and must leave the board the
+        # same way. No-ops if the finding is no longer open.
+        if finding is not None:
+            from domains.findings.services.finding_service import FindingService
+
+            await FindingService().mark_ticketed(
+                r.finding_uid, ticket_uid=ticket.uid, actor_uid=actor_uid
+            )
+
         r.state = "deferred"
         r.ticket_uid = ticket.uid
         await self._save(
