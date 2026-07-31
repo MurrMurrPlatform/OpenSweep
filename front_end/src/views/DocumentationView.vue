@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   Archive,
   BookOpen,
+  Bot,
   Brain,
   Check,
   ChevronDown,
@@ -55,6 +56,12 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import {
   Select,
   SelectContent,
@@ -512,9 +519,35 @@ const docPromptSelection = computed({
   },
 })
 
+// Optional page scoping. Empty (or full) selection = whole repository —
+// the dispatch target is omitted and the scope block falls back to
+// "the whole repository" (agents/services/dispatch.py::_scope_summary).
+const targetUids = ref<Set<string>>(new Set())
+
+/** Pages offered in the scope picker — retired pages are never targets. */
+const targetablePages = computed<DocDTO[]>(() =>
+  [...docs.list].filter((d) => !d.archived).sort((a, b) => a.slug.localeCompare(b.slug)),
+)
+
+function toggleTargetPage(uid: string) {
+  if (targetUids.value.has(uid)) targetUids.value.delete(uid)
+  else targetUids.value.add(uid)
+}
+
+function clearTargetPages() {
+  targetUids.value = new Set()
+}
+
+const scopedTargets = computed<DocDTO[]>(() => {
+  const chosen = targetablePages.value.filter((d) => targetUids.value.has(d.uid))
+  // Selecting every page is the same run as selecting none — whole repo.
+  return chosen.length === targetablePages.value.length ? [] : chosen
+})
+
 async function openUpdateDocs() {
   updateDocsOpen.value = true
   selectedDocPromptUid.value = ''
+  targetUids.value = new Set()
   try {
     const all = await agents.fetchAll({ enabled_only: true })
     // Alternative strategies only. System agents (the document base and
@@ -544,7 +577,14 @@ async function dispatchDocumentRun() {
     // library agent is picked; a picked agent overrides it for
     // repo-specific documentation policy.
     const agentUid = picked?.uid || (await documentAgentUid())
-    const run = await agents.dispatch(agentUid, { repository_uid: repoUid.value })
+    const scoped = scopedTargets.value
+    const target = scoped.length
+      ? {
+          doc_uids: scoped.map((d) => d.uid),
+          paths: [...new Set(scoped.flatMap((d) => d.watch_paths || []))],
+        }
+      : undefined
+    const run = await agents.dispatch(agentUid, { repository_uid: repoUid.value, target })
     updateDocsOpen.value = false
     toast.success('Document run dispatched', `run ${run.uid.slice(0, 8)}`)
     router.push({ name: 'run-detail', params: { uid: run.uid } })
@@ -707,7 +747,13 @@ async function confirmDeleteMemory() {
       >
         Reset docs…
       </Button>
-      <span :title="docsGated ? GATE_TOOLTIP : 'Dispatch one LLM run that proposes doc pages for this repository. Proposals land below as pending edits.'">
+      <!-- Bootstrap only: once pages exist, "Update docs" also proposes new
+           pages, so the header offers a single generation entry point. A full
+           re-scaffold is still reachable via Reset docs → Generate. -->
+      <span
+        v-if="!docs.list.length"
+        :title="docsGated ? GATE_TOOLTIP : 'Dispatch one LLM run that proposes doc pages for this repository. Proposals land below as pending edits.'"
+      >
         <Button variant="outline" size="sm" :loading="generating" :disabled="docsGated" @click="generateDocs">
           <Wand2 v-if="!generating" />
           Generate docs
@@ -923,7 +969,7 @@ async function confirmDeleteMemory() {
               </ul>
             </template>
 
-            <div v-else class="p-4">
+            <div v-if="!pages.length && !featureAreas.length" class="p-4">
               <EmptyState
                 :icon="BookOpen"
                 title="No pages yet"
@@ -1006,25 +1052,29 @@ async function confirmDeleteMemory() {
               </div>
               <div class="flex shrink-0 flex-wrap gap-2">
                 <template v-if="!editing">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    :loading="drafting"
-                    title="Dispatch an LLM run that drafts this page's body from its watched paths — lands as a pending edit"
-                    @click="draftSelected"
-                  >
-                    <Wand2 v-if="!drafting" /> Draft
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    :loading="verifying"
-                    :disabled="!selected.body"
-                    title="Dispatch an LLM run that verifies this page's claims against the code — files findings"
-                    @click="verifySelected"
-                  >
-                    <ShieldCheck v-if="!verifying" /> Verify
-                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger as-child>
+                      <Button variant="outline" size="sm" :loading="drafting || verifying">
+                        <Bot v-if="!drafting && !verifying" /> Agent
+                        <ChevronDown class="h-3.5 w-3.5 text-muted-foreground" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" class="w-56">
+                      <DropdownMenuItem
+                        title="Dispatch an LLM run that drafts this page's body from its watched paths — lands as a pending edit"
+                        @select="draftSelected"
+                      >
+                        <Wand2 /> Draft page body
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        :disabled="!selected.body"
+                        title="Dispatch an LLM run that verifies this page's claims against the code — files findings"
+                        @select="verifySelected"
+                      >
+                        <ShieldCheck /> Verify claims
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                   <Button variant="outline" size="sm" @click="startEdit">
                     <Pencil /> Edit
                   </Button>
@@ -1260,7 +1310,52 @@ async function confirmDeleteMemory() {
             <p class="text-xs text-muted-foreground">
               The default runs this repository's configured document-stage guidance (Workflow card).
               Alternative strategies with job type <code class="font-mono">document</code> appear here — manage them under
-              <RouterLink :to="{ name: 'admin-agent-prompts' }" class="text-primary hover:underline">Admin › Agent prompts</RouterLink>.
+              <RouterLink :to="{ name: 'agent-library' }" class="text-primary hover:underline">Settings › Agent library</RouterLink>.
+            </p>
+          </div>
+          <div v-if="targetablePages.length" class="space-y-1.5">
+            <div class="flex items-center justify-between">
+              <Label>Scope</Label>
+              <button
+                v-if="targetUids.size"
+                type="button"
+                class="text-xs text-primary hover:underline"
+                @click="clearTargetPages"
+              >
+                Clear selection
+              </button>
+            </div>
+            <div class="max-h-48 divide-y divide-border overflow-y-auto rounded-md border border-border">
+              <label
+                v-for="doc in targetablePages"
+                :key="doc.uid"
+                class="flex cursor-pointer items-start gap-2 px-3 py-1.5 text-sm hover:bg-accent"
+              >
+                <input
+                  type="checkbox"
+                  class="mt-0.5 h-3.5 w-3.5 cursor-pointer accent-primary"
+                  :checked="targetUids.has(doc.uid)"
+                  @change="toggleTargetPage(doc.uid)"
+                />
+                <span class="min-w-0">
+                  <span class="flex items-center gap-1.5">
+                    <span class="truncate font-medium">{{ doc.title || doc.slug }}</span>
+                    <span
+                      v-if="doc.stale"
+                      class="h-2 w-2 shrink-0 rounded-full bg-amber-500"
+                      title="Code changed since last review"
+                    />
+                  </span>
+                  <span class="block truncate font-mono text-[10px] text-muted-foreground">{{ doc.slug }}</span>
+                </span>
+              </label>
+            </div>
+            <p class="text-xs text-muted-foreground">
+              {{
+                scopedTargets.length
+                  ? `Scoped to ${scopedTargets.length} page${scopedTargets.length === 1 ? '' : 's'} — their watch paths become the run's target.`
+                  : 'No selection — the run covers every page and the repository\'s memories.'
+              }}
             </p>
           </div>
         </div>

@@ -349,8 +349,8 @@ async def area_detail(a: Area) -> AreaDetailDTO:
     # referencing it. Ignore areas relate to nothing.
     rows = [
         r
-        for r in await Area.nodes.all()
-        if r.repository_uid == a.repository_uid and bool(r.enabled) and r.uid != a.uid
+        for r in await Area.nodes.filter(repository_uid=a.repository_uid)
+        if bool(r.enabled) and r.uid != a.uid
     ]
     kind = a.kind or "subsystem"
     if kind == "feature":

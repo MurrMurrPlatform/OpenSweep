@@ -95,12 +95,11 @@ def build_thread_session_intent(ticket, thread_uid: str) -> str:
     )
 
 
-def build_epic_addendum(children: list) -> str:
-    """Group flow: the parent ticket is implemented as ONE unit — one branch,
-    one PR that closes every subticket. List the members so the agent covers
-    them all."""
-    if not children:
-        return ""
+def _epic_member_lines(children: list) -> str:
+    """One bullet per epic member: uid, title, truncated description, and up
+    to 6 acceptance criteria — the shared listing under both the implement
+    addendum and the review checklist, so the reviewer sees exactly the
+    contract the implementer was given."""
     lines = []
     for c in children:
         ac = "; ".join(str(a) for a in (c.acceptance_criteria or [])[:6])
@@ -112,12 +111,42 @@ def build_epic_addendum(children: list) -> str:
             f"  {desc or '(no description)'}\n"
             f"  Acceptance: {ac or '(none recorded)'}"
         )
+    return "\n".join(lines)
+
+
+def build_epic_addendum(children: list) -> str:
+    """Group flow: the parent ticket is implemented as ONE unit — one branch,
+    one PR that closes every subticket. List the members so the agent covers
+    them all."""
+    if not children:
+        return ""
     return (
         "\n\n# Ticket group — implement ALL subtickets in this one branch/PR\n"
         "This ticket is a group parent. The epic below ships as one unit; the\n"
         "PR that closes the parent closes every subticket. Cover each one and\n"
         "say per subticket in your summary what you did (or why you skipped it).\n\n"
-        + "\n".join(lines)
+        + _epic_member_lines(children)
+    )
+
+
+def build_epic_review_checklist(children: list) -> str:
+    """Review flow: merging the parent's PR closes every subticket
+    unconditionally (`mark_done_via_merge`), so the review is the last gate
+    that can catch a member the implement run skipped or half-delivered.
+    The implementer's per-subticket coverage claim is self-reported — this
+    checklist is what actually verifies it."""
+    if not children:
+        return ""
+    return (
+        "\n\n## Epic subticket coverage\n"
+        "This PR implements an epic parent: merging it marks EVERY subticket\n"
+        "below as done, whether or not the diff actually delivers it. Check the\n"
+        "PR against each subticket's acceptance criteria. If a subticket is\n"
+        "unmet or not attempted, file a finding for it (name the subticket uid\n"
+        "in the evidence) and count it as blocking in `new_blocking_findings` —\n"
+        "an unimplemented subticket must not merge as done. State per subticket\n"
+        "in the verdict notes: met, unmet, or not attempted.\n\n"
+        + _epic_member_lines(children)
     )
 
 

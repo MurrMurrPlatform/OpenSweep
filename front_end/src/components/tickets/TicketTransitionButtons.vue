@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { ArrowLeft, ArrowRight, Check, ChevronDown, Trash2 } from 'lucide-vue-next'
+import { Archive, ArchiveRestore, ArrowLeft, ArrowRight, Check, ChevronDown, Trash2 } from 'lucide-vue-next'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -30,7 +30,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { TRANSITIONS, type TicketTransition } from '@/components/tickets/ticketMeta'
+import { transitionsFor, type TicketTransition } from '@/components/tickets/ticketMeta'
 import type { TicketDTO } from '@/types/api'
 
 interface Props {
@@ -47,8 +47,17 @@ const toast = useToast()
 const busy = ref<string | null>(null)
 const approveOpen = ref(false)
 const deleteOpen = ref(false)
+const archiveOpen = ref(false)
 
-const transitions = computed<TicketTransition[]>(() => TRANSITIONS[props.ticket.status] ?? [])
+// `transitionsFor` drops Gate 1 on an epic member — filtering the list rather
+// than special-casing the button keeps the menu, the empty check and the
+// button in step. An archived ticket has no transitions (the backend 409s) —
+// its only move is Unarchive.
+const transitions = computed<TicketTransition[]>(() =>
+  props.ticket.archived ? [] : transitionsFor(props.ticket),
+)
+// Epic members archive through their parent (the backend 409s on them).
+const canArchive = computed(() => !props.ticket.archived && !props.ticket.parent_ticket_uid)
 
 async function transition(t: TicketTransition) {
   if (busy.value) return
@@ -85,10 +94,40 @@ async function confirmRemove() {
     busy.value = null
   }
 }
+
+async function confirmArchive() {
+  archiveOpen.value = false
+  busy.value = 'archive'
+  try {
+    const updated = await store.archiveTicket(props.ticket.uid)
+    emit('updated', updated)
+    toast.success('Ticket archived', props.ticket.title)
+  } catch (e) {
+    const msg = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
+    toast.error(e instanceof ApiError && e.status === 409 ? 'Can’t archive' : 'Archive failed', msg)
+  } finally {
+    busy.value = null
+  }
+}
+
+async function unarchive() {
+  if (busy.value) return
+  busy.value = 'unarchive'
+  try {
+    const updated = await store.unarchiveTicket(props.ticket.uid)
+    emit('updated', updated)
+    toast.success('Ticket restored', `Back on the board in ${updated.status}`)
+  } catch (e) {
+    const msg = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
+    toast.error('Unarchive failed', msg)
+  } finally {
+    busy.value = null
+  }
+}
 </script>
 
 <template>
-  <div v-if="transitions.length || (showDelete && ticket.status === 'backlog')">
+  <div v-if="transitions.length || canArchive || ticket.archived || (showDelete && ticket.status === 'backlog')">
     <!-- Gate 1 (Approve) stays a first-class button — it is THE human gate.
          Everything else folds into one calm "Move" menu. -->
     <div class="flex items-center gap-1.5">
@@ -100,7 +139,16 @@ async function confirmRemove() {
       >
         <Check /> Approve
       </Button>
-      <DropdownMenu v-if="transitions.some((t) => t.kind !== 'gate') || (showDelete && ticket.status === 'backlog')">
+      <Button
+        v-if="ticket.archived"
+        size="sm"
+        variant="outline"
+        :loading="busy === 'unarchive'"
+        @click="unarchive"
+      >
+        <ArchiveRestore /> Unarchive
+      </Button>
+      <DropdownMenu v-if="transitions.some((t) => t.kind !== 'gate') || canArchive || (showDelete && ticket.status === 'backlog')">
         <DropdownMenuTrigger as-child>
           <Button variant="ghost" size="sm" :disabled="!!busy" :loading="!!busy && busy !== 'delete'">
             Move <ChevronDown class="size-3.5 opacity-60" />
@@ -114,9 +162,16 @@ async function confirmRemove() {
               {{ t.label }}
             </DropdownMenuItem>
           </template>
-          <template v-if="showDelete && ticket.status === 'backlog'">
+          <template v-if="canArchive || (showDelete && ticket.status === 'backlog')">
             <DropdownMenuSeparator v-if="transitions.some((t) => t.kind !== 'gate')" />
-            <DropdownMenuItem class="text-destructive focus:text-destructive" @select="remove">
+            <DropdownMenuItem v-if="canArchive" @select="archiveOpen = true">
+              <Archive /> Archive ticket…
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              v-if="showDelete && ticket.status === 'backlog'"
+              class="text-destructive focus:text-destructive"
+              @select="remove"
+            >
               <Trash2 /> Delete ticket
             </DropdownMenuItem>
           </template>
@@ -146,6 +201,23 @@ async function confirmRemove() {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    <!-- Archive confirm -->
+    <AlertDialog v-model:open="archiveOpen">
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Archive ticket</AlertDialogTitle>
+          <AlertDialogDescription>
+            Archive “{{ ticket.title }}”? It leaves the board but keeps its history —
+            restore it any time from the archived list.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction @click="confirmArchive">Archive</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
 
     <!-- Delete confirm -->
     <AlertDialog v-model:open="deleteOpen">

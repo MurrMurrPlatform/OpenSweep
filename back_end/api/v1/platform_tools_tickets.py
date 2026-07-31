@@ -143,9 +143,15 @@ class PlatformProposeEpicRequest(BaseModel):
     axis: str = Field(
         "root-cause",
         description=(
-            "What makes these belong together. Agents should send "
-            "'root-cause' — the platform computes area/feature/files/lens/"
-            "class/linked groupings itself, exactly, without a model."
+            "What makes these belong together. One of: 'root-cause' (one "
+            "defect showing up in several places, so one fix removes every "
+            "symptom), 'theme' (one feature or user-facing capability — "
+            "different fixes, one coherent piece of work), 'co-change' "
+            "(unrelated problems whose fixes land in the same code, so one PR "
+            "is cheaper and separate branches would conflict). Anything else "
+            "is stored as 'root-cause': the platform computes area/feature/"
+            "files/lens/class/linked groupings itself, exactly and without a "
+            "model, so those are not yours to claim."
         ),
     )
     evidence: dict = Field(

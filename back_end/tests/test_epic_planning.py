@@ -7,6 +7,7 @@ import pytest
 from domains.tickets.services.epics.axes import partition
 from domains.tickets.services.epics.loader import normalize_path
 from domains.tickets.services.epics.schemas import (
+    AGENT_AXES,
     DETERMINISTIC_AXES,
     MAX_RATIONALE_CHARS,
     EpicAxis,
@@ -478,7 +479,10 @@ def test_partition_is_deterministic_across_repeated_calls():
 # ── axes: non-computable axes ──────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("axis", [EpicAxis.MANUAL, EpicAxis.ROOT_CAUSE])
+# Driven off `AGENT_AXES` rather than a hand-written list: a new agent axis
+# must be refused here the day it is added, not the day someone remembers to
+# extend this test.
+@pytest.mark.parametrize("axis", [EpicAxis.MANUAL, *sorted(AGENT_AXES)])
 def test_non_deterministic_axes_raise_rather_than_return_nothing(axis):
     pool = [_t("a", kind="defect"), _t("b", kind="defect")]
     with pytest.raises(ValueError, match=axis.value):

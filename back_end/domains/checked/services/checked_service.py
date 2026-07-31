@@ -83,9 +83,7 @@ async def record_for_run(*, run_uid: str) -> list[Checked]:
         from domains.docs.models import Doc
         from domains.repositories.services.path_matching import watches_path
 
-        docs = [
-            d for d in await Doc.nodes.all() if d.repository_uid == run.repository_uid
-        ]
+        docs = list(await Doc.nodes.filter(repository_uid=run.repository_uid))
         for d in docs:
             if d.uid in scopes or not d.watch_paths:
                 continue
@@ -171,15 +169,13 @@ async def audit_coverage(*, repository_uid: str) -> list[dict[str, Any]]:
     from domains.docs.models import Doc
 
     latest: dict[str, Checked] = {}
-    for c in await Checked.nodes.all():
-        if c.repository_uid != repository_uid:
-            continue
+    for c in await Checked.nodes.filter(repository_uid=repository_uid):
         old = latest.get(c.scope_uid)
         if old is None or _dt(c.checked_at) > _dt(old.checked_at):
             latest[c.scope_uid] = c
 
     out: list[dict[str, Any]] = []
-    docs = [d for d in await Doc.nodes.all() if d.repository_uid == repository_uid]
+    docs = list(await Doc.nodes.filter(repository_uid=repository_uid))
     for d in docs:
         c = latest.get(d.uid)
         out.append(

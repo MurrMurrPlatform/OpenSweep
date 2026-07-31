@@ -9,7 +9,15 @@ import {
 import { useUiStore } from '@/stores/uiStore'
 import { useCurrentUserStore } from '@/stores/currentUserStore'
 
-export interface NavItem { to: string; label: string; icon: Component; scoped?: boolean; exact?: boolean }
+export interface NavItem {
+  to: string
+  label: string
+  icon: Component
+  scoped?: boolean
+  exact?: boolean
+  /** Route names that also count as "active" (e.g. an exact item's tabs). */
+  matchNames?: string[]
+}
 export interface NavSection { label: string | null; items: NavItem[] }
 
 /**
@@ -30,7 +38,10 @@ export function useNavSections(): { sections: ComputedRef<NavSection[]> } {
       {
         label: 'Workspace',
         items: [
-          { to: r || '/', label: 'Dashboard', icon: LayoutGrid, scoped: true, exact: true },
+          // exact keeps /r/:slug/findings etc. from matching by prefix; the
+          // workspace tabs still highlight Dashboard via matchNames.
+          { to: r || '/', label: 'Dashboard', icon: LayoutGrid, scoped: true, exact: true,
+            matchNames: ['workspace-home', 'workspace-activity', 'workspace-settings'] },
           { to: `${r}/docs`, label: 'Documentation', icon: BookOpen, scoped: true },
           { to: `${r}/areas`, label: 'Areas', icon: MapIcon, scoped: true },
           { to: `${r}/findings`, label: 'Findings', icon: ClipboardList, scoped: true },
@@ -44,7 +55,6 @@ export function useNavSections(): { sections: ComputedRef<NavSection[]> } {
           { to: `${r}/agents`, label: 'Agents', icon: Bot, scoped: true },
           { to: `${r}/campaigns`, label: 'Campaigns', icon: Layers, scoped: true },
           { to: `${r}/analyses`, label: 'Analyses', icon: Radar, scoped: true },
-          { to: `${r}/health`, label: 'Health', icon: Search, scoped: true },
           { to: `${r}/runs`, label: 'Runs', icon: Activity, scoped: true },
           { to: `${r}/queue`, label: 'Queue', icon: GitPullRequest, scoped: true },
         ],

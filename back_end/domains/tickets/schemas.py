@@ -40,6 +40,10 @@ class TicketDTO(BaseModel):
     plan: dict = Field(default_factory=dict)
     approved_by: str = ""
     approved_at: datetime | None = None
+    # Archived tickets keep history but leave default listings (see models.py).
+    archived: bool = False
+    archived_at: datetime | None = None
+    archived_by: str = ""
     done_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None

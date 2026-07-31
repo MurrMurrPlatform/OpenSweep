@@ -17,6 +17,7 @@ from domains.areas.schemas import (
     AreaDetailDTO,
     AreaDTO,
     AreaEditDTO,
+    AreasHealthDTO,
     BulkAreaEditRequest,
     UpdateAreaRequest,
     UpdateAreaResponse,
@@ -38,6 +39,26 @@ async def list_areas(
 ) -> list[AreaDTO]:
     await require_repo_in_org(repository_uid, user.org_uid)
     return await area_service.list_areas(repository_uid)
+
+
+@router.get(
+    "/repositories/{repository_uid}/areas/health",
+    operation_id="opensweep_areas_health",
+)
+async def areas_health(
+    repository_uid: str,
+    user: UserDTO = Depends(get_current_user),
+) -> AreasHealthDTO:
+    """The merged Areas board in one load: every area with its review
+    staleness, doc freshness, spec state and audit coverage, plus the doc
+    pages no area covers.
+
+    Replaces the separate Health page, which reported on Docs only and so
+    said nothing about the area map it sat beside."""
+    await require_repo_in_org(repository_uid, user.org_uid)
+    from domains.areas.services.area_health import area_health
+
+    return await area_health(repository_uid)
 
 
 @router.get("/areas/{uid}", operation_id="opensweep_get_area")
@@ -67,6 +88,28 @@ async def update_area(
     await require_repo_in_org(existing.repository_uid, user.org_uid)
     a, warnings = await area_service.update_area(uid, req, actor=user.uid)
     return UpdateAreaResponse(area=area_service.area_to_dto(a), warnings=warnings)
+
+
+@router.post("/areas/{uid}/confirm-current", operation_id="opensweep_confirm_area_current")
+async def confirm_area_current_endpoint(
+    uid: str, user: UserDTO = Depends(require_role("maintainer"))
+) -> AreaDTO:
+    """"I looked; the map is still right" — advance the review stamp without
+    inventing an edit.
+
+    Stale clears only on review, and until now the only human way to review was
+    to change something. That pushed people into making no-op edits just to
+    clear a badge, which is how a review signal stops meaning anything. The
+    agent path (`confirm_area_current`) has always existed; this is its door.
+    """
+    a = await area_service.get_area(uid)
+    await require_repo_in_org(a.repository_uid, user.org_uid)
+    from domains.areas.services.area_freshness import confirm_area_current
+
+    confirmed = await confirm_area_current(a.repository_uid, a.key)
+    if confirmed is None:
+        raise HTTPException(status_code=404, detail=f"area {uid} not found")
+    return area_service.area_to_dto(confirmed)
 
 
 @router.delete("/areas/{uid}", operation_id="opensweep_delete_area")

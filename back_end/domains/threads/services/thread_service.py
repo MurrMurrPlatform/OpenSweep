@@ -38,6 +38,7 @@ def thread_to_dto(t) -> ThreadDTO:
         pr_uid=t.pr_uid or "",
         ready_for_review=bool(t.ready_for_review),
         active_run_uid=t.active_run_uid or "",
+        questions_open=len(open_question_events(list(getattr(t, "events", None) or []))),
         created_by=t.created_by or "",
         created_at=t.created_at,
         updated_at=t.updated_at,
@@ -296,6 +297,10 @@ class ThreadService:
         from infrastructure.git_providers import get_provider_client
 
         ticket = await TicketService().get_node(ticket_uid)
+        if bool(getattr(ticket, "archived", False)):
+            raise HTTPException(
+                status_code=409, detail="ticket is archived — unarchive it first"
+            )
         existing = await self.list(subject_ticket_uid=ticket_uid)
         if has_active_thread(existing):
             raise HTTPException(status_code=409, detail="ticket already has an active thread")

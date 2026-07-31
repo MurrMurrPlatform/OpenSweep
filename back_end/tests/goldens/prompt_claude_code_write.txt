@@ -49,6 +49,9 @@ inspected), `skipped_paths` (paths you did not reach), and `lens_verdicts`
 (one {"lens": …, "verdict": "checked-clean" | "checked-findings" | "skipped",
 "note": …} entry per lens).
 
+Before calling `complete_run`, check the report against what you actually
+did — list only actions you took and results you observed.
+
 This report is stored on the Run and shown to humans — write it for
 someone who did not watch the run.
 

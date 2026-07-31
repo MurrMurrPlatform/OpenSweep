@@ -11,6 +11,7 @@ import type {
   GroupTicketsRequest,
   ImplementRunDispatch,
   SuggestEpicsDispatch,
+  SuggestEpicsRequest,
   PullRequestDTO,
   TicketDTO,
   TicketDetailDTO,
@@ -36,6 +37,10 @@ export const useTicketStore = defineStore('tickets', () => {
     status?: TicketStatus
     origin?: TicketOrigin
     parent_ticket_uid?: string
+    /** true = archived tickets only; omitted/false = active only (the
+     *  querystring builder skips falsy values, which matches the backend
+     *  default — there is no "both" mode). */
+    archived?: boolean
   }
 
   /** Side-effect-free list — safe to call in parallel (e.g. link dialogs). */
@@ -108,6 +113,19 @@ export const useTicketStore = defineStore('tickets', () => {
     tickets.value = tickets.value.filter((t) => t.uid !== uid)
   }
 
+  /** Reversible "leave the board" from any status — 409 while a thread is
+   *  active, for epic members, and for epics with unfinished members. The
+   *  board list excludes archived tickets, so drop it from the store. */
+  async function archiveTicket(uid: string): Promise<TicketDTO> {
+    const ticket = await apiPost<TicketDTO>(`/tickets/${uid}/archive`)
+    tickets.value = tickets.value.filter((t) => t.uid !== uid)
+    return ticket
+  }
+
+  async function unarchiveTicket(uid: string): Promise<TicketDTO> {
+    return apiPost<TicketDTO>(`/tickets/${uid}/unarchive`)
+  }
+
   // ── Grouping (batch related tickets under one parent) ───────────────────────
 
   /** Group ≥2 tickets under a new parent ticket (created in Backlog). */
@@ -131,11 +149,9 @@ export const useTicketStore = defineStore('tickets', () => {
 
   /** Dispatch a read-only run that proposes ticket groupings — every
    *  proposal is human-approved before anything changes. 409 when fewer
-   *  than 2 ungrouped backlog/todo tickets exist. */
-  async function suggestEpics(repositoryUid: string): Promise<SuggestEpicsDispatch> {
-    return apiPost<SuggestEpicsDispatch>('/tickets/suggest-epics', {
-      repository_uid: repositoryUid,
-    })
+   *  than 2 ungrouped work items match the request's filters. */
+  async function suggestEpics(req: SuggestEpicsRequest): Promise<SuggestEpicsDispatch> {
+    return apiPost<SuggestEpicsDispatch>('/tickets/suggest-epics', req)
   }
 
   async function listEpicProposals(opts: {
@@ -213,6 +229,8 @@ export const useTicketStore = defineStore('tickets', () => {
     implementTicket,
     refineTicket,
     deleteTicket,
+    archiveTicket,
+    unarchiveTicket,
     createEpic,
     dissolveEpic,
     removeFromEpic,

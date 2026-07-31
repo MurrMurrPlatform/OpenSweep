@@ -42,8 +42,23 @@ const router = createRouter({
           path: 'r/:repoSlug',
           meta: { repoScoped: true },
           children: [
-            { path: '', name: 'workspace-home', component: () => import('@/views/RepositoryDetailView.vue'),
-              meta: { title: 'Dashboard', eyebrow: 'Workspace', section: 'main', repoScoped: true } },
+            // Workspace home is tabbed: Overview / Activity / Settings share
+            // WorkspaceLayout (header + run heartbeat); the child route IS the
+            // active tab, so tabs deep-link and survive refresh. The name
+            // `workspace-home` stays on the default child — guards, the
+            // workspace switcher and notification links all navigate by it.
+            {
+              path: '',
+              component: () => import('@/views/workspace/WorkspaceLayout.vue'),
+              children: [
+                { path: '', name: 'workspace-home', component: () => import('@/views/workspace/WorkspaceOverviewView.vue'),
+                  meta: { title: 'Dashboard', eyebrow: 'Workspace', section: 'main', repoScoped: true } },
+                { path: 'activity', name: 'workspace-activity', component: () => import('@/views/workspace/WorkspaceActivityView.vue'),
+                  meta: { title: 'Activity', eyebrow: 'Workspace', section: 'main', repoScoped: true } },
+                { path: 'settings', name: 'workspace-settings', component: () => import('@/views/workspace/WorkspaceSettingsView.vue'),
+                  meta: { title: 'Settings', eyebrow: 'Workspace', section: 'main', repoScoped: true } },
+              ],
+            },
             { path: 'findings', name: 'findings', component: () => import('@/views/FindingsView.vue'),
               meta: { title: 'Findings', eyebrow: 'Inbox', section: 'main', repoScoped: true } },
             { path: 'ideas', name: 'ideas', component: () => import('@/views/FeatureIdeasView.vue'),
@@ -55,6 +70,8 @@ const router = createRouter({
             // links keep working via the alias.
             { path: 'workitems', alias: 'tickets', name: 'tickets', component: () => import('@/views/TicketsView.vue'),
               meta: { title: 'Work items', eyebrow: 'Deliver', section: 'main', repoScoped: true } },
+            { path: 'workitems/archived', name: 'tickets-archived', component: () => import('@/views/ArchivedTicketsView.vue'),
+              meta: { title: 'Archived tickets', eyebrow: 'Deliver', section: 'main', repoScoped: true } },
             { path: 'queue', name: 'queue', component: () => import('@/views/QueueView.vue'),
               meta: { title: 'Queue', eyebrow: 'Deliver', section: 'main', repoScoped: true } },
             { path: 'docs', name: 'documentation', component: () => import('@/views/DocumentationView.vue'),
@@ -63,8 +80,10 @@ const router = createRouter({
               meta: { title: 'Areas', eyebrow: 'Knowledge', section: 'main', repoScoped: true } },
             { path: 'analyses', name: 'analyses', component: () => import('@/views/AnalysisListView.vue'),
               meta: { title: 'Analyses', eyebrow: 'Health', section: 'main' } },
-            { path: 'health', name: 'health', component: () => import('@/views/HealthView.vue'),
-              meta: { title: 'Health', eyebrow: 'Health', section: 'main', repoScoped: true } },
+            // Health folded into Areas: it reported on Docs only and said
+            // nothing about the area map it sat beside. Redirect keeps old
+            // links (and bookmarks) working.
+            { path: 'health', redirect: (to) => ({ name: 'areas', params: to.params }) },
             { path: 'runs', name: 'runs', component: () => import('@/views/RunsView.vue'),
               meta: { title: 'Runs', eyebrow: 'Live', section: 'main', repoScoped: true } },
             { path: 'agents', name: 'repo-agents', component: () => import('@/views/agents/ScheduledAgentsView.vue'),
@@ -120,7 +139,7 @@ const router = createRouter({
         { path: 'tickets', redirect: scopedRedirect('tickets') },
         { path: 'queue', redirect: scopedRedirect('queue') },
         { path: 'knowledge', redirect: scopedRedirect('documentation') },
-        { path: 'health', redirect: scopedRedirect('health') },
+        { path: 'health', redirect: scopedRedirect('areas') },
         { path: 'runs', redirect: scopedRedirect('runs') },
         { path: 'investigations', redirect: scopedRedirect('investigations') },
         { path: 'ask', redirect: scopedRedirect('ask') },
@@ -131,8 +150,10 @@ const router = createRouter({
         { path: 'conventions', redirect: scopedRedirect('documentation') },
         { path: 'memories', redirect: scopedRedirect('documentation') },
         // /repositories/:uid → /r/:slug/... resolved by guard via uid lookup.
+        // Component never renders — the guard redirects first — but the
+        // import must resolve for the route record to be valid.
         { path: 'repositories/:uid', meta: { legacyRepoUidRedirect: 'workspace-home' },
-          component: () => import('@/views/RepositoryDetailView.vue') },
+          component: () => import('@/views/workspace/WorkspaceOverviewView.vue') },
 
         // ── Settings (every org user) ───────────────────────────────────────
         { path: 'settings/account', name: 'account-settings', component: () => import('@/views/settings/AccountSettingsView.vue'),

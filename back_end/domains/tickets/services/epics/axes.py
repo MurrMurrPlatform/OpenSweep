@@ -1,10 +1,10 @@
 """HOW the selected tickets are cut into epics — one function per axis. Pure.
 
-Step two of the contract in `schemas`. Six of the seven axes are arithmetic:
-an area key matches or it does not, two tickets' paths intersect or they do
-not. This module is the whole of that arithmetic, which is why grouping is no
-longer a thing an agent eyeballs — `ROOT_CAUSE` is the only judgment left,
-and it is raised, not faked.
+Step two of the contract in `schemas`. Six axes are arithmetic: an area key
+matches or it does not, two tickets' paths intersect or they do not. This
+module is the whole of that arithmetic, which is why grouping is no longer a
+thing an agent eyeballs — the axes in `AGENT_AXES` are the judgment left over,
+and they are raised, not faked.
 
 Two invariants hold for EVERY axis:
 
@@ -329,8 +329,8 @@ def partition(facts: list[TicketFacts], spec: EpicPartition) -> list[EpicDraft]:
     read as the whole of it.
 
     Raises `ValueError` for `MANUAL` (a human ticked the boxes; there is
-    nothing to compute) and `ROOT_CAUSE` (the one axis that needs the grouping
-    agent). Returning `[]` for those would look like "no epices found".
+    nothing to compute) and for every `AGENT_AXES` member (they need the
+    grouping agent). Returning `[]` for those would look like "no epics found".
     """
     grouper = _GROUPERS.get(spec.axis)
     if grouper is None:

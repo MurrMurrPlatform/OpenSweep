@@ -31,7 +31,14 @@ const toast = useToast()
 const confirmOpen = ref(false)
 const dispatching = ref(false)
 
-const eligible = computed(() => props.ticket.status === 'todo' || props.ticket.status === 'in-progress')
+// An epic member ships inside its parent's single run and PR, so it is never
+// dispatched on its own — the backend 409s on it. Hiding the button everywhere
+// this component is used keeps the two in step.
+const eligible = computed(
+  () =>
+    !props.ticket.parent_ticket_uid &&
+    (props.ticket.status === 'todo' || props.ticket.status === 'in-progress'),
+)
 
 // In-flight WORK runs targeting this ticket replace the Implement button with
 // a "view run" chip while one exists (polls ~5s, stops on terminal). Chat
@@ -99,9 +106,10 @@ async function dispatch() {
     <Dialog v-model:open="confirmOpen">
       <DialogContent class="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Dispatch implement run</DialogTitle>
+          <DialogTitle>Dispatch one-shot implement run</DialogTitle>
           <DialogDescription>
-            The write path takes it from here — you review the resulting draft PR.
+            The quick, fire-and-forget path — no conversation, no plan step. Your next
+            touchpoint is reviewing the draft PR.
           </DialogDescription>
         </DialogHeader>
         <div class="space-y-3 text-sm">
@@ -111,6 +119,10 @@ async function dispatch() {
             <li>An agent implements the acceptance criteria in an isolated write sandbox.</li>
             <li>The platform validates, pushes, and opens a <strong>draft PR</strong> linked back to this ticket.</li>
           </ul>
+          <p class="text-xs text-muted-foreground">
+            Prefer to steer the work — refine scope, review a plan, answer questions?
+            Start a <strong>thread</strong> from the ticket page instead.
+          </p>
         </div>
         <DialogFooter>
           <Button variant="ghost" size="sm" @click="confirmOpen = false">Cancel</Button>

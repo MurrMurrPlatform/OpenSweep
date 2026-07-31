@@ -20,7 +20,7 @@ const props = withDefaults(
     trigger: string
     autonomyLevel: Autonomy
     saving?: boolean
-    /** Hide the on-push option (e.g. HealthView's scheduled-audit dialog). */
+    /** Hide the on-push option (e.g. the Areas scheduled-audit dialog). */
     hideOnEvent?: boolean
     hint?: string
   }>(),

@@ -8,6 +8,7 @@ linked PR completes the ticket (done via merge).
 
 from neomodel import (
     AsyncStructuredNode,
+    BooleanProperty,
     DateTimeProperty,
     JSONProperty,
     StringProperty,
@@ -50,6 +51,13 @@ class Ticket(AsyncStructuredNode):
     linked_pr_uids = JSONProperty(default=[])
 
     assignee_uid = StringProperty(default="", index=True)
+
+    # Archived tickets keep their history but leave every default listing —
+    # the reversible alternative to delete, which stays backlog-only. Any
+    # status can archive; an active thread blocks it (409).
+    archived = BooleanProperty(default=False, index=True)
+    archived_at = DateTimeProperty()
+    archived_by = StringProperty(default="")
 
     # Implementation plan, written by the ticket's Thread (unified dev flow):
     # {markdown, state (drafted|approved), thread_uid, updated_at,

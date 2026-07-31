@@ -52,6 +52,33 @@ export type ReasoningLevel = '' | 'low' | 'medium' | 'high'
 
 // ── Repository ──────────────────────────────────────────────────────────────
 
+/**
+ * Delivery-credential health for one repository. Mirrors the backend's
+ * `write_gate.WriteAccess` states exactly, so the banner can never claim a repo
+ * is fine while dispatch refuses to run it.
+ *
+ * ok · a credential resolves and nothing says it cannot push
+ * disconnected · no usable credential (its connection was deleted, or none set)
+ * denied · a credential resolves but GitHub refuses writes with it
+ * unknown · undeterminable; never blocks anything
+ */
+export type RepoConnectionState = 'ok' | 'disconnected' | 'denied' | 'unknown'
+
+export interface ConnectionCandidateDTO {
+  kind: 'pat' | 'app'
+  uid: string
+  account: string
+  installation_id: number | null
+  is_current: boolean
+}
+
+export interface RepoConnectionDTO {
+  state: RepoConnectionState
+  credential: string
+  reason: string
+  candidates: ConnectionCandidateDTO[]
+}
+
 export interface RepositoryDTO {
   uid: string
   slug: string
@@ -960,6 +987,9 @@ export interface LLMProviderKindMeta {
   needs_api_key?: boolean
   needs_base_url?: boolean
   needs_credential?: boolean
+  /** Offer the credential field but let Connect proceed without it — kinds that
+   *  work unauthenticated (a local server) but accept a key for hosted endpoints. */
+  credential_optional?: boolean
   credential_label?: string
   credential_placeholder?: string
   setup_steps?: string[]
@@ -983,6 +1013,29 @@ export interface AuditEvent {
   actor_uid?: string | null
   payload: Record<string, unknown>
   occurred_at: string
+}
+
+// ── Attention (workspace Overview "needs attention" rollup) ─────────────────
+
+export interface AttentionItemDTO {
+  kind: string
+  /** 1 = most urgent; fixed per kind server-side. */
+  priority: number
+  title: string
+  description: string
+  subject_type: string
+  /** Empty on aggregate items (counts pointing at a list surface). */
+  subject_uid: string
+  count: number
+  created_at?: string | null
+}
+
+export interface RepoAttentionDTO {
+  repository_uid: string
+  generated_at: string
+  total: number
+  counts_by_kind: Record<string, number>
+  items: AttentionItemDTO[]
 }
 
 // ── Notifications (inbox / attention centre) ────────────────────────────────
@@ -1155,7 +1208,7 @@ export interface UpdateMergePolicyRequest {
 export type WorkflowStage = 'ask' | 'analysis' | 'discover' | 'review' | 'fix' | 'implement' | 'verify' | 'document'
 
 export interface WorkflowStageConfig {
-  /** Empty string → the built-in intent for this stage (no extra prompt). */
+  /** Empty string → inherit the seeded stage default (WorkflowConfig.default_agent_uids). */
   agent_uid: string
   /** Only honored for stages listed in WorkflowConfig.auto_stages. */
   auto: boolean
@@ -1172,10 +1225,15 @@ export interface WorkflowStageConfig {
   run_policy_uid: string
 }
 
-/** GET/PUT /repositories/{uid}/workflow — all stages are always present. */
+/** GET/PUT /repositories/{uid}/workflow — all stages are always present.
+ * `stages` is the STORED config (agent_uid '' = inherit the stage default);
+ * both verbs return the same shape, so the form round-trips cleanly. */
 export interface WorkflowConfig {
   stages: Record<WorkflowStage, WorkflowStageConfig>
   auto_stages: WorkflowStage[]
+  /** stage → uid of the seeded platform prompt an unset stage resolves to
+   * ('' when that prompt was deleted or disabled). */
+  default_agent_uids: Record<WorkflowStage, string>
 }
 
 export interface UpdateWorkflowRequest {
@@ -1279,6 +1337,10 @@ export interface TicketDTO {
   plan: TicketPlan
   approved_by: string
   approved_at?: string | null
+  /** Archived tickets keep history but leave default listings. */
+  archived: boolean
+  archived_at?: string | null
+  archived_by: string
   done_at?: string | null
   created_at?: string | null
   updated_at?: string | null
@@ -1325,7 +1387,19 @@ export type EpicAxis =
   | 'lens'
   | 'class'
   | 'linked'
+  // Judged, not computed — only the grouping agent produces these.
   | 'root-cause'
+  | 'theme'
+  | 'co-change'
+
+/** The axes a model is needed for; also the goals `/tickets/suggest-epics` takes. */
+export type EpicAgentAxis = Extract<EpicAxis, 'root-cause' | 'theme' | 'co-change'>
+
+/** The axes the platform computes exactly — `/tickets/plan-epics` only. */
+export type EpicComputedAxis = Extract<
+  EpicAxis,
+  'area' | 'feature' | 'files' | 'lens' | 'class' | 'linked'
+>
 
 export interface EpicProposalDTO {
   uid: string
@@ -1373,11 +1447,42 @@ export interface GroupTicketsRequest {
   priority?: TicketPriority
 }
 
+/**
+ * Request for POST /tickets/suggest-epics — the grouping agent.
+ *
+ * Selection mirrors `PlanEpicsRequest` field for field: "the top 20 criticals
+ * in the auth area" has to mean the same thing whichever producer groups them.
+ * The partition knobs (`max_epics`, `min_members`, …) are deliberately absent —
+ * sizing is part of what the agent is being asked to judge.
+ */
+export interface SuggestEpicsRequest {
+  repository_uid: string
+  /** Which kinds of togetherness to ask for. Empty falls back to root-cause. */
+  goals?: EpicAgentAxis[]
+  /** conservative | balanced | exhaustive — how readily the agent epics. */
+  aggressiveness?: string
+  statuses?: string[]
+  /** `>=` on the ladder: 'high' admits high and urgent. */
+  min_priority?: string
+  /** `>=` on the ladder: 'high' admits high and critical. */
+  min_severity?: string
+  labels?: string[]
+  kinds?: string[]
+  area_keys?: string[]
+  /** "top X" — 0 means uncapped, which on a large board is a very long prompt. */
+  limit?: number
+  sort?: string
+}
+
 /** Response of POST /tickets/suggest-epics — inspect loosely. */
 export type SuggestEpicsDispatch = {
   run_uid?: string
   scheduled_agent_uid?: string
   candidate_count?: number
+  /** The goals that survived validation — an unknown one is dropped, not raised. */
+  goals?: string[]
+  /** Computed clusters the run was shown as prior art. 0 = grouping from scratch. */
+  seeded_cluster_count?: number
 } & Record<string, unknown>
 
 /** Request for POST /tickets/plan-epics — the no-agent batching path. */
@@ -1394,8 +1499,8 @@ export interface PlanEpicsRequest {
   /** "top X" — 0 means uncapped. */
   limit?: number
   sort?: string
-  /** Computable axes only; 'root-cause' goes through /tickets/suggest-epics. */
-  axis?: EpicAxis
+  /** Computable axes only; the judged ones go through /tickets/suggest-epics. */
+  axis?: EpicComputedAxis
   /** "…in Y runs". */
   max_epics?: number
   min_members?: number
@@ -1584,6 +1689,9 @@ export interface ThreadDTO {
   pr_uid: string
   ready_for_review: boolean
   active_run_uid: string
+  /** Open questions blocking the agent — on the summary DTO so list
+   *  surfaces (the board) can badge "waiting on you". */
+  questions_open: number
   created_by: string
   created_at: string | null
   updated_at: string | null
@@ -2005,6 +2113,71 @@ export interface AreaDTO {
   pending_edits: number
   created_at?: string | null
   updated_at?: string | null
+}
+
+export type AreaSpecState = 'present' | 'missing' | 'stale'
+
+/** One row of the merged Areas board — the area plus every upkeep signal that
+ *  used to live on the separate Health page. Three independent axes: review
+ *  staleness, doc freshness, and audit coverage. */
+export interface AreaHealthRowDTO {
+  uid: string
+  key: string
+  kind: AreaKind
+  title: string
+  enabled: boolean
+  /** Files belong to leaves; groupings roll their children up instead. */
+  is_leaf: boolean
+  depth: number
+  scope_paths: string[]
+  /** null when the file tree was unavailable — never a guessed count. */
+  file_count: number | null
+
+  stale: boolean
+  stale_paths: string[]
+  /** Stale leaves under this key — how a grouping shows its children's state. */
+  stale_descendants: number
+  code_changed_at?: string | null
+  last_reviewed_at?: string | null
+  pending_edits: number
+
+  docs_total: number
+  docs_stale: number
+
+  spec_state: AreaSpecState
+
+  last_checked?: string | null
+  outcome: string
+  revision: string
+}
+
+/** A doc page no area covers — surfaced so it doesn't vanish with the Health page. */
+export interface UnassignedDocDTO {
+  uid: string
+  slug: string
+  title: string
+  stale: boolean
+  last_checked?: string | null
+  outcome: string
+}
+
+export interface AreaHealthSummaryDTO {
+  total: number
+  stale: number
+  never_audited: number
+  fresh: number
+}
+
+export interface AreasHealthDTO {
+  repository_uid: string
+  rows: AreaHealthRowDTO[]
+  unassigned_docs: UnassignedDocDTO[]
+  summary: AreaHealthSummaryDTO
+  /** '' = file counts sized against the full tree; else why they degraded. */
+  tree_degraded: string
+  /** When the push→stale path last completed, and why it's partial if it is. */
+  freshness_synced_at?: string | null
+  freshness_degraded_reason: string
 }
 
 /** Agent-proposed full replacement for an area (or a new area when area_uid=''). */

@@ -332,13 +332,22 @@ async function onFix() {
     <!-- Identity lives in WorkItemView's unified header — this bar is ONLY
          actions. Ticket/PR navigation is the tabs' job now. -->
     <ActionMenuBar v-if="thread">
+      <!-- Approving the plan IS the go-signal, so while one waits for review
+           this demotes to the ghost escape hatch for skipping the plan gate.
+           Both send the same GO into this conversation — unlike the ticket's
+           one-shot Implement, which is a separate fire-and-forget run. -->
       <Button
         v-if="thread.phase === 'refining'"
         size="sm"
+        :variant="planAwaitingApproval ? 'ghost' : 'default'"
         :loading="implementing"
+        :title="planAwaitingApproval
+          ? 'Start implementing without approving the drafted plan'
+          : 'Sends the go signal — the agent starts changing code in this conversation'"
         @click="onImplement"
       >
-        <Hammer /> Implement
+        <Hammer />
+        {{ planAwaitingApproval ? 'Implement without approving plan' : 'Start implementing' }}
       </Button>
       <TestLocallyButton
         v-if="thread.branch || pr"

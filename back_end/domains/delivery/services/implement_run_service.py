@@ -145,6 +145,25 @@ async def trigger_implement_run(
     intent_addendum: str = "",
 ) -> Run:
     """Create the write sandbox and dispatch the implement run."""
+    # An epic member's work ships inside its PARENT's single run and PR, so
+    # dispatching against the member directly would open a second branch over
+    # the same files and race the epic's PR to merge — whichever merged first
+    # would close the ticket while the other kept building against it. Gate 1
+    # already refuses to approve a member, but a ticket can be grouped *after*
+    # it was approved (approval deliberately leaves member statuses alone), so
+    # a member sitting in `todo` is the ordinary case and the dispatch path has
+    # to check for itself. First, so it costs nothing and cannot be masked by a
+    # repository or status error.
+    if ticket.parent_ticket_uid:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "this ticket belongs to an epic — implement the epic parent "
+                f"({ticket.parent_ticket_uid}), whose run covers every subticket. "
+                "Remove it from the epic to work it on its own."
+            ),
+        )
+
     # A group parent's real work is its subtickets, so every dispatch path
     # must carry them. This lives here rather than in the callers because it
     # was previously added only by the two Thread paths: a one-shot
@@ -168,6 +187,13 @@ async def trigger_implement_run(
             ),
         )
     repo = await require_repository(ticket.repository_uid, require_github=True)
+
+    # Ask whether we may push BEFORE spending a run — cloning only needs read,
+    # so a read-only credential otherwise gets discovered at delivery time with
+    # the work already done. Silent when the answer is unclear.
+    denial = await write_gate.write_access_denial_reason(repo)
+    if denial:
+        raise HTTPException(status_code=409, detail=denial)
 
     async def _dispatch() -> Run:
         # Idempotency 1: an open PR already implementing this ticket → point at it.

@@ -53,6 +53,8 @@ def _scope_contract(campaign, part: dict) -> str:
     return "\n".join(lines)
 
 
+# Intent-level reinforcement of prompt_kit.COVERAGE_NOTE for the runs that
+# most need it — the verdict enum here must change in lockstep with it.
 _REPORTING_CONTRACT = (
     "When done, call complete_run with covered_paths (paths you actually "
     "examined), skipped_paths (in-scope paths you did not), and "

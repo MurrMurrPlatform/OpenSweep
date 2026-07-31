@@ -103,6 +103,25 @@ async def get_workflow(repository_uid: str) -> dict[str, dict[str, Any]]:
     return config
 
 
+async def get_workflow_stored(repository_uid: str) -> dict[str, dict[str, Any]]:
+    """The repo's stored config WITHOUT default resolution — agent_uid "" means
+    "inherit the seeded stage default". The config API returns this shape (plus
+    the defaults map) so the UI can tell inherited from pinned; run-time
+    consumers keep using the resolved get_workflow()."""
+    repo = await Repository.nodes.get_or_none(uid=repository_uid)
+    return _normalize(repo.workflow if repo else None)
+
+
+async def default_agent_uids() -> dict[str, str]:
+    """stage → uid of the seeded platform prompt a stage resolves to when
+    unset ("" when that prompt was deleted or disabled)."""
+    from domains.agents.services.seed_defaults import (
+        default_prompt_uid_for_stage,
+    )
+
+    return {stage: await default_prompt_uid_for_stage(stage) for stage in STAGES}
+
+
 async def set_workflow(
     repository_uid: str, config: dict[str, Any]
 ) -> dict[str, dict[str, Any]]:

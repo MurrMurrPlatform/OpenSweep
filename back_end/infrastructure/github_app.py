@@ -390,6 +390,11 @@ async def get_connection_pat(connection_uid: str) -> str:
 
     conn = await GitConnection.nodes.get_or_none(uid=connection_uid, kind="pat")
     if conn is None:
+        logger.warning(
+            f"git connection {connection_uid} not found — a repo still points "
+            "at a deleted connection; falling back to the env PAT",
+            extra={"tag": "github"},
+        )
         return ""
     return connection_token(conn)
 
@@ -422,10 +427,62 @@ async def get_repo_git_token(repo: Any) -> str:
                 )
                 return fallback
             raise
+    if installation_id is not None:
+        # The repo was registered through an App installation but the App is
+        # not loadable (missing/unparseable GITHUB_APP_ID or private key), so
+        # this silently pushes as whichever human owns the PAT instead. That
+        # substitution used to leave no trace at all, which made a later 403
+        # impossible to attribute.
+        logger.warning(
+            f"repo is registered to installation {installation_id} but no GitHub App is "
+            "configured — using the PAT credential instead",
+            extra={"tag": "github"},
+        )
     connection_token = await get_connection_pat(repo_connection_uid(repo))
     if connection_token:
         return connection_token
     return settings.GITHUB_TOKEN
+
+
+async def describe_repo_credential(repo: Any) -> str:
+    """Which credential `get_repo_git_token` will pick, in words.
+
+    Mirrors that function's precedence exactly — a message naming the wrong
+    credential is worse than no message. Used by the write preflight so a
+    permission failure points at the thing to actually go and fix.
+    """
+    installation_id = repo_installation_id(repo)
+    if installation_id is not None and get_github_app() is not None:
+        return f"the GitHub App installation ({installation_id})"
+
+    connection_uid = repo_connection_uid(repo)
+    if connection_uid:
+        from domains.organizations.models import GitConnection
+        from domains.organizations.services.git_connections import connection_token
+
+        conn = await GitConnection.nodes.get_or_none(uid=connection_uid, kind="pat")
+        if conn is None:
+            # `delete_pat_connection` leaves this pointer dangling on purpose,
+            # expecting GITHUB_TOKEN to take over. When that is unset — the
+            # normal self-hosted case — rotating a PAT instead unhooks every
+            # repo registered through the old connection, and the only symptom
+            # used to be an empty-credential push failure after a whole run.
+            return (
+                f"the git connection this repository was registered through "
+                f"({connection_uid[:8]}) no longer exists — it was probably replaced "
+                "by a newer connection, which repositories are not re-pointed to"
+            )
+        if connection_token(conn):
+            name = (conn.display_name or "").strip()
+            return (
+                f"the personal access token connected as {name!r}"
+                if name
+                else f"the personal access token connection {connection_uid[:8]}"
+            )
+
+    if settings.GITHUB_TOKEN:
+        return "the GITHUB_TOKEN environment credential"
+    return "no configured credential"
 
 
 class InstallationTokenSource:

@@ -47,6 +47,7 @@ async def list_events(
     subject_uid: Optional[str] = Query(None),
     kind: Optional[str] = Query(None),
     actor_uid: Optional[str] = Query(None),
+    repository_uid: Optional[str] = Query(None),
     limit: int = Query(100, le=500),
     user: UserDTO = Depends(get_current_user),
 ):
@@ -73,6 +74,8 @@ async def list_events(
         if kind and e.kind != kind:
             continue
         if actor_uid and e.actor_uid != actor_uid:
+            continue
+        if repository_uid and (e.repository_uid or "") != repository_uid:
             continue
         out.append(_to_dto(e))
     out.sort(

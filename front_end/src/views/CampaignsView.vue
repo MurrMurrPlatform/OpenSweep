@@ -73,8 +73,18 @@ function onCreated(campaign: CampaignDTO) {
 
 // ── Delete (running/finalizing campaigns must be cancelled first) ────────────
 
+// The confirm dialog is driven by a separate `open` boolean, not by the target
+// ref being non-null: AlertDialogAction closes the dialog (update:open fires)
+// before the forwarded @click runs, so deriving `open` from the target and
+// nulling it on close would wipe the target before confirmDelete could read it.
 const deleteTarget = ref<CampaignDTO | null>(null)
+const deleteOpen = ref(false)
 const deleting = ref(false)
+
+function requestDelete(c: CampaignDTO) {
+  deleteTarget.value = c
+  deleteOpen.value = true
+}
 
 function isLive(c: CampaignDTO): boolean {
   return c.status === 'running' || c.status === 'finalizing'
@@ -93,7 +103,6 @@ async function confirmDelete() {
     toast.error('Couldn’t delete campaign', msg)
   } finally {
     deleting.value = false
-    deleteTarget.value = null
   }
 }
 </script>
@@ -186,7 +195,7 @@ async function confirmDelete() {
                     class="text-muted-foreground hover:text-destructive"
                     :disabled="isLive(c)"
                     :title="isLive(c) ? 'Cancel the campaign before deleting it' : 'Delete campaign'"
-                    @click.stop="deleteTarget = c"
+                    @click.stop="requestDelete(c)"
                   >
                     <Trash2 />
                   </Button>
@@ -205,7 +214,7 @@ async function confirmDelete() {
       @created="onCreated"
     />
 
-    <AlertDialog :open="!!deleteTarget" @update:open="(v: boolean) => { if (!v) deleteTarget = null }">
+    <AlertDialog v-model:open="deleteOpen">
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Delete this campaign?</AlertDialogTitle>

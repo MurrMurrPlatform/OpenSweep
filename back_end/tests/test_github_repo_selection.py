@@ -469,7 +469,57 @@ async def test_push_event_fans_out_per_tenant_open_prs(monkeypatch):
     )
     assert result["synced"] == [3]
     assert synced == [("ra", 3)]  # tenant-b has no open PR on that branch
-    assert refreshed == ["ra", "rb"]  # doc freshness bumps for BOTH tenants
+    # ...but freshness does NOT fire: "feat" is not either tenant's default
+    # branch, and work on a feature branch is not yet true of the codebase.
+    assert refreshed == []
+
+
+async def test_default_branch_push_refreshes_freshness_for_every_tenant(monkeypatch):
+    """Freshness fans out per tenant on a DEFAULT-branch push — the merge is
+    what makes an area's map stale, and both tenants' nodes must learn it."""
+    node_a, node_b = _two_tenant_nodes()
+    monkeypatch.setattr(webhooks_module, "Repository", _fake_repository([node_a, node_b]))
+
+    class FakeService:
+        async def sync_from_github(self, repository_uid, number):
+            pass
+
+    class FakePullRequest:
+        nodes = _Nodes([])
+
+    monkeypatch.setattr(webhooks_module, "PullRequestService", FakeService)
+    monkeypatch.setattr(webhooks_module, "PullRequest", FakePullRequest)
+
+    refreshed: list[tuple[str, tuple[str, ...]]] = []
+
+    async def fake_refresh(*, repository_uid, changed_paths, source):
+        refreshed.append((repository_uid, tuple(changed_paths)))
+        from domains.agents.services.event_triggers import FreshnessRefresh
+
+        return FreshnessRefresh()
+
+    from domains.agents.services import event_triggers
+
+    monkeypatch.setattr(event_triggers, "refresh_docs_for_change", fake_refresh)
+
+    await webhooks_module._process_delivery(
+        event="push",
+        action="",
+        payload={
+            "repository": {"id": 1, "name": "api", "owner": {"login": "acme"}},
+            "ref": "refs/heads/main",
+            "before": "a" * 40,
+            "after": "b" * 40,
+            "commits": [{"added": ["a.py"], "modified": ["b.py"], "removed": []}],
+        },
+    )
+    # No provider client in this harness, so compare degrades and the payload's
+    # own commit array is the fallback — both tenants still get the paths.
+    assert [uid for uid, _ in refreshed] == ["ra", "rb"]
+    assert all(set(paths) == {"a.py", "b.py"} for _, paths in refreshed)
+    # The freshness cursor advanced to the pushed head on both nodes.
+    assert node_a.freshness_synced_sha == "b" * 40
+    assert node_b.freshness_synced_sha == "b" * 40
 
 
 async def test_installation_connect_links_only_installation_orgs_node(

@@ -115,6 +115,7 @@ _API_KEY_SETUP_STEPS_ANTHROPIC = [
 _API_KEY_SETUP_STEPS_OPENAI = [
     "Create an API key in platform.openai.com → API keys.",
     "Either: paste it into the 'Credential' field, or set the env var named in 'API-key env var' on the backend.",
+    "Any OpenAI-compatible endpoint works — point 'Server URL' elsewhere and paste that service's key. For Azure AI Foundry use `https://<resource>.cognitiveservices.azure.com/openai/v1` and set `model` to your *deployment* name.",
 ]
 
 _LOCAL_SERVER_SETUP_STEPS = [
@@ -225,9 +226,15 @@ KIND_CATALOG: dict[LLMProviderKind, dict] = {
         "featured": 8,
         "default_api_key_env": "OPENAI_API_KEY",
         "transport": "HTTPS",
+        # The HTTP transport builds `{base_url}/chat/completions` and has no
+        # implicit default, so this kind is unrunnable without a base_url —
+        # it has to be asked for (and prefilled) rather than hidden. Pointing
+        # it at any OpenAI-compatible host (Azure Foundry, OpenRouter, a proxy)
+        # is then just a matter of editing the field.
+        "default_base_url": "https://api.openai.com/v1",
         "default_cli": "",
         "needs_api_key": True,
-        "needs_base_url": False,
+        "needs_base_url": True,
         "needs_credential": True,
         "credential_label": "API key (optional — overrides env var)",
         "credential_placeholder": "sk-proj-...",
@@ -297,8 +304,13 @@ KIND_CATALOG: dict[LLMProviderKind, dict] = {
         "default_cli": 'opencode run -m {{model_q}} {{instruction_q}}',
         "needs_api_key": False,
         "needs_base_url": True,
-        "needs_credential": False,
-        "credential_label": "",
+        # A local server needs no key; a hosted OpenAI-compatible endpoint
+        # (Azure Foundry, OpenRouter) answers 401 without one — the AI SDK
+        # reads it from the generated config only. So: offer the field, never
+        # require it (see llm_executor._prepare_opencode_config).
+        "needs_credential": True,
+        "credential_optional": True,
+        "credential_label": "API key (leave blank for a local server)",
         "credential_placeholder": "",
         "setup_steps": _OPENCODE_SETUP_STEPS,
         # `opensweep/` matches the auto-generated opencode provider name (see

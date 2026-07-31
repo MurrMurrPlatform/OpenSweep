@@ -2,10 +2,11 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  ArrowLeft, ArrowRight, Boxes, ChevronDown, Crosshair, GitPullRequest, Layers, Plus, RefreshCw,
-  Search, SlidersHorizontal, Sparkles, SquareKanban, X,
+  Archive, ArrowLeft, ArrowRight, Boxes, ChevronDown, Crosshair, GitPullRequest, Layers, Plus,
+  RefreshCw, Search, SlidersHorizontal, Sparkles, SquareKanban, X,
 } from 'lucide-vue-next'
 import { useTicketStore } from '@/stores/ticketStore'
+import { useThreadStore } from '@/stores/threadStore'
 import { useDeliveryStore } from '@/stores/deliveryStore'
 import { useCurrentRepo } from '@/composables/useCurrentRepo'
 import { useActiveRuns } from '@/composables/useActiveRuns'
@@ -53,9 +54,10 @@ import TicketCard from '@/components/tickets/TicketCard.vue'
 import TicketDialog from '@/components/tickets/TicketDialog.vue'
 import CreateEpicDialog from '@/components/tickets/CreateEpicDialog.vue'
 import EpicBuilderDialog from '@/components/tickets/EpicBuilderDialog.vue'
+import SuggestEpicsDialog from '@/components/tickets/SuggestEpicsDialog.vue'
 import EpicProposalsPanel from '@/components/tickets/EpicProposalsPanel.vue'
-import { STATUS_LABELS, STATUS_ORDER, TRANSITIONS, statusVariant } from '@/components/tickets/ticketMeta'
-import type { PullRequestDTO, TicketDTO, TicketPriority, TicketStatus } from '@/types/api'
+import { STATUS_LABELS, STATUS_ORDER, statusVariant, transitionsFor } from '@/components/tickets/ticketMeta'
+import type { PullRequestDTO, ThreadDTO, TicketDTO, TicketPriority, TicketStatus } from '@/types/api'
 
 const store = useTicketStore()
 const route = useRoute()
@@ -69,8 +71,13 @@ const error = ref<string | null>(null)
 const createOpen = ref(false)
 const groupOpen = ref(false)
 const epicBuilderOpen = ref(false)
-const proposing = ref(false)
+const suggestEpicsOpen = ref(false)
 const proposalsPanel = ref<InstanceType<typeof EpicProposalsPanel> | null>(null)
+
+// Threads joined onto cards by subject_ticket_uid — the "what does this need
+// from me" badges. Best-effort: a failed thread fetch never blocks the board.
+const threadStore = useThreadStore()
+const boardThreads = ref<ThreadDTO[]>([])
 
 /** `silent` skips the skeleton so the live heartbeat below never flickers the
  *  board the user is reading. */
@@ -79,7 +86,12 @@ async function reload({ silent = false } = {}) {
   if (!silent) loading.value = true
   error.value = null
   try {
-    tickets.value = await store.fetchTickets({ repository_uid: repoUid.value })
+    const [ticketData, threadData] = await Promise.all([
+      store.fetchTickets({ repository_uid: repoUid.value }),
+      threadStore.listThreads({ repository_uid: repoUid.value }).catch(() => [] as ThreadDTO[]),
+    ])
+    tickets.value = ticketData
+    boardThreads.value = threadData
     void proposalsPanel.value?.reload()
     void loadOrphanPrs()
   } catch (e: unknown) {
@@ -89,6 +101,16 @@ async function reload({ silent = false } = {}) {
     loading.value = false
   }
 }
+
+/** The active (non-terminal) thread per ticket — terminal threads keep their
+ *  history but stop badging the card. */
+const activeThreadByTicket = computed<Record<string, ThreadDTO>>(() => {
+  const out: Record<string, ThreadDTO> = {}
+  for (const th of boardThreads.value) {
+    if (th.phase !== 'done' && th.phase !== 'abandoned') out[th.subject_ticket_uid] = th
+  }
+  return out
+})
 
 // ── Ticketless PRs — work that exists on GitHub but not on the board yet ────
 // Synced PRs without a ticket (opened by hand, outside OpenSweep) surface in
@@ -130,25 +152,6 @@ function onGrouped(parent: TicketDTO) {
   toast.info(`Grouped under “${parent.title}” — approve it (Gate 1) to make the epic implementable.`)
 }
 
-/** Dispatch a read-only run that proposes groupings via the platform tools. */
-async function suggestGroups() {
-  if (!repoUid.value || proposing.value) return
-  proposing.value = true
-  try {
-    const dispatch = await store.suggestEpics(repoUid.value)
-    const runUid = typeof dispatch.run_uid === 'string' ? dispatch.run_uid : ''
-    toast.success(
-      'Grouping run dispatched',
-      `Analyzing ${dispatch.candidate_count ?? '?'} tickets not in an epic${runUid ? ` · run ${runUid.slice(0, 8)}` : ''} — proposals appear here for approval.`,
-    )
-  } catch (e) {
-    const msg = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
-    toast.error('Could not dispatch grouping run', msg)
-  } finally {
-    proposing.value = false
-  }
-}
-
 const childCounts = computed<Record<string, number>>(() => {
   const counts: Record<string, number> = {}
   for (const t of tickets.value) {
@@ -183,9 +186,39 @@ function matchesBoardFilters(t: TicketDTO): boolean {
   return `${t.title} ${t.description} ${t.labels.join(' ')}`.toLowerCase().includes(q)
 }
 
+/* ── Board view preferences (persisted per repo) ─────────────────────── */
+
+const {
+  prefs,
+  isHidden,
+  isCollapsed,
+  setHidden,
+  toggleCollapsed,
+  setShowEpicMembers,
+  focusActive,
+  showAll,
+} = useBoardPrefs(repoUid)
+
+/**
+ * Epic members stay off the board by default. Joining an epic deliberately
+ * FREEZES a ticket's status — nothing transitions a member until the epic's
+ * single PR merges and closes them all — so laning one by status would display
+ * a stale value as if it were live. The parent card carries the epic's real
+ * state, and its "N subtickets" badge is the way in.
+ *
+ * A text search always overrides the toggle: silently hiding a ticket someone
+ * is searching for by name is worse than the staleness the default prevents.
+ * Members surfaced this way are badged "in epic" by TicketCard.
+ */
+const epicMembersVisible = computed(
+  () => prefs.showEpicMembers || boardSearch.value.trim() !== '',
+)
+
 const columns = computed(() =>
   STATUS_ORDER.map((status) => {
-    const all = tickets.value.filter((t) => t.status === status)
+    const all = tickets.value.filter(
+      (t) => t.status === status && (epicMembersVisible.value || !t.parent_ticket_uid),
+    )
     return {
       status,
       title: STATUS_LABELS[status],
@@ -198,9 +231,10 @@ const columns = computed(() =>
 
 const boardMatchCount = computed(() => columns.value.reduce((n, c) => n + c.items.length, 0))
 
-/* ── Board view preferences (persisted per repo) ─────────────────────── */
-
-const { prefs, isHidden, isCollapsed, setHidden, toggleCollapsed, focusActive, showAll } = useBoardPrefs(repoUid)
+/** Epic members currently withheld from the lanes — surfaced as a hint. */
+const withheldMemberCount = computed(() =>
+  epicMembersVisible.value ? 0 : tickets.value.filter((t) => !!t.parent_ticket_uid).length,
+)
 
 const visibleColumns = computed(() => columns.value.filter((c) => !isHidden(c.status)))
 const hiddenTicketCount = computed(() =>
@@ -241,7 +275,15 @@ const LANE_SORT_OPTIONS = [
   { label: 'Title A–Z', value: 'title' },
 ] as const
 
-const laneTickets = computed(() => tickets.value.filter((t) => t.status === laneView.value))
+// Same rule as the board: members are withheld unless the toggle is on or a
+// search is running (here the lane's own search box).
+const laneTickets = computed(() =>
+  tickets.value.filter(
+    (t) =>
+      t.status === laneView.value &&
+      (prefs.showEpicMembers || laneSearch.value.trim() !== '' || !t.parent_ticket_uid),
+  ),
+)
 
 const laneItems = computed<TicketDTO[]>(() => {
   let out = laneTickets.value
@@ -274,7 +316,7 @@ const dragging = ref<TicketDTO | null>(null)
 /** Lanes the dragged ticket may legally move to (mirrors the backend). */
 const legalTargets = computed<Set<TicketStatus>>(() => {
   if (!dragging.value) return new Set()
-  return new Set(TRANSITIONS[dragging.value.status].map((t) => t.to))
+  return new Set(transitionsFor(dragging.value).map((t) => t.to))
 })
 
 /** Backlog → Todo is Gate 1: dropping there asks for explicit approval.
@@ -287,7 +329,7 @@ function onDropTicket(to: TicketStatus) {
   const ticket = dragging.value
   dragging.value = null
   if (!ticket || ticket.status === to) return
-  const transition = TRANSITIONS[ticket.status].find((t) => t.to === to)
+  const transition = transitionsFor(ticket).find((t) => t.to === to)
   if (!transition) return
   if (transition.kind === 'gate') {
     gateMove.value = { ticket, to }
@@ -327,7 +369,10 @@ async function moveTicket(ticket: TicketDTO, to: TicketStatus) {
 }
 
 function onTicketUpdated(updated: TicketDTO) {
-  tickets.value = tickets.value.map((t) => (t.uid === updated.uid ? updated : t))
+  // Archived tickets leave the board — the archived list is their home now.
+  tickets.value = updated.archived
+    ? tickets.value.filter((t) => t.uid !== updated.uid)
+    : tickets.value.map((t) => (t.uid === updated.uid ? updated : t))
 }
 
 function onTicketDeleted(uid: string) {
@@ -361,6 +406,13 @@ function onTicketCreated(ticket: TicketDTO) {
           >
             {{ col.title }}
             <Badge :variant="statusVariant(col.status)" class="px-1.5 text-[10px]">{{ col.items.length }}</Badge>
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            class="gap-2"
+            @select="router.push({ name: 'tickets-archived', params: { repoSlug: route.params.repoSlug } })"
+          >
+            <Archive class="size-4" /> Archived tickets
           </DropdownMenuItem>
           <template v-if="laneView">
             <DropdownMenuSeparator />
@@ -410,9 +462,33 @@ function onTicketCreated(ticket: TicketDTO) {
               />
             </div>
           </div>
+          <div class="space-y-2 border-t pt-3">
+            <div class="flex items-center justify-between gap-2">
+              <Label for="epic-members" class="flex-1 cursor-pointer text-sm font-normal">
+                Epic subtickets
+              </Label>
+              <Switch
+                id="epic-members"
+                :model-value="prefs.showEpicMembers"
+                @update:model-value="setShowEpicMembers($event)"
+              />
+            </div>
+            <p class="text-xs text-muted-foreground">
+              A subticket's status is frozen until its epic's PR merges, so by default
+              only the epic parent is laned. Search always finds them either way.
+            </p>
+          </div>
           <p v-if="hiddenTicketCount" class="text-xs text-muted-foreground">
             {{ hiddenTicketCount }} ticket{{ hiddenTicketCount === 1 ? '' : 's' }} in hidden lanes.
           </p>
+          <div class="border-t pt-3">
+            <RouterLink
+              :to="{ name: 'tickets-archived', params: { repoSlug: route.params.repoSlug } }"
+              class="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <Archive class="size-3.5" /> View archived tickets →
+            </RouterLink>
+          </div>
         </PopoverContent>
       </Popover>
       <Button variant="outline" size="sm" :disabled="loading" @click="reload()">
@@ -424,15 +500,14 @@ function onTicketCreated(ticket: TicketDTO) {
             variant="outline"
             size="sm"
             :disabled="!repoUid || groupableTickets.length < 2"
-            :loading="proposing"
           >
             <Layers /> Epics
             <ChevronDown class="!size-3.5 text-muted-foreground" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" class="w-56">
-          <DropdownMenuItem class="gap-2" :disabled="proposing" @select="suggestGroups">
-            <Sparkles class="size-4" /> Suggest epics by root cause (agent run)
+        <DropdownMenuContent align="end" class="w-64">
+          <DropdownMenuItem class="gap-2" @select="suggestEpicsOpen = true">
+            <Sparkles class="size-4" /> Suggest epics (agent run)…
           </DropdownMenuItem>
           <DropdownMenuItem class="gap-2" @select="epicBuilderOpen = true">
             <Boxes class="size-4" /> Build epics by rule…
@@ -598,6 +673,7 @@ function onTicketCreated(ticket: TicketDTO) {
             :key="ticket.uid"
             :ticket="ticket"
             :subticket-count="childCounts[ticket.uid] ?? 0"
+            :thread="activeThreadByTicket[ticket.uid] ?? null"
             @updated="onTicketUpdated"
             @deleted="onTicketDeleted"
           />
@@ -625,6 +701,7 @@ function onTicketCreated(ticket: TicketDTO) {
         :dragging-uid="dragging?.uid ?? null"
         :drop-legal="legalTargets.has(col.status)"
         :flash-uid="flashUid"
+        :active-threads="activeThreadByTicket"
         @toggle-collapse="toggleCollapsed(col.status)"
         @open-lane="goToLane(col.status)"
         @drag-start="dragging = $event"
@@ -642,6 +719,17 @@ function onTicketCreated(ticket: TicketDTO) {
       >
         <Plus class="size-3.5" />
         <span class="text-xs font-medium [writing-mode:vertical-rl]">{{ prefs.hidden.length }} hidden lane{{ prefs.hidden.length === 1 ? '' : 's' }}</span>
+      </button>
+      <!-- Never hide work silently: say how much is folded into epics. -->
+      <button
+        v-if="withheldMemberCount"
+        type="button"
+        class="flex h-64 w-11 shrink-0 snap-start flex-col items-center justify-center gap-2 rounded-xl border border-dashed text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        title="Show epic subtickets as loose cards"
+        @click="setShowEpicMembers(true)"
+      >
+        <Layers class="size-3.5" />
+        <span class="text-xs font-medium [writing-mode:vertical-rl]">{{ withheldMemberCount }} in epics</span>
       </button>
     </TransitionGroup>
 
@@ -678,6 +766,10 @@ function onTicketCreated(ticket: TicketDTO) {
       v-model:open="epicBuilderOpen"
       :repository-uid="repoUid ?? ''"
       @created="reload"
+    />
+    <SuggestEpicsDialog
+      v-model:open="suggestEpicsOpen"
+      :repository-uid="repoUid ?? ''"
     />
   </div>
 </template>

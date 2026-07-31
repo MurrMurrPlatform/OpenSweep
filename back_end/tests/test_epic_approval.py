@@ -244,3 +244,52 @@ async def test_bulk_approve_is_not_order_dependent():
     )
     assert [p.uid for p in result["approved"]] == ["good"]
     assert [e["uid"] for e in result["errors"]] == ["stale"]
+
+
+# ── axis clamping on propose ───────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("axis", ["root-cause", "theme", "co-change"])
+async def test_agent_may_claim_any_axis_that_needs_a_model(axis):
+    _ticket("t1")
+    _ticket("t2")
+    p, _ = await EpicService().propose(
+        repository_uid="r1",
+        title="e",
+        member_ticket_uids=["t1", "t2"],
+        axis=axis,
+        origin="agent",
+    )
+    assert p.axis == axis
+
+
+@pytest.mark.parametrize("axis", ["area", "feature", "files", "lens", "class", "linked"])
+async def test_agent_claiming_a_computed_axis_is_clamped(axis):
+    """A proposal stamped `area` renders as a computed grouping, and a
+    reviewer's whole reason for trusting those is that no model was involved.
+    An agent that reaches for one is recorded as what it actually did: judge."""
+    _ticket("t1")
+    _ticket("t2")
+    p, _ = await EpicService().propose(
+        repository_uid="r1",
+        title="e",
+        member_ticket_uids=["t1", "t2"],
+        axis=axis,
+        origin="agent",
+    )
+    assert p.axis == "root-cause"
+
+
+async def test_rule_built_epics_keep_their_computed_axis():
+    """The clamp is about who is claiming, not which axis — the rule builder
+    produces `area` epics and must go on doing so."""
+    _ticket("t1")
+    _ticket("t2")
+    p, _ = await EpicService().propose(
+        repository_uid="r1",
+        title="e",
+        member_ticket_uids=["t1", "t2"],
+        axis="area",
+        origin="rule",
+    )
+    assert p.axis == "area"

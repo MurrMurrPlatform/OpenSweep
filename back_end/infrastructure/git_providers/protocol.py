@@ -38,6 +38,14 @@ class GitProviderClient(Protocol):
 
     async def get_branch_head_sha(self, owner: str, repo: str, branch: str) -> str: ...
 
+    async def compare_commits(
+        self, owner: str, repo: str, base: str, head: str
+    ) -> dict[str, Any]:
+        """{"paths": [changed file paths], "truncated": bool} between two
+        commits — the freshness path's changed-path source, since push payloads
+        cap `commits` at 20 and merge commits carry empty file lists."""
+        ...
+
     async def get_tree(
         self, owner: str, repo: str, tree_sha: str, *, recursive: bool = True
     ) -> dict[str, Any]:
@@ -79,6 +87,16 @@ class GitProviderClient(Protocol):
 
     async def mark_pull_request_ready(self, owner: str, repo: str, number: int) -> None:
         """Flip a draft PR to ready-for-review; no-op when already ready."""
+        ...
+
+    async def check_write_access(self, owner: str, repo: str) -> bool | None:
+        """Whether the bound credential may push. True/False, or None when the
+        provider cannot tell — callers block only on an explicit False.
+
+        Capability-optional: a provider with no cheap way to ask may return
+        None unconditionally, which restores the pre-preflight behavior of
+        discovering the answer at push time.
+        """
         ...
 
     async def create_commit_status(

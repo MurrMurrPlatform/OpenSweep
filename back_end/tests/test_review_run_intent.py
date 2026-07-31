@@ -121,3 +121,24 @@ def test_full_review_intent_has_no_incremental_language():
     intent = build_review_intent(_pr(), {"default": "high"})
     assert "Incremental" not in intent
     assert "cat-file" not in intent
+
+
+# ── Epic subticket coverage ──────────────────────────────────────────────────
+
+
+def test_epic_checklist_is_absent_by_default():
+    intent = build_review_intent(_pr(), {"default": "high"})
+    assert "Epic subticket coverage" not in intent
+
+
+def test_epic_checklist_slots_between_review_and_verdict():
+    checklist = "\n\n## Epic subticket coverage\n- `c-1` Fix login"
+    intent = build_review_intent(
+        _pr(), {"default": "high"}, epic_checklist=checklist
+    )
+    assert "## Epic subticket coverage" in intent
+    assert "- `c-1` Fix login" in intent
+    # The reviewer must see the checklist before the verdict contract.
+    assert intent.index("## Epic subticket coverage") < intent.index(
+        "## Verdict (mandatory last step)"
+    )

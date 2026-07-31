@@ -50,10 +50,29 @@ const labels = computed(() => props.proposal.suggested_labels || [])
 // scalar-ish key the payload does carry, so a new axis still says something.
 
 /** Keys that only restate what the card header already shows. */
-const EVIDENCE_NOISE = new Set(['axis', 'shape', 'plan_uid', 'member_count', 'member_uids'])
+const EVIDENCE_NOISE = new Set([
+  'axis',
+  'shape',
+  'plan_uid',
+  'member_count',
+  'member_uids',
+  // Which members the agent added to a computed cluster. Real information, but
+  // raw uids read as noise on a one-line card; the member list below has them.
+  'added_uids',
+])
 
-/** Most identifying first — the winner leads the evidence line. */
+/**
+ * Most identifying first — the winner leads the evidence line.
+ *
+ * The judged claims (`root_cause`, `theme`) come first because they ARE the
+ * epic: a root-cause proposal also carries `shared_paths`, and leading with
+ * the path renders it identically to a computed `files` grouping, hiding the
+ * one thing a human is being asked to check. `extends` trails everything —
+ * "and it grew this computed cluster" is context for the claim, not the claim.
+ */
 const EVIDENCE_PRIORITY = [
+  'root_cause',
+  'theme',
   'shared_paths',
   'paths',
   'files',
@@ -62,11 +81,11 @@ const EVIDENCE_PRIORITY = [
   'feature_key',
   'feature',
   'class',
-  'root_cause',
   'lens_key',
   'lens',
   'link_kind',
   'linked_uids',
+  'extends',
 ]
 
 /** `["a.py","b.py","c.py"]` → `a.py +2`; scalars stringify; anything else is skipped. */

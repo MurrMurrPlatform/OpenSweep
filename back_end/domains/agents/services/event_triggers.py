@@ -15,7 +15,7 @@ payload's changed paths.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from domains.agents.models import Agent, ScheduledAgent
@@ -158,9 +158,28 @@ async def auto_run_candidates_for_change(
     return dispatched
 
 
+@dataclass
+class FreshnessRefresh:
+    """What one freshness pass actually managed to do.
+
+    Returned rather than discarded so callers can persist a degraded reason:
+    a pass that half-failed must not render as a clean green board.
+    """
+
+    docs_marked: int = 0
+    areas_marked: int = 0
+    errors: list[str] = field(default_factory=list)
+
+    @property
+    def degraded_reason(self) -> str:
+        if not self.errors:
+            return ""
+        return f"{len(self.errors)} page/area(s) failed to stamp: {self.errors[0]}"
+
+
 async def refresh_docs_for_change(
     *, repository_uid: str, changed_paths: list[str], source: str = ""
-) -> None:
+) -> FreshnessRefresh:
     """Tie a set of changed paths to knowledge upkeep: mark the watching Doc
     pages and the covering Areas stale, then auto-run any on-event doc
     bindings the autonomy permits. Shared by the GitHub push webhook and the
@@ -173,14 +192,17 @@ async def refresh_docs_for_change(
     already in flight, so the webhook that follows a write-run push never
     double-dispatches.
     """
+    result = FreshnessRefresh()
     changed = [p for p in (str(p).strip() for p in changed_paths) if p]
     if not changed:
-        return
+        return result
     label = f" ({source})" if source else ""
     try:
         from domains.docs.services.doc_freshness import mark_docs_stale
 
         stale = await mark_docs_stale(repository_uid, changed)
+        result.docs_marked = stale.docs_marked
+        result.errors.extend(stale.errors)
         if stale.docs_marked:
             logger.info(
                 f"doc freshness{label}: {stale.docs_marked} pages marked stale "
@@ -188,6 +210,7 @@ async def refresh_docs_for_change(
                 extra={"tag": "freshness"},
             )
     except Exception as exc:  # noqa: BLE001
+        result.errors.append(f"docs: {type(exc).__name__}: {exc}")
         logger.warning(
             f"doc freshness{label} failed for {repository_uid}: {exc}",
             extra={"tag": "freshness"},
@@ -196,6 +219,8 @@ async def refresh_docs_for_change(
         from domains.areas.services.area_freshness import mark_areas_stale
 
         stale_areas = await mark_areas_stale(repository_uid, changed)
+        result.areas_marked = stale_areas.areas_marked
+        result.errors.extend(stale_areas.errors)
         if stale_areas.areas_marked:
             logger.info(
                 f"area freshness{label}: {stale_areas.areas_marked} areas marked "
@@ -203,6 +228,7 @@ async def refresh_docs_for_change(
                 extra={"tag": "freshness"},
             )
     except Exception as exc:  # noqa: BLE001
+        result.errors.append(f"areas: {type(exc).__name__}: {exc}")
         logger.warning(
             f"area freshness{label} failed for {repository_uid}: {exc}",
             extra={"tag": "freshness"},
@@ -222,3 +248,4 @@ async def refresh_docs_for_change(
             f"on-event auto-run{label} failed for {repository_uid}: {exc}",
             extra={"tag": "event-triggers"},
         )
+    return result

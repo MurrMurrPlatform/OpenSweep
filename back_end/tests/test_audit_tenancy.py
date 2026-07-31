@@ -79,7 +79,8 @@ async def test_org_admin_cannot_see_platform_level_events():
     _seed("plat-1", "")        # platform-level (no repository)
     _seed("mine-1", "repo-a")  # my org's repo
     listed = await audit_mod.list_events(
-        subject_type=None, subject_uid=None, kind=None, actor_uid=None, limit=100, user=_user(platform=False))
+        subject_type=None, subject_uid=None, kind=None, actor_uid=None,
+        repository_uid=None, limit=100, user=_user(platform=False))
     uids = {e.uid for e in listed}
     assert uids == {"mine-1"}  # the platform-level event must NOT appear
 
@@ -87,8 +88,24 @@ async def test_org_admin_cannot_see_platform_level_events():
 async def test_platform_admin_sees_platform_level_events():
     _seed("plat-1", "")
     listed = await audit_mod.list_events(
-        subject_type=None, subject_uid=None, kind=None, actor_uid=None, limit=100, user=_user(platform=True))
+        subject_type=None, subject_uid=None, kind=None, actor_uid=None,
+        repository_uid=None, limit=100, user=_user(platform=True))
     assert {e.uid for e in listed} == {"plat-1"}
+
+
+async def test_repository_uid_filter_scopes_the_list():
+    _seed("mine-1", "repo-a")
+    _seed("mine-2", "repo-a")
+    # org_repo_uids is faked to {"repo-a"}; a second repo in the org would
+    # also be visible, so the filter (not tenancy) must do the narrowing.
+    listed = await audit_mod.list_events(
+        subject_type=None, subject_uid=None, kind=None, actor_uid=None,
+        repository_uid="repo-a", limit=100, user=_user(platform=False))
+    assert {e.uid for e in listed} == {"mine-1", "mine-2"}
+    listed = await audit_mod.list_events(
+        subject_type=None, subject_uid=None, kind=None, actor_uid=None,
+        repository_uid="repo-b", limit=100, user=_user(platform=False))
+    assert listed == []
 
 
 async def test_get_platform_event_404s_for_org_admin():

@@ -6,11 +6,18 @@ grouping agent — but they all emit `EpicDraft`s through the same two pure
 steps, so the three paths cannot drift into three different notions of what an
 epic is.
 
-The axis vocabulary is the load-bearing idea here. Six of the seven axes are
-ARITHMETIC — a shared file either overlaps or it does not, an area key either
-matches or it does not. Only `root-cause` needs a language model. Grouping was
-previously ALL agent judgment, which is why it yielded so little: the model was
-being asked to eyeball things that `set.intersection` answers exactly.
+The axis vocabulary is the load-bearing idea here. Six axes are ARITHMETIC — a
+shared file either overlaps or it does not, an area key either matches or it
+does not. Grouping was previously ALL agent judgment, which is why it yielded
+so little: the model was being asked to eyeball things that `set.intersection`
+answers exactly.
+
+The remaining three are what arithmetic cannot see, and they are the whole of
+what the grouping agent is asked for. Note that `theme` and `co-change` are NOT
+weaker restatements of `area`/`files`: those two are computed from
+`Finding.affected_paths`, so a ticket with no finding — or a finding with no
+paths — carries no area key and no paths and drops out of every computed plan.
+That population is exactly where reading the prose pays.
 """
 
 from __future__ import annotations
@@ -37,12 +44,21 @@ class EpicAxis(StrEnum):
     CLASS = "class"
     #: Members are explicitly linked through the finding graph.
     LINKED = "linked"
-    #: Members share an underlying defect. Requires agent judgment.
+    #: Members share an underlying defect — one cause, several symptoms.
     ROOT_CAUSE = "root-cause"
+    #: Members serve one feature, capability or user-facing surface. Distinct
+    #: causes, distinct fixes, but one coherent piece of work to reason about —
+    #: and reachable where `AREA`/`FEATURE` are blind because the tickets carry
+    #: no finding paths to key on.
+    THEME = "theme"
+    #: Members' fixes land in the same code even though their causes differ, so
+    #: one pull request is cheaper than n and separate branches would conflict.
+    #: `FILES` is the computable subset of this; here the overlap is predicted
+    #: from what the fix will touch, not from paths already recorded.
+    CO_CHANGE = "co-change"
 
 
-#: Axes a machine can compute. `ROOT_CAUSE` is deliberately absent: it is the
-#: one thing the grouping agent is now asked to do, and the only thing.
+#: Axes a machine can compute.
 DETERMINISTIC_AXES = frozenset(
     {
         EpicAxis.AREA,
@@ -53,6 +69,17 @@ DETERMINISTIC_AXES = frozenset(
         EpicAxis.LINKED,
     }
 )
+
+#: Axes that need a language model, and the only ones the grouping agent may
+#: stamp. An agent claiming `area` would make a judgment call indistinguishable
+#: from a computed grouping on the review card.
+AGENT_AXES = frozenset({EpicAxis.ROOT_CAUSE, EpicAxis.THEME, EpicAxis.CO_CHANGE})
+
+# Every axis belongs to exactly one producer. Without this, adding a member to
+# `EpicAxis` silently creates an axis that no producer builds and no validator
+# rejects — it would be accepted by `propose` and then never appear.
+assert DETERMINISTIC_AXES | AGENT_AXES | {EpicAxis.MANUAL} == set(EpicAxis)
+assert not DETERMINISTIC_AXES & AGENT_AXES
 
 
 @dataclass(frozen=True)
@@ -105,6 +132,10 @@ class TicketFacts:
 
     uid: str
     title: str = ""
+    #: No axis reads this — arithmetic cannot group on prose. The grouping
+    #: agent is a producer over the same facts, and it is the one thing it
+    #: needs that the loader would otherwise have to be read twice to get.
+    description: str = ""
     priority: str = "medium"
     severity: str = ""
     status: str = "backlog"

@@ -136,6 +136,92 @@ class AreaCoverageDTO(BaseModel):
     lens_verdicts: list[dict] = Field(default_factory=list)
 
 
+class AreaHealthRowDTO(BaseModel):
+    """One row of the merged Areas board: the area, plus every upkeep signal
+    that used to live on the separate Health page.
+
+    Three independent axes, deliberately not collapsed into one score:
+    REVIEW (`stale` — code moved under the scope since the map was last
+    verified), DOCS (how many covering pages are themselves stale), and AUDIT
+    COVERAGE (`last_checked`/`outcome` — whether anything has looked at this
+    code, which a stale map does not tell you and vice versa).
+    """
+
+    uid: str
+    key: str
+    kind: str = "subsystem"
+    title: str = ""
+    enabled: bool = True
+    # Files belong to leaves; non-leaf rows are pure groupings and roll their
+    # children up rather than owning scope of their own.
+    is_leaf: bool = True
+    depth: int = 0
+    scope_paths: list[str] = Field(default_factory=list)
+    # None when the file tree was unavailable — never guess a count.
+    file_count: int | None = None
+
+    # Review axis
+    stale: bool = False
+    stale_paths: list[str] = Field(default_factory=list)
+    # Stale leaves under this key. Lets a grouping row show that its children
+    # need review even though a grouping owns no paths and can never itself
+    # be stale.
+    stale_descendants: int = 0
+    code_changed_at: datetime | None = None
+    last_reviewed_at: datetime | None = None
+    pending_edits: int = 0
+
+    # Docs axis
+    docs_total: int = 0
+    docs_stale: int = 0
+
+    # Spec axis: present | missing | stale. "stale" mirrors the rule
+    # generate-specs already applies (a spec'd leaf whose code moved).
+    spec_state: str = "present"
+
+    # Audit-coverage axis — the latest overlapping Checked stamp.
+    last_checked: datetime | None = None
+    outcome: str = ""
+    revision: str = ""
+
+
+class UnassignedDocDTO(BaseModel):
+    """A doc page no area covers — it would otherwise vanish when the Health
+    page folds into Areas."""
+
+    uid: str
+    slug: str = ""
+    title: str = ""
+    stale: bool = False
+    last_checked: datetime | None = None
+    outcome: str = ""
+
+
+class AreaHealthSummaryDTO(BaseModel):
+    """The Health page's stat tiles, recomputed over auditable area leaves
+    (groupings are excluded — they own no files, so counting them would
+    inflate every tile)."""
+
+    total: int = 0
+    stale: int = 0
+    never_audited: int = 0
+    fresh: int = 0
+
+
+class AreasHealthDTO(BaseModel):
+    repository_uid: str
+    rows: list[AreaHealthRowDTO] = Field(default_factory=list)
+    unassigned_docs: list[UnassignedDocDTO] = Field(default_factory=list)
+    summary: AreaHealthSummaryDTO = Field(default_factory=AreaHealthSummaryDTO)
+    # "" = file counts sized against the full tree; else why they degraded.
+    tree_degraded: str = ""
+    # Freshness cursor honesty: when the push→stale path last completed, and
+    # why it is partial if it is. A board that cannot see recent commits must
+    # say so rather than render a confident all-fresh green.
+    freshness_synced_at: datetime | None = None
+    freshness_degraded_reason: str = ""
+
+
 class AreaDetailDTO(BaseModel):
     area: AreaDTO
     scope: list[AreaScopeEntryDTO] = Field(default_factory=list)

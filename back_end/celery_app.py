@@ -2,7 +2,9 @@
 
 PLATFORM.md §Principles: automatic LLM Runs are opt-in per ScheduledAgent. The
 schedule tick only dispatches ScheduledAgents whose user-set cron trigger is
-due; Doc freshness is driven by GitHub push webhooks, not a beat tick.
+due. Doc/Area freshness is driven by GitHub push webhooks in realtime; the
+freshness-reconcile tick is a deterministic backstop that replays deliveries
+the webhook never landed (it marks stale, it never starts a Run).
 """
 
 import ssl
@@ -33,6 +35,7 @@ app = Celery(
         "domains.runs.tasks.reconcile_runs",
         "domains.runs.tasks.dispatch_runs",
         "domains.delivery.tasks.sync_pull_requests",
+        "domains.repositories.tasks.reconcile_freshness",
         "domains.slack.tasks.deliver",
     ],
 )
@@ -51,9 +54,10 @@ app.conf.update(
     broker_use_ssl=broker_use_ssl,
     redis_backend_use_ssl=redis_backend_use_ssl,
     # Only deterministic, no-LLM ticks are scheduled. LLM Runs remain
-    # opt-in (Sweep button or Ask form). Doc freshness is webhook-driven:
-    # GitHub push events feed changed paths into
-    # domains/docs/services/doc_freshness.mark_docs_stale.
+    # opt-in (Sweep button or Ask form). Freshness is webhook-driven — GitHub
+    # push events to the default branch feed changed paths into
+    # domains/repositories/services/freshness_sync — with freshness-reconcile
+    # below as the missed-delivery backstop.
     beat_schedule={
         "agent-schedule-tick": {
             "task": "opensweep.agents.schedule_tick",
@@ -96,6 +100,14 @@ app.conf.update(
         "pull-request-sync": {
             "task": "opensweep.delivery.sync_pull_requests",
             "schedule": 300.0,  # every 5 minutes
+        },
+        # Freshness backstop: push webhooks mark Docs/Areas stale in realtime,
+        # but a dropped delivery would otherwise leave the board reading
+        # "fresh" forever. This replays the gap between each repo's freshness
+        # cursor and its live default-branch head. Deterministic, no LLM.
+        "freshness-reconcile": {
+            "task": "opensweep.repositories.reconcile_freshness",
+            "schedule": 900.0,  # every 15 minutes
         },
     },
 )

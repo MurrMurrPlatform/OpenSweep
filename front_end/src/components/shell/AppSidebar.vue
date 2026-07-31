@@ -25,6 +25,7 @@ const { isMobile, setOpenMobile } = useSidebar()
 const { sections } = useNavSections()
 
 function isActive(item: NavItem): boolean {
+  if (item.matchNames?.includes(String(route.name))) return true
   if (item.exact || item.to === '/') return route.path === item.to
   return route.path === item.to || route.path.startsWith(item.to + '/')
 }

@@ -135,3 +135,41 @@ class FileContentDTO(BaseModel):
     truncated: bool = False
     source: Literal["github", "missing"]
     bytes_total: int | None = None
+
+
+# ── Git credential linkage ──────────────────────────────────────────────────
+
+
+class ConnectionCandidateDTO(BaseModel):
+    """A credential in the org this repository could deliver through."""
+
+    kind: Literal["pat", "app"]
+    uid: str
+    account: str = ""
+    installation_id: int | None = None
+    is_current: bool = False
+
+
+class RepoConnectionDTO(BaseModel):
+    """Whether this repository can currently deliver work, and what it could
+    be linked to instead.
+
+    `state` mirrors `write_gate.WriteAccess` exactly so the banner can never
+    claim a repo is fine while dispatch refuses to run it:
+      ok           — a credential resolves and nothing says it cannot push
+      disconnected — no usable credential at all (the connection was deleted,
+                     or none was ever set and GITHUB_TOKEN is unset)
+      denied       — a credential resolves but GitHub refuses writes with it
+      unknown      — could not be determined; never blocks
+    """
+
+    state: Literal["ok", "disconnected", "denied", "unknown"]
+    credential: str = ""
+    reason: str = ""
+    candidates: list[ConnectionCandidateDTO] = Field(default_factory=list)
+
+
+class LinkConnectionRequest(BaseModel):
+    """Point a repository at one of its org's connections (PAT or App)."""
+
+    connection_uid: str

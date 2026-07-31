@@ -3,6 +3,8 @@
 Transition matrix (human API; every move audited):
 
     backlog ──► todo            GATE 1 — maintainer+ only; records approved_by/at
+                                refused on an epic member: the parent is the
+                                only thing approved, and it ships them all
     todo ──► backlog            de-prioritize
     todo ──► in-progress
     in-progress ──► in-review
@@ -57,6 +59,48 @@ def is_legal_transition(from_status: str, to_status: str) -> bool:
     return to_status in LEGAL_TRANSITIONS.get(from_status, frozenset())
 
 
+def ensure_archivable(t, threads: list, children: list) -> None:
+    """Archive guards, pure so the matrix is unit-testable without Neo4j.
+
+    Any status may archive — archive is the reversible "leave the board",
+    not a lifecycle move. Three refusals:
+    - an active thread owns the ticket's work (name it: Abandon is the fix),
+    - an epic member archives through its parent, never alone,
+    - an epic parent with live members would strand them invisible.
+    """
+    active = [th for th in threads if getattr(th, "phase", "") not in ("done", "abandoned")]
+    if active:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"this ticket has an active thread ({active[0].uid}) — "
+                "abandon or finish it first"
+            ),
+        )
+    if getattr(t, "parent_ticket_uid", "") or "":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "this ticket belongs to an epic — archive the epic parent, "
+                "or remove it from the epic first"
+            ),
+        )
+    live = [
+        c
+        for c in children
+        if (getattr(c, "status", "") or "") != "done" and not getattr(c, "archived", False)
+    ]
+    if live:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"this epic still has {len(live)} unfinished subticket"
+                f"{'' if len(live) == 1 else 's'} — dissolve the epic or wait "
+                "for them to finish"
+            ),
+        )
+
+
 def ticket_to_dto(t: Ticket) -> TicketDTO:
     return TicketDTO(
         uid=t.uid,
@@ -81,6 +125,10 @@ def ticket_to_dto(t: Ticket) -> TicketDTO:
         plan=dict(t.plan or {}),
         approved_by=t.approved_by or "",
         approved_at=t.approved_at,
+        # getattr: nodes written before m0021 (and test doubles) may lack it.
+        archived=bool(getattr(t, "archived", False)),
+        archived_at=getattr(t, "archived_at", None),
+        archived_by=getattr(t, "archived_by", "") or "",
         done_at=t.done_at,
         created_at=t.created_at,
         updated_at=t.updated_at,
@@ -119,6 +167,7 @@ class TicketService:
         origin: str | None = None,
         parent_ticket_uid: str | None = None,
         assignee_uid: str | None = None,
+        archived: bool = False,
     ) -> list[TicketDTO]:
         filters: dict = {}
         if repository_uid:
@@ -132,6 +181,11 @@ class TicketService:
         if assignee_uid:
             filters["assignee_uid"] = assignee_uid
         nodes = await (Ticket.nodes.filter(**filters) if filters else Ticket.nodes.all())
+        # Python-side, not Cypher: pre-m0021 nodes read None for `archived`,
+        # which must count as not-archived. Default False silently fixes every
+        # list caller (board, suggest-epics, MCP) to active-only; True is the
+        # archived view — there is deliberately no "both" mode.
+        nodes = [t for t in nodes if bool(getattr(t, "archived", False)) == archived]
         out = [ticket_to_dto(t) for t in nodes]
         floor = datetime.min.replace(tzinfo=UTC)
         out.sort(
@@ -265,6 +319,10 @@ class TicketService:
                 raise HTTPException(
                     status_code=409, detail=f"Ticket {uid} is done — nothing left to epic"
                 )
+            if bool(getattr(t, "archived", False)):
+                raise HTTPException(
+                    status_code=409, detail=f"Ticket {uid} is archived — unarchive it first"
+                )
             members.append(t)
         return members
 
@@ -358,6 +416,10 @@ class TicketService:
     ) -> Ticket:
         """Human transition — matrix-checked; Gate-1 is role-gated."""
         t = await self.get_node(uid)
+        if bool(getattr(t, "archived", False)):
+            raise HTTPException(
+                status_code=409, detail="ticket is archived — unarchive it first"
+            )
         frm = t.status or "backlog"
         if frm == to_status:
             raise HTTPException(status_code=409, detail=f"ticket is already {to_status}")
@@ -366,6 +428,20 @@ class TicketService:
                 status_code=409, detail=f"illegal transition {frm} → {to_status}"
             )
         if (frm, to_status) == GATE_1:
+            # An epic ships as ONE run and ONE PR against the parent, so the
+            # parent is the only thing that passes Gate 1. Approving a member
+            # would make it individually implementable — a second branch racing
+            # the epic's PR over the same files. Ungroup it first if it really
+            # is separate work.
+            if t.parent_ticket_uid:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "this ticket belongs to an epic — approve the epic parent "
+                        f"({t.parent_ticket_uid}), which ships every subticket in one "
+                        "run. Remove it from the epic to work it on its own."
+                    ),
+                )
             if not role_at_least(actor_role, "maintainer"):
                 raise HTTPException(
                     status_code=403,
@@ -529,6 +605,53 @@ class TicketService:
             actor_uid="system",
             payload={"from": frm, "member_count": len(siblings)},
         )
+
+    # ── Archive ──────────────────────────────────────────────────────────
+
+    async def archive(self, uid: str, *, actor_uid: str) -> Ticket:
+        """Reversible "leave the board" from any status — guards in
+        `ensure_archivable`. Idempotent."""
+        t = await self.get_node(uid)
+        if bool(getattr(t, "archived", False)):
+            return t
+        from domains.threads.models import Thread
+
+        threads = await Thread.nodes.filter(subject_ticket_uid=uid)
+        children = await Ticket.nodes.filter(parent_ticket_uid=uid)
+        ensure_archivable(t, list(threads), list(children))
+        now = datetime.now(UTC)
+        t.archived = True
+        t.archived_at = now
+        t.archived_by = actor_uid
+        t.updated_at = now
+        await t.save()
+        await write_audit(
+            kind="ticket.archived",
+            subject_uid=t.uid,
+            subject_type="Ticket",
+            actor_uid=actor_uid,
+            payload={"status": t.status or ""},
+        )
+        return t
+
+    async def unarchive(self, uid: str, *, actor_uid: str) -> Ticket:
+        """Restore an archived ticket to its lane (status was never touched)."""
+        t = await self.get_node(uid)
+        if not bool(getattr(t, "archived", False)):
+            return t
+        t.archived = False
+        t.archived_at = None
+        t.archived_by = ""
+        t.updated_at = datetime.now(UTC)
+        await t.save()
+        await write_audit(
+            kind="ticket.unarchived",
+            subject_uid=t.uid,
+            subject_type="Ticket",
+            actor_uid=actor_uid,
+            payload={"status": t.status or ""},
+        )
+        return t
 
     # ── Delete ───────────────────────────────────────────────────────────
 

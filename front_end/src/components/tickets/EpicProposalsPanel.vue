@@ -170,8 +170,10 @@ async function approvePlan(group: PlanGroup) {
             </button>
           </TooltipTrigger>
           <TooltipContent class="max-w-xs text-xs font-normal">
-            An agent suggests these tickets ship together as one epic. Approving creates a parent
-            ticket (in Backlog) with the members as subtickets; nothing changes until you approve.
+            Each of these says a set of work items should ship together as one epic — from a rule
+            you ran, or from a grouping agent. The badge names the claim: an exact one
+            (area, files, class) or a judged one (root cause, theme, co-change). Approving creates
+            a parent ticket with the members as subtickets; nothing changes until you approve.
           </TooltipContent>
         </Tooltip>
       </div>

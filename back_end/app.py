@@ -475,6 +475,7 @@ def _include_routers(application: FastAPI):
         "api.v1.findings",
         "api.v1.analysis",
         "api.v1.freshness",
+        "api.v1.attention",
         "api.v1.workflow",
         "api.v1.artifacts",
         "api.v1.agents",

@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import TicketCard from '@/components/tickets/TicketCard.vue'
 import { statusVariant, STATUS_LABELS } from '@/components/tickets/ticketMeta'
-import type { TicketDTO, TicketStatus } from '@/types/api'
+import type { ThreadDTO, TicketDTO, TicketStatus } from '@/types/api'
 
 const CARD_CAP = 12
 
@@ -26,6 +26,8 @@ interface Props {
   dropLegal: boolean
   /** ticket to flash briefly after a successful move (Atlassian pattern). */
   flashUid?: string | null
+  /** Active (non-terminal) thread per ticket uid — thread badges on cards. */
+  activeThreads?: Record<string, ThreadDTO>
 }
 const props = defineProps<Props>()
 
@@ -157,6 +159,7 @@ function onCardDragStart(event: DragEvent, ticket: TicketDTO) {
           <TicketCard
             :ticket="ticket"
             :subticket-count="childCounts[ticket.uid] ?? 0"
+            :thread="activeThreads?.[ticket.uid] ?? null"
             @updated="emit('updated', $event)"
             @deleted="emit('deleted', $event)"
           />

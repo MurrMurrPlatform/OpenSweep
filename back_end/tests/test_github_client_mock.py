@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from infrastructure.github_client import GitHubClient
+from infrastructure.github_client import GitHubClient, MissingCredentialError
 
 
 @pytest.mark.asyncio
@@ -14,6 +14,26 @@ async def test_inactive_when_token_unset():
     assert c.is_active is False
     with pytest.raises(RuntimeError):
         await c._get("/anything")
+    await c.aclose()
+
+
+@pytest.mark.asyncio
+async def test_empty_token_source_raises_missing_credential():
+    """A token source resolving to "" must fail with a named error, not send
+    `Authorization: Bearer ` — httpx rejects that header as
+    LocalProtocolError, which names the transport instead of the real
+    problem (a deleted GitConnection with no fallback PAT)."""
+
+    class _Empty:
+        async def get_token(self) -> str:
+            return ""
+
+    c = GitHubClient(token_source=_Empty())
+    # A source exists, so is_active can't know it resolves empty — the
+    # request path is where it must surface.
+    assert c.is_active is True
+    with pytest.raises(MissingCredentialError):
+        await c._get("/repos/acme/repo")
     await c.aclose()
 
 

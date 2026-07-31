@@ -62,8 +62,12 @@ function pick(meta: LLMProviderKindMeta) {
   model.value = meta.default_model || ''
 }
 
-/** Codex can fall back to the host ~/.codex bind-mount — token is optional. */
-const credentialOptional = computed(() => selected.value?.kind === 'codex_subscription')
+/** Codex can fall back to the host ~/.codex bind-mount — token is optional.
+ *  Catalog kinds may also declare themselves optional (opencode: no key for a
+ *  local server, a key for a hosted OpenAI-compatible endpoint). */
+const credentialOptional = computed(
+  () => selected.value?.kind === 'codex_subscription' || selected.value?.credential_optional === true,
+)
 
 const canSubmit = computed(() => {
   const m = selected.value

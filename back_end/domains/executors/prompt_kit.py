@@ -115,7 +115,7 @@ anything derivable from the code. Use `propose_doc_edit` to improve OpenSweep's
 documentation pages (conventions, architecture, features) when they are
 wrong, missing, or bloated; read the current page with `read_doc` first."""
 
-LOOK_BEFORE_WRITE = """# Look-before-write discipline (non-optional)
+LOOK_BEFORE_WRITE = """# Look-before-write discipline
 
 Before any platform WRITE tool, you MUST:
   1. SEARCH for what already exists (prior findings, docs, memories).
@@ -127,8 +127,7 @@ Before any platform WRITE tool, you MUST:
      ("create — no doc page covers queue workers yet" or
      "update of uid=abc123 — same subject, refined description").
 
-Skip steps 1–2 only when the intent explicitly says to read no OpenSweep
-state (rare)."""
+Skip the search steps only when the intent explicitly says to."""
 
 # The no-actionable-finding-is-valid rule — identical wording in the MCP and
 # envelope flavors of the durable-output rules.
@@ -171,7 +170,9 @@ def _report_contract(*, write_run: bool = False) -> str:
         "suggestions). One short sentence per entry; omit lists you have nothing\n"
         "for.\n\n"
         + COVERAGE_NOTE
-        + "\n\nThis report is stored on the Run and shown to humans — write it for\n"
+        + "\n\nBefore calling `complete_run`, check the report against what you actually\n"
+        "did — list only actions you took and results you observed.\n\n"
+        "This report is stored on the Run and shown to humans — write it for\n"
         "someone who did not watch the run."
     )
 
@@ -415,13 +416,15 @@ def _tier_stance(tier: Effort, max_findings: int | None) -> str:
         )
     cap_sentence = (
         f"File at most {max_findings} findings — rank by severity × confidence\n"
-        "and file the clearest, highest-impact ones first."
+        "and file the clearest, highest-impact ones first. This cap takes\n"
+        "precedence over any no-cap language in the run's guidance."
         if max_findings
         else "No hard finding cap; file every issue you can defend\nwith concrete evidence."
     )
     if tier is Effort.DEEP:
         return (
-            "Stance: DEEP — exhaustive. Work lens by lens: correctness, security,\n"
+            "Stance: DEEP — exhaustive. Work lens by lens — the run's assigned lens\n"
+            "checklist when the intent carries one, otherwise correctness, security,\n"
             "API/compatibility, performance, tests, maintainability. Where your\n"
             "executor supports subagents, delegate one lens per subagent and merge\n"
             f"their results. {cap_sentence} Report what you did not check."

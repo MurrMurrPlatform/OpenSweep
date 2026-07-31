@@ -5,6 +5,9 @@ records approved_by/approved_at. Status only ever moves through the transition
 endpoint so every move is legality-checked and audited.
 """
 
+from collections.abc import Sequence
+from dataclasses import dataclass
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
@@ -21,7 +24,16 @@ from domains.tickets.schemas import (
     TransitionTicketRequest,
     UpdateTicketRequest,
 )
-from domains.tickets.services.epics.schemas import MAX_RATIONALE_CHARS
+from domains.tickets.services.epics.axes import partition
+from domains.tickets.services.epics.schemas import (
+    MAX_RATIONALE_CHARS,
+    EpicAxis,
+    EpicDraft,
+    EpicPartition,
+    EpicSelection,
+    TicketFacts,
+)
+from domains.tickets.services.epics.selection import select_tickets
 from domains.tickets.services.ticket_service import TicketService, ticket_to_dto
 from domains.users.schemas import UserDTO
 
@@ -35,6 +47,7 @@ async def list_tickets(
     origin: str | None = Query(None),
     parent_ticket_uid: str | None = Query(None),
     assignee_uid: str | None = Query(None),
+    archived: bool = Query(False, description="true = archived tickets only"),
     user: UserDTO = Depends(get_current_user),
 ):
     """Priority desc, then updated_at desc."""
@@ -46,6 +59,7 @@ async def list_tickets(
         origin=origin,
         parent_ticket_uid=parent_ticket_uid,
         assignee_uid=assignee_uid,
+        archived=archived,
     )
     if repository_uid is None:
         allowed = await org_repo_uids(user.org_uid)
@@ -78,9 +92,115 @@ async def create_epic(
 
 
 class SuggestEpicsRequest(BaseModel):
+    """Dispatch the grouping agent over a slice of the board.
+
+    Selection mirrors `PlanEpicsRequest` field for field, so "the top 20
+    criticals in the auth area" means the same thing whether a rule or an agent
+    groups them — and so the prompt stops growing with the whole backlog.
+    """
+
     repository_uid: str = Field(min_length=1)
+    #: Which kinds of togetherness to ask for — keys of `_GROUPING_GOALS`.
+    goals: list[str] = Field(default_factory=lambda: [EpicAxis.ROOT_CAUSE.value])
     #: conservative | balanced | exhaustive — how readily the agent epics.
     aggressiveness: str = "balanced"
+    # Selection — same vocabulary as the rule builder.
+    statuses: list[str] = Field(default_factory=lambda: ["backlog", "todo"])
+    min_priority: str = ""
+    min_severity: str = ""
+    labels: list[str] = Field(default_factory=list)
+    kinds: list[str] = Field(default_factory=list)
+    area_keys: list[str] = Field(default_factory=list)
+    #: Wider than the rule builder's 20: a cross-cutting group only becomes
+    #: visible when enough of the board is in front of the model at once. 0
+    #: takes every match, which on a large board is a very long prompt.
+    limit: int = Field(default=40, ge=0)
+    sort: str = "priority"
+
+
+@dataclass(frozen=True)
+class _Goal:
+    """One kind of togetherness the agent may be asked to find.
+
+    Each goal is one block in the prompt AND one axis on the resulting
+    proposal, so a reviewer can tell which claim they are approving when a
+    single run was asked for several.
+    """
+
+    axis: EpicAxis
+    block: str
+
+
+# The three axes arithmetic cannot reach. Every other axis is deliberately
+# absent: the platform computes those exactly and instantly (see
+# `epics.axes`), so an agent proposing one costs a human review for a grouping
+# they could have had for free.
+#
+# `theme` and `co-change` are NOT the model re-doing `area`/`files`. Those are
+# computed from `Finding.affected_paths`; a ticket with no finding, or a
+# finding with no paths, carries no area key and no paths and is therefore
+# absent from every computed cluster no matter how obviously it belongs. That
+# blind spot is what these two goals exist to cover.
+_GROUPING_GOALS: dict[str, _Goal] = {
+    EpicAxis.ROOT_CAUSE.value: _Goal(
+        axis=EpicAxis.ROOT_CAUSE,
+        block=(
+            "**ROOT CAUSE** — one defect, one missing abstraction, or one bad "
+            "assumption that is showing up in several places, so a single fix "
+            "removes every symptom instead of patching each one in its own "
+            "PR. This is the axis arithmetic cannot reach at all: the members "
+            "may share no files, no area and no words. Look for the same "
+            "helper misused at five call sites, one missing validation that "
+            "several items each work around, one type that should have made a "
+            "class of bugs impossible. Stamp `axis='root-cause'` and name the "
+            "cause in `evidence.root_cause`."
+        ),
+    ),
+    EpicAxis.THEME.value: _Goal(
+        axis=EpicAxis.THEME,
+        block=(
+            "**THEME** — one feature, capability, or user-facing surface. The "
+            "causes differ and so do the fixes, but the work is one coherent "
+            "thing to hold in your head, so one run that does all of it beats "
+            "three runs each re-learning the same code. Stamp `axis='theme'` "
+            "and name the capability in `evidence.theme`. The platform already "
+            "groups by subsystem area and by feature area EXACTLY, from the "
+            "file paths recorded on each item's findings — so a theme epic "
+            "earns its review only where those are blind: items carrying no "
+            "findings or no recorded paths, and themes that cut across two "
+            "area keys."
+        ),
+    ),
+    EpicAxis.CO_CHANGE.value: _Goal(
+        axis=EpicAxis.CO_CHANGE,
+        block=(
+            "**CO-CHANGE** — unrelated problems whose fixes land in the same "
+            "code. Nothing connects them conceptually; one pull request is "
+            "simply cheaper than three, and separate branches would conflict "
+            "on the same lines. Stamp `axis='co-change'` and list the code "
+            "they will collide on in `evidence.shared_paths`. The platform "
+            "already groups items whose RECORDED paths overlap; yours is the "
+            "prediction — where the fix will actually land — for items whose "
+            "paths are unrecorded, or whose fix reaches beyond the file the "
+            "symptom showed up in."
+        ),
+    ),
+}
+
+GROUPING_GOALS = frozenset(_GROUPING_GOALS)
+
+
+def _resolve_goals(raw: Sequence[str]) -> list[_Goal]:
+    """The requested goals, deduped and in a stable order.
+
+    Unknown goals are dropped rather than raising — a saved rule carrying a
+    goal from a later version should still dispatch a sane run. Dropping every
+    goal would leave a prompt with no task at all, so the default stands in.
+    """
+    seen = [g for g in dict.fromkeys(raw) if g in _GROUPING_GOALS]
+    if not seen:
+        seen = [EpicAxis.ROOT_CAUSE.value]
+    return [_GROUPING_GOALS[g] for g in seen]
 
 
 # How hard to push for epics. The old prompt hardcoded the `conservative`
@@ -111,64 +231,195 @@ _GROUPING_STANCES: dict[str, str] = {
 GROUPING_AGGRESSIVENESS = frozenset(_GROUPING_STANCES)
 
 
-def _build_epic_proposal_intent(
-    tickets: list[TicketDTO],
-    repository_uid: str,
-    aggressiveness: str = "balanced",
-) -> str:
-    lines = []
-    for t in tickets:
-        desc = (t.description or "").strip().replace("\n", " ")
+#: Computed axes worth showing the agent as prior art. `lens` is excluded
+#: because it spreads across the whole repository by design and reads as a
+#: cluster of everything; `linked` because its label is a finding uid, which
+#: tells a reader nothing.
+_SEED_AXES = (EpicAxis.AREA, EpicAxis.FEATURE, EpicAxis.FILES, EpicAxis.CLASS)
+
+#: How many computed clusters the prompt carries. Strongest first, so the cap
+#: drops the marginal ones rather than a random slice.
+_MAX_SEED_CLUSTERS = 12
+
+#: Paths listed per candidate before eliding. The agent reads the code itself;
+#: this is orientation, not a manifest.
+_PATH_SAMPLE = 3
+
+
+def computed_clusters(facts: list[TicketFacts]) -> list[EpicDraft]:
+    """The groupings arithmetic already sees over this selection.
+
+    These are NOT persisted. A grouping run that quietly created rule
+    proposals as a side effect would put epics in the review queue that nobody
+    asked for; they exist here only as prior art in the prompt, so the agent
+    can extend and cut across them instead of re-deriving them by eye.
+
+    Uncapped members (`max_members=0`) because a cluster split into "(1/3)"
+    parts is an artifact of PR sizing, not of what the platform knows — and
+    the agent is being shown what is known, not how it would ship.
+    """
+    drafts: list[EpicDraft] = []
+    for axis in _SEED_AXES:
+        drafts += partition(
+            facts,
+            EpicPartition(axis=axis, max_epics=0, min_members=2, max_members=0),
+        )
+    drafts.sort(key=lambda d: (-len(d.member_ticket_uids), d.title))
+    return drafts[:_MAX_SEED_CLUSTERS]
+
+
+def _candidate_block(facts: Sequence[TicketFacts]) -> str:
+    """One entry per work item: what it is, plus every fact the computed axes
+    keyed on. Facets a ticket does not carry are omitted rather than printed as
+    "(none)" — and their absence is itself the signal that the computed axes
+    could not place this item."""
+    lines: list[str] = []
+    for f in facts:
+        desc = (f.description or "").strip().replace("\n", " ")
         if len(desc) > 200:
             desc = desc[:200] + "…"
-        labels = ", ".join(t.labels or []) or "(none)"
-        lines.append(
-            f"- uid: {t.uid}\n"
-            f"  title: {t.title}\n"
-            f"  status: {t.status.value} · priority: {t.priority} · labels: {labels}\n"
-            f"  description: {desc or '(none)'}"
+        head = f"- uid: {f.uid}\n  title: {f.title}"
+        meta = f"  status: {f.status} · priority: {f.priority}"
+        if f.severity:
+            meta += f" · severity: {f.severity}"
+        if f.labels:
+            meta += f" · labels: {', '.join(f.labels)}"
+        entry = [head, meta]
+        keyed: list[str] = []
+        if f.area_keys:
+            keyed.append(f"area: {', '.join(f.area_keys)}")
+        if f.feature_keys:
+            keyed.append(f"feature: {', '.join(f.feature_keys)}")
+        if f.kind:
+            keyed.append(f"lens: {f.kind}")
+        if f.subtype and f.tags:
+            keyed.append(f"class: {f.tags[0]}/{f.subtype}")
+        if keyed:
+            entry.append(f"  {' · '.join(keyed)}")
+        if f.paths:
+            shown = ", ".join(f.paths[:_PATH_SAMPLE])
+            extra = len(f.paths) - _PATH_SAMPLE
+            entry.append(f"  paths: {shown}{f' (+{extra})' if extra > 0 else ''}")
+        else:
+            # Said out loud because it is the whole reason a model is being
+            # asked: no paths means no area key, which means every computed
+            # cluster below is blind to this item.
+            entry.append("  paths: none recorded — invisible to every computed axis")
+        entry.append(f"  description: {desc or '(none)'}")
+        lines.append("\n".join(entry))
+    return "\n".join(lines)
+
+
+def _clusters_block(clusters: Sequence[EpicDraft]) -> str:
+    """The computed groupings, plus what the agent is allowed to do to them.
+
+    Showing prior art is what stops the run re-proposing what "Build epics by
+    rule" produces for free — the failure mode where a human reviews the same
+    grouping twice, once from each producer.
+    """
+    if not clusters:
+        return (
+            "Groupings the platform already computed\n"
+            "None: no two of the items below share an area, a feature, a "
+            "recorded file, or a finding class. Everything here is yours to "
+            "find.\n"
         )
-    listing = "\n".join(lines)
-    stance = _GROUPING_STANCES.get(aggressiveness, _GROUPING_STANCES["balanced"])
+    listing = "\n".join(
+        f"- [{d.axis.value}] {d.title} — "
+        f"{', '.join(d.member_ticket_uids)}"
+        for d in clusters
+    )
     return (
-        "Analyze the open tickets below and propose which of them share an "
-        "underlying ROOT CAUSE — one defect, one missing abstraction, or one "
-        "bad assumption that is showing up in several places — so a single "
-        "implement run can fix the cause once instead of patching each "
-        "symptom in its own PR. This is read-only against the repository — do "
-        "not modify any code.\n"
+        "Groupings the platform already computed\n"
+        "These come from set arithmetic over the items' recorded area keys, "
+        "file paths and finding classes. A human can reproduce them at any "
+        "time, without you, from “Build epics by rule” — so re-proposing one "
+        "unchanged is a review someone pays for nothing.\n"
+        f"{listing}\n"
         "\n"
-        "Group ONLY on shared root cause. Do not group on shared files, "
-        "shared subsystem, shared area, shared label, or shared theme: the "
-        "platform already computes those groupings exactly, without a model, "
-        "and an epic you propose on one of those axes is duplicated work that "
-        "a human then has to review. Your judgment is wanted for the one thing "
-        "arithmetic cannot see — that these different-looking tickets are the "
-        "same bug wearing different clothes.\n"
+        "Work from them. You may:\n"
+        "* MERGE two of them that are really one job;\n"
+        "* SPLIT one whose members turn out not to share a fix;\n"
+        "* EXTEND one with items arithmetic could not key — an item with no "
+        "recorded paths holds no area key and appears in no cluster above, no "
+        "matter how plainly it belongs;\n"
+        "* propose a group that CUTS ACROSS them.\n"
+        "When your epic changes a cluster, put that cluster's label in "
+        "`evidence.extends` so the reviewer sees the delta instead of a second "
+        "copy. A cluster you would leave exactly as it is: say nothing about "
+        "it, and do not propose it.\n"
+    )
+
+
+def _build_epic_proposal_intent(
+    facts: list[TicketFacts],
+    repository_uid: str,
+    aggressiveness: str = "balanced",
+    goals: Sequence[str] = (EpicAxis.ROOT_CAUSE.value,),
+    clusters: Sequence[EpicDraft] = (),
+) -> str:
+    resolved = _resolve_goals(goals)
+    stance = _GROUPING_STANCES.get(aggressiveness, _GROUPING_STANCES["balanced"])
+
+    goal_blocks = "\n\n".join(f"{i}. {g.block}" for i, g in enumerate(resolved, 1))
+    axes = ", ".join(f"'{g.axis.value}'" for g in resolved)
+
+    # The prohibition is the ROOT-CAUSE guard rail, not a global law. It was
+    # written when root cause was the only goal, and left in place it forbids
+    # the very goals below it.
+    guard_rail = ""
+    if all(g.axis is EpicAxis.ROOT_CAUSE for g in resolved):
+        guard_rail = (
+            "Group ONLY on shared root cause. Do not group on shared files, "
+            "shared subsystem, shared area, shared label, or shared theme: the "
+            "platform already computes those groupings exactly, without a "
+            "model, and an epic you propose on one of those axes is duplicated "
+            "work that a human then has to review. Your judgment is wanted for "
+            "the one thing arithmetic cannot see — that these "
+            "different-looking work items are the same bug wearing different "
+            "clothes.\n"
+            "\n"
+        )
+
+    return (
+        "Analyze the open work items below and propose which of them should be "
+        "IMPLEMENTED TOGETHER — one implement run, one branch, one pull "
+        "request. The implement agents are capable of fixing several related "
+        "items in a single pass, so a good grouping turns n reviews and n "
+        "branches into one. This is read-only against the repository — do not "
+        "modify any code.\n"
+        "\n"
+        f"{guard_rail}"
+        "What counts as belonging together — propose on these grounds and no "
+        "others:\n"
+        "\n"
+        f"{goal_blocks}\n"
         "\n"
         f"Repository uid: {repository_uid}\n"
         "\n"
-        "Candidate tickets (ungrouped, backlog/todo):\n"
-        f"{listing}\n"
+        f"{_clusters_block(clusters)}"
+        "\n"
+        "Candidate work items (not already in an epic):\n"
+        f"{_candidate_block(facts)}\n"
         "\n"
         "Task:\n"
-        "1. Read the code the tickets touch. Look for the shared cause: the "
-        "same helper misused in five call sites, one missing validation that "
-        "several tickets each work around, one type that should have made a "
-        "class of bugs impossible.\n"
-        f"2. {stance}\n"
-        "3. For each epic, call `opensweep_platform_propose_epic` "
-        "with the repository_uid, a short `title`, `member_ticket_uids`, "
-        "`axis='root-cause'`, and `evidence` — a small object naming the "
-        "cause and the code that proves it, e.g. "
+        "1. Read the code these items touch. A grouping you cannot point at "
+        "code for is a guess, and the review gate is not there to catch "
+        "guesses.\n"
+        f"2. {stance} That ceiling is the total across every ground above, "
+        "not a budget per ground.\n"
+        "3. For each epic, call `opensweep_platform_propose_epic` with the "
+        "repository_uid, a short `title`, `member_ticket_uids`, the `axis` "
+        f"matching the ground you grouped on ({axes}), and `evidence` — a "
+        "small object naming the fact and the code that proves it, e.g. "
         '{"root_cause": "callers must remember to await close()", '
-        '"shared_paths": ["a/b.py", "c/d.py"]}. Optionally '
-        "`suggested_labels` and `suggested_priority`.\n"
+        '"shared_paths": ["a/b.py", "c/d.py"]}. Optionally `suggested_labels` '
+        "and `suggested_priority`.\n"
         f"4. Keep `rationale` to ONE sentence under {MAX_RATIONALE_CHARS} "
         "characters — it is rendered on a single line in the review list, and "
         "longer text is truncated, not shown. Put the specifics in "
         "`evidence`, which is rendered structurally.\n"
-        "5. Never place one ticket in two epics.\n"
+        "5. Never place one work item in two epics.\n"
         "Do not create tickets, do not change ticket statuses, and do not "
         "file findings. A human reviews every proposal: approval creates the "
         "parent ticket with your members as subtickets; rejection discards it."
@@ -179,26 +430,51 @@ def _build_epic_proposal_intent(
 async def suggest_epics(
     req: SuggestEpicsRequest, user: UserDTO = Depends(require_role("maintainer"))
 ) -> dict:
-    """Dispatch a read-only run that analyzes ungrouped backlog/todo tickets
-    and proposes groupings via `opensweep_platform_propose_epic`. Every
-    proposal is human-approved before anything changes."""
+    """Dispatch a read-only run that analyzes ungrouped work items and
+    proposes groupings via `opensweep_platform_propose_epic`. Every proposal is
+    human-approved before anything changes.
+
+    The run is seeded with the groupings the deterministic axes already see, so
+    it spends its judgment on what they cannot — extending a cluster with items
+    that carry no paths, cutting across two of them, or naming a shared cause
+    behind items that look unrelated.
+    """
     from domains.run_policies.services.effort import ensure_policy_for_effort
     from domains.runs.schemas import Effort, RunTrigger
     from domains.runs.services.lifecycle import LifecycleError, trigger_run
+    from domains.tickets.services.epics.loader import load_ticket_facts
     from infrastructure.audit import write_audit
 
     await require_repo_in_org(req.repository_uid, user.org_uid)
-    tickets = await TicketService().list(repository_uid=req.repository_uid)
-    candidates = [
-        t
-        for t in tickets
-        if t.status.value in {"backlog", "todo"} and not t.parent_ticket_uid
-    ]
+    # `load_ticket_facts` already drops grouped tickets and their parents, and
+    # resolves the finding-derived facets the computed axes key on — the same
+    # pool the rule builder plans over, so the two producers cannot disagree
+    # about what is eligible.
+    facts = await load_ticket_facts(req.repository_uid)
+    candidates = select_tickets(
+        facts,
+        EpicSelection(
+            statuses=tuple(req.statuses),
+            min_priority=req.min_priority,
+            min_severity=req.min_severity,
+            labels=tuple(req.labels),
+            kinds=tuple(req.kinds),
+            area_keys=tuple(req.area_keys),
+            limit=req.limit,
+            sort=req.sort,
+        ),
+    )
     if len(candidates) < 2:
         raise HTTPException(
             status_code=409,
-            detail="need at least 2 ungrouped backlog/todo tickets to propose groups",
+            detail=(
+                "need at least 2 ungrouped work items matching these filters "
+                f"to propose groups — {len(facts)} candidate(s) exist, "
+                f"{len(candidates)} passed"
+            ),
         )
+    goals = [g.axis.value for g in _resolve_goals(req.goals)]
+    clusters = computed_clusters(candidates)
 
     # Specialized refine run: the grouping template IS the instructions
     # (custom_intent), so a replace overlay never displaces it; org append
@@ -211,7 +487,11 @@ async def suggest_epics(
         stage="refine",
         repo_guidance="",
         custom_intent=_build_epic_proposal_intent(
-            candidates, req.repository_uid, req.aggressiveness
+            candidates,
+            req.repository_uid,
+            req.aggressiveness,
+            goals,
+            clusters,
         ),
         org_uid=user.org_uid,
     )
@@ -222,7 +502,12 @@ async def suggest_epics(
         subject_uid=req.repository_uid,
         subject_type="Repository",
         actor_uid=user.uid,
-        payload={"candidate_count": len(candidates)},
+        payload={
+            "candidate_count": len(candidates),
+            "goals": goals,
+            "aggressiveness": req.aggressiveness,
+            "seeded_clusters": len(clusters),
+        },
     )
     try:
         run = await trigger_run(
@@ -241,6 +526,10 @@ async def suggest_epics(
         "run_uid": run.uid,
         "scheduled_agent_uid": run.scheduled_agent_uid,
         "candidate_count": len(candidates),
+        "goals": goals,
+        # What the run was shown as prior art. A caller seeing 0 here knows the
+        # agent is working from scratch, not that it ignored the clusters.
+        "seeded_cluster_count": len(clusters),
     }
 
 
@@ -389,6 +678,8 @@ async def implement_ticket(uid: str, user: UserDTO = Depends(require_role("maint
 
     ticket = await TicketService().get_node(uid)
     await require_repo_in_org(ticket.repository_uid, user.org_uid)
+    if bool(getattr(ticket, "archived", False)):
+        raise HTTPException(status_code=409, detail="ticket is archived — unarchive it first")
     # A live thread owns this ticket's work branch — a parallel one-shot
     # implement run would race it on the branch and the fix-round ledger.
     from domains.threads.services.thread_service import ThreadService, has_active_thread
@@ -419,8 +710,35 @@ async def refine_ticket(uid: str, user: UserDTO = Depends(require_role("maintain
     service = TicketService()
     ticket = await service.get_node(uid)
     await require_repo_in_org(ticket.repository_uid, user.org_uid)
+    if bool(getattr(ticket, "archived", False)):
+        raise HTTPException(status_code=409, detail="ticket is archived — unarchive it first")
     run = await dispatch_refine_run(ticket, actor_uid=user.uid, org_uid=user.org_uid)
     return {"run_uid": run.uid, "scheduled_agent_uid": run.scheduled_agent_uid, "ticket_uid": uid}
+
+
+@router.post(
+    "/{uid}/archive", response_model=TicketDTO, operation_id="opensweep_ticket_archive"
+)
+async def archive_ticket(uid: str, user: UserDTO = Depends(require_role("maintainer"))):
+    """Reversible "leave the board" from any status — the alternative to
+    delete, which stays backlog-only. 409 while an active thread owns the
+    ticket, for epic members (archive the parent) and for epics with
+    unfinished members."""
+    service = TicketService()
+    ticket = await service.get_node(uid)
+    await require_repo_in_org(ticket.repository_uid, user.org_uid)
+    return ticket_to_dto(await service.archive(uid, actor_uid=user.uid))
+
+
+@router.post(
+    "/{uid}/unarchive", response_model=TicketDTO, operation_id="opensweep_ticket_unarchive"
+)
+async def unarchive_ticket(uid: str, user: UserDTO = Depends(require_role("maintainer"))):
+    """Restore an archived ticket to its lane (status was never touched)."""
+    service = TicketService()
+    ticket = await service.get_node(uid)
+    await require_repo_in_org(ticket.repository_uid, user.org_uid)
+    return ticket_to_dto(await service.unarchive(uid, actor_uid=user.uid))
 
 
 @router.delete("/{uid}", status_code=204, operation_id="opensweep_ticket_delete")

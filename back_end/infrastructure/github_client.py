@@ -27,11 +27,26 @@ MAX_CHECK_RUNS = 500
 # stops listing at 3000) — enough for any reviewable diff.
 MAX_PR_FILES = 1000
 
+# GitHub's compare endpoint returns at most 300 changed files and does NOT
+# paginate them (only the commit list pages). Past that the path list is
+# partial and callers must degrade loudly rather than assume "nothing else
+# changed".
+MAX_COMPARE_FILES = 300
+
 
 class TokenSource(Protocol):
     """Per-request credential resolver (e.g. an App installation token)."""
 
     async def get_token(self) -> str: ...
+
+
+class MissingCredentialError(RuntimeError):
+    """A token source resolved to an empty credential.
+
+    Raised instead of sending `Authorization: Bearer ` (empty token), which
+    httpx rejects as LocalProtocolError("Illegal header value") — an error
+    that names the transport instead of the actual problem (e.g. the repo's
+    GitConnection was deleted and no fallback PAT is configured)."""
 
 
 class GitHubClient:
@@ -58,7 +73,13 @@ class GitHubClient:
         """Per-request header override — only the token-source path needs one."""
         if self._token_source is None:
             return None
-        return {"Authorization": f"Bearer {await self._token_source.get_token()}"}
+        token = await self._token_source.get_token()
+        if not token:
+            raise MissingCredentialError(
+                "git credential resolved to empty — the repo's connection is "
+                "gone or unreadable and no fallback PAT is configured"
+            )
+        return {"Authorization": f"Bearer {token}"}
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -161,6 +182,38 @@ class GitHubClient:
         """Head commit sha of a branch (GET /repos/{o}/{r}/commits/{branch})."""
         body = await self._get(f"/repos/{owner}/{repo}/commits/{branch}")
         return str(body.get("sha") or "") if isinstance(body, dict) else ""
+
+    async def compare_commits(
+        self, owner: str, repo: str, base: str, head: str
+    ) -> dict[str, Any]:
+        """{"paths": [changed file paths], "truncated": bool} between two commits.
+
+        The freshness path cannot trust a push payload's `commits` array: GitHub
+        caps it at 20 commits and merge commits carry empty file lists, so
+        merging a large PR silently under-reports what changed. The compare
+        range is the honest answer.
+
+        Renames are reported under BOTH names — the old path vanishing is
+        exactly what makes an area's scope dead, so a rename must mark both the
+        source and destination areas stale.
+        """
+        payload = await self._get(
+            f"/repos/{owner}/{repo}/compare/"
+            f"{quote(base, safe='')}...{quote(head, safe='')}"
+        )
+        files = payload.get("files") if isinstance(payload, dict) else None
+        paths: list[str] = []
+        for f in files or []:
+            if not isinstance(f, dict):
+                continue
+            for key in ("filename", "previous_filename"):
+                value = f.get(key)
+                if value:
+                    paths.append(str(value))
+        # GitHub does not flag the 300-file cut itself, so infer it: a compare
+        # that lands exactly on the cap is presumed clipped.
+        truncated = len(files or []) >= MAX_COMPARE_FILES
+        return {"paths": list(dict.fromkeys(paths)), "truncated": truncated}
 
     async def get_branch(self, owner: str, repo: str, branch: str) -> dict[str, Any] | None:
         """GET /repos/{o}/{r}/branches/{branch} — None when the branch doesn't
@@ -270,6 +323,55 @@ class GitHubClient:
         return await self._post(
             f"/repos/{owner}/{repo}/pulls/{number}/reviews", json=payload
         )
+
+    # ── Capability probes ────────────────────────────────────────────────
+
+    async def check_write_access(self, owner: str, repo: str) -> bool | None:
+        """Can this credential actually push to the repo?
+
+        Deliberately NOT `GET /repos`.`permissions.push`: that field reports the
+        authenticated *user's* role on the repo, not what the credential is
+        granted. A read-only fine-grained PAT held by a repo admin reports
+        `push: true` and then 403s at receive-pack — the exact trap this probe
+        exists to avoid.
+
+        So it asks the grant directly, by requesting a ref at the null SHA.
+        GitHub authorizes first and validates the payload second, and no object
+        with that SHA can exist, so a credential that may write is refused at
+        validation while one that may not is refused at authorization. Nothing
+        is ever created.
+
+        Returns True (probe says writable), False (definitively denied), or
+        None (inconclusive — no credential, transport error, or a status we
+        don't recognize). ONLY False is a real answer: callers must treat None
+        as "proceed", so a GitHub hiccup can never block legitimate work. That
+        also keeps the True mapping non-load-bearing — if GitHub ever answers an
+        authorized probe with something other than 422, this degrades to the
+        old behavior instead of blocking a run that would have succeeded.
+        """
+        if not self.is_active:
+            return None
+        try:
+            r = await self._client.post(
+                f"/repos/{owner}/{repo}/git/refs",
+                json={"ref": "refs/heads/opensweep-write-preflight", "sha": "0" * 40},
+                headers=await self._request_headers(),
+            )
+        except Exception as exc:  # transport/timeout — never block on this
+            logger.warning(
+                f"write-access probe for {owner}/{repo} failed to run: {exc}",
+                extra={"tag": "github"},
+            )
+            return None
+        if r.status_code == 403:
+            return False
+        if r.status_code == 422:
+            return True
+        logger.info(
+            f"write-access probe for {owner}/{repo} inconclusive ({r.status_code})",
+            extra={"tag": "github"},
+        )
+        return None
 
     # ── Internals ────────────────────────────────────────────────────────
 

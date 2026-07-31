@@ -7,6 +7,7 @@ import type {
   AreaDTO,
   AreaEditDTO,
   AreaEditStatus,
+  AreasHealthDTO,
   GenerateSpecsResponse,
   MapAreasResponse,
   ReviseSpecResponse,
@@ -54,6 +55,21 @@ export const useAreaStore = defineStore('areas', () => {
   /** Everything the area detail page renders — scope sizing, docs, coverage. */
   async function fetchDetail(uid: string): Promise<AreaDetailDTO> {
     return apiGet<AreaDetailDTO>(`/areas/${uid}/detail`)
+  }
+
+  /** Review / docs / audit state for every area in one call — what the merged
+   *  Areas board renders (replaces the Health page's per-doc freshness). */
+  async function fetchHealth(repoUid: string): Promise<AreasHealthDTO> {
+    return apiGet<AreasHealthDTO>(
+      `/repositories/${encodeURIComponent(repoUid)}/areas/health`,
+    )
+  }
+
+  /** "I looked; the map is still right" — clears stale without an edit. */
+  async function confirmCurrent(uid: string): Promise<AreaDTO> {
+    const area = await apiPost<AreaDTO>(`/areas/${uid}/confirm-current`)
+    areas.value = areas.value.map((a) => (a.uid === uid ? area : a))
+    return area
   }
 
   /** Applies the edit; `warnings` are advisory partition drift notes for a toast. */
@@ -140,6 +156,8 @@ export const useAreaStore = defineStore('areas', () => {
     fetchAreas,
     fetchEdits,
     fetchDetail,
+    fetchHealth,
+    confirmCurrent,
     patchArea,
     deleteArea,
     acceptEdit,

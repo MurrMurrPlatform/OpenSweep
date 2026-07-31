@@ -25,11 +25,20 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { priorityVariant } from '@/components/tickets/ticketMeta'
+import {
+  ANY,
+  PRIORITY_OPTIONS,
+  SEVERITY_OPTIONS,
+  SORT_OPTIONS,
+  STATUS_OPTIONS,
+  floorValue,
+  toggleStatus,
+} from '@/components/tickets/epicSelection'
 import type {
   EpicDraftDTO,
   PlanEpicsPreview,
   PlanEpicsRequest,
-  EpicAxis,
+  EpicComputedAxis,
   TicketPriority,
   TicketStatus,
 } from '@/types/api'
@@ -46,13 +55,11 @@ const store = useTicketStore()
 const toast = useToast()
 
 /**
- * The computable axes only. `root-cause` is deliberately absent: it needs
- * agent judgment and lives behind "Suggest epics by root cause (agent run)".
+ * The computable axes only. `root-cause`, `theme` and `co-change` are
+ * deliberately absent: they need agent judgment and live behind "Suggest epics
+ * (agent run)".
  */
-type ComputableAxis = Extract<
-  EpicAxis,
-  'area' | 'feature' | 'files' | 'lens' | 'class' | 'linked'
->
+type ComputableAxis = EpicComputedAxis
 
 interface AxisOption {
   value: ComputableAxis
@@ -102,22 +109,6 @@ const AXIS_OPTIONS: AxisOption[] = [
   },
 ]
 
-/** Sentinel for "no floor" — reka Select rejects an empty-string value. */
-const ANY = 'any'
-
-const SEVERITY_OPTIONS = ['low', 'medium', 'high', 'critical']
-const PRIORITY_OPTIONS = ['low', 'medium', 'high', 'urgent']
-const STATUS_OPTIONS: { value: TicketStatus; label: string }[] = [
-  { value: 'backlog', label: 'Backlog' },
-  { value: 'todo', label: 'Todo' },
-]
-const SORT_OPTIONS = [
-  { value: 'priority', label: 'Priority: high → low' },
-  { value: 'severity', label: 'Severity: high → low' },
-  { value: 'age', label: 'Age: oldest first' },
-  { value: 'size', label: 'Size: smallest first' },
-]
-
 // ── Controls ────────────────────────────────────────────────────────────────
 
 const axis = ref<ComputableAxis>('area')
@@ -140,15 +131,6 @@ const nums = reactive<Record<NumberField, number>>({
 const axisMeta = computed(
   () => AXIS_OPTIONS.find((o) => o.value === axis.value) ?? AXIS_OPTIONS[0],
 )
-
-function toggleStatus(status: TicketStatus) {
-  const next = statuses.value.includes(status)
-    ? statuses.value.filter((s) => s !== status)
-    : [...statuses.value, status]
-  // Fixed order, so toggling two statuses back and forth can't produce a
-  // different request object for the same selection.
-  statuses.value = STATUS_OPTIONS.map((o) => o.value).filter((s) => next.includes(s))
-}
 
 /**
  * Number fields keep their last valid value while the box is empty mid-edit —
@@ -174,8 +156,8 @@ const validationError = computed(() => {
 const request = computed<Omit<PlanEpicsRequest, 'dry_run'>>(() => ({
   repository_uid: props.repositoryUid,
   statuses: [...statuses.value],
-  min_priority: minPriority.value === ANY ? '' : minPriority.value,
-  min_severity: minSeverity.value === ANY ? '' : minSeverity.value,
+  min_priority: floorValue(minPriority.value),
+  min_severity: floorValue(minSeverity.value),
   limit: nums.limit,
   sort: sort.value,
   axis: axis.value,
@@ -497,7 +479,7 @@ async function create() {
                   type="checkbox"
                   class="size-4 cursor-pointer accent-primary"
                   :checked="statuses.includes(opt.value)"
-                  @change="toggleStatus(opt.value)"
+                  @change="statuses = toggleStatus(statuses, opt.value)"
                 />
                 {{ opt.label }}
               </label>

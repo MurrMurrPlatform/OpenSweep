@@ -6,6 +6,13 @@ import { BOARD_PREFS_PREFIX } from '@/lib/userStorage'
 export interface BoardPrefs {
   hidden: TicketStatus[]
   collapsed: TicketStatus[]
+  /**
+   * Show tickets that belong to an epic as loose cards. Off by default: a
+   * member's status is deliberately frozen when it joins an epic (nothing
+   * transitions it until the epic's PR merges), so laning it by status shows a
+   * stale value as if it were current. The epic parent is the honest card.
+   */
+  showEpicMembers: boolean
 }
 
 const ACTIVE_LANES: TicketStatus[] = ['todo', 'in-progress', 'in-review']
@@ -22,23 +29,27 @@ function load(repoUid: string): BoardPrefs {
       return {
         hidden: Array.isArray(parsed.hidden) ? parsed.hidden : [],
         collapsed: Array.isArray(parsed.collapsed) ? parsed.collapsed : [],
+        showEpicMembers: parsed.showEpicMembers === true,
       }
     }
   } catch { /* corrupted or private mode — fall through to defaults */ }
-  return { hidden: [], collapsed: [] }
+  return DEFAULTS()
 }
+
+const DEFAULTS = (): BoardPrefs => ({ hidden: [], collapsed: [], showEpicMembers: false })
 
 /**
  * Per-repository kanban view preferences (hidden + collapsed lanes),
  * persisted in localStorage so the board opens the way you left it.
  */
 export function useBoardPrefs(repoUid: Ref<string | null | undefined>) {
-  const prefs = reactive<BoardPrefs>({ hidden: [], collapsed: [] })
+  const prefs = reactive<BoardPrefs>(DEFAULTS())
 
   watch(repoUid, (uid) => {
-    const loaded = uid ? load(uid) : { hidden: [], collapsed: [] }
+    const loaded = uid ? load(uid) : DEFAULTS()
     prefs.hidden = loaded.hidden
     prefs.collapsed = loaded.collapsed
+    prefs.showEpicMembers = loaded.showEpicMembers
   }, { immediate: true })
 
   watch(prefs, () => {
@@ -69,7 +80,21 @@ export function useBoardPrefs(repoUid: Ref<string | null | undefined>) {
   function showAll() {
     prefs.hidden = []
     prefs.collapsed = []
+    prefs.showEpicMembers = true
   }
 
-  return { prefs, isHidden, isCollapsed, setHidden, toggleCollapsed, focusActive, showAll }
+  function setShowEpicMembers(show: boolean) {
+    prefs.showEpicMembers = show
+  }
+
+  return {
+    prefs,
+    isHidden,
+    isCollapsed,
+    setHidden,
+    toggleCollapsed,
+    setShowEpicMembers,
+    focusActive,
+    showAll,
+  }
 }

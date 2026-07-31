@@ -33,6 +33,9 @@ async def load_ticket_facts(
     two branches editing the same code.
     """
     tickets = list(await Ticket.nodes.filter(repository_uid=repository_uid))
+    # Archived tickets left the board — epic planning must not pull them back.
+    # getattr: nodes written before m0021 read None.
+    tickets = [t for t in tickets if not getattr(t, "archived", False)]
     if exclude_grouped:
         parent_uids = {t.parent_ticket_uid for t in tickets if t.parent_ticket_uid}
         tickets = [
@@ -86,6 +89,7 @@ async def load_ticket_facts(
             TicketFacts(
                 uid=t.uid,
                 title=t.title or "",
+                description=t.description or "",
                 priority=t.priority or "medium",
                 severity=severity,
                 status=t.status or "backlog",

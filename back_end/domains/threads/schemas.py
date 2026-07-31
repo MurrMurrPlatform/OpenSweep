@@ -15,6 +15,10 @@ class ThreadDTO(BaseModel):
     pr_uid: str = ""
     ready_for_review: bool = False
     active_run_uid: str = ""
+    # Open questions blocking the agent — on the summary DTO (not just the
+    # detail progress) so list surfaces (the board) can badge "waiting on you"
+    # without fetching every thread's detail.
+    questions_open: int = 0
     created_by: str = ""
     created_at: datetime | None = None
     updated_at: datetime | None = None

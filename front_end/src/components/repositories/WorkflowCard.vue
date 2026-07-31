@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { Workflow } from 'lucide-vue-next'
+import { ChevronRight, ExternalLink, Workflow } from 'lucide-vue-next'
 import { useWorkflowStore } from '@/stores/workflowStore'
 import { useAgentStore } from '@/stores/agentStore'
 import { useLLMProviderStore } from '@/stores/llmProviderStore'
@@ -8,6 +8,7 @@ import { useRunPolicyStore } from '@/stores/runPolicyStore'
 import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
 import { Card, CardHeader, CardContent, CardTitle } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -18,11 +19,11 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import type { ReviewDepth, WorkflowConfig, WorkflowStage, WorkflowStageConfig } from '@/types/api'
+import type { AgentDTO, ReviewDepth, WorkflowConfig, WorkflowStage, WorkflowStageConfig } from '@/types/api'
 
-// reka SelectItem values can't be empty strings — the "no selection / default"
-// choice for prompt/provider/policy uses this sentinel and is translated back
-// to '' at the read/write boundary via v-model helpers below.
+// reka SelectItem values can't be empty strings — the "inherit the stage
+// default" choice uses this sentinel and is translated back to '' at the
+// read/write boundary via the helpers below.
 const NONE = '__none__'
 
 interface Props {
@@ -41,8 +42,17 @@ const loading = ref(true)
 const saving = ref(false)
 const loadError = ref<string | null>(null)
 
+// From fetchAll's return value, NOT agents.list — the store only caches
+// unfiltered fetches, and this card asks for enabled_only.
+const agentList = ref<AgentDTO[]>([])
+
 // Editable copies — the form owns these, `config` mirrors the server.
 const form = ref<Record<WorkflowStage, WorkflowStageConfig>>({} as Record<WorkflowStage, WorkflowStageConfig>)
+
+// Per-stage disclosure: most users only touch review/fix, so stages start
+// collapsed behind a one-line summary.
+const expanded = ref<Record<string, boolean>>({})
+const showGuidance = ref<Record<string, boolean>>({})
 
 const STAGE_ORDER: WorkflowStage[] = ['ask', 'analysis', 'discover', 'review', 'fix', 'implement', 'verify', 'document']
 
@@ -94,12 +104,13 @@ async function load() {
   loading.value = true
   loadError.value = null
   try {
-    const [c] = await Promise.all([
+    const [c, fetchedAgents] = await Promise.all([
       workflow.fetchForRepo(props.repositoryUid),
       agents.fetchAll({ enabled_only: true }),
       llmProviders.fetchAll(),
       runPolicies.fetchAll(),
     ])
+    agentList.value = fetchedAgents
     hydrate(c)
   } catch (e) {
     loadError.value = e instanceof Error ? e.message : String(e)
@@ -111,18 +122,65 @@ async function load() {
 onMounted(load)
 watch(() => props.repositoryUid, () => void load())
 
-const promptOptions = computed(() => [
-  { label: 'No guidance (structural intent only)', value: NONE },
+// ── Guidance resolution (stored uid '' = inherit the seeded stage default) ──
+
+function agentByUid(uid: string): AgentDTO | null {
+  if (!uid) return null
+  return agentList.value.find((a) => a.uid === uid) ?? null
+}
+
+function defaultAgent(stage: WorkflowStage): AgentDTO | null {
+  return agentByUid(config.value?.default_agent_uids?.[stage] ?? '')
+}
+
+/** The agent whose body this stage's runs actually get: the pinned one, or
+ *  the seeded default when the stage inherits. */
+function effectiveAgent(stage: WorkflowStage): AgentDTO | null {
+  return agentByUid(form.value[stage]?.agent_uid ?? '') ?? defaultAgent(stage)
+}
+
+/** First option is honest about what '' does: inherit the seeded default —
+ *  "no guidance" only when that seeded prompt is deleted or disabled. */
+function defaultOptionLabel(stage: WorkflowStage): string {
+  const d = defaultAgent(stage)
+  return d ? `Default — ${d.title}` : 'No guidance (structural intent only)'
+}
+
+const assignableAgents = computed(() =>
   // Playbook base agents (opensweep://agent/<key>) are the instructions
   // layer of every run already — assigning one as stage guidance would
   // duplicate it.
-  ...agents.list
-    .filter((a) => a.enabled && !a.source_url.startsWith('opensweep://agent/'))
-    .map((a) => ({ label: a.title, value: a.uid })),
-])
+  agentList.value.filter((a) => a.enabled && !a.source_url.startsWith('opensweep://agent/')),
+)
 
-function isKnownPrompt(uid: string): boolean {
-  return uid !== '' && promptOptions.value.some((o) => o.value === uid)
+function promptOptions(stage: WorkflowStage) {
+  return [
+    { label: defaultOptionLabel(stage), value: NONE },
+    ...assignableAgents.value.map((a) => ({ label: a.title, value: a.uid })),
+  ]
+}
+
+/** A stored uid pointing at a deleted/disabled agent renders as a warning
+ *  placeholder instead of silently looking like the default. */
+function pinnedButUnknown(stage: WorkflowStage): boolean {
+  const uid = form.value[stage]?.agent_uid ?? ''
+  return uid !== '' && !agentByUid(uid)
+}
+
+function guidanceSummary(stage: WorkflowStage): string {
+  const uid = form.value[stage]?.agent_uid ?? ''
+  if (uid === '') {
+    const d = defaultAgent(stage)
+    return d ? `Default — ${d.title}` : 'No guidance'
+  }
+  return agentByUid(uid)?.title ?? 'Unknown agent (disabled or deleted)'
+}
+
+function overridesSummary(stage: WorkflowStage): string {
+  const s = form.value[stage]
+  if (!s) return ''
+  const n = [s.provider_uid, s.model, s.run_policy_uid].filter(Boolean).length + (s.max_wall_seconds ? 1 : 0)
+  return n ? `${n} override${n === 1 ? '' : 's'}` : ''
 }
 
 const providerOptions = computed(() => [
@@ -141,24 +199,22 @@ const policyOptions = computed(() => [
 const toSelect = (uid: string) => (uid === '' ? NONE : uid)
 const fromSelect = (v: unknown) => (v === NONE ? '' : String(v))
 
-const dirty = computed(() => {
-  const c = config.value
-  if (!c) return false
-  return STAGE_ORDER.some((stage) => {
-    const server = c.stages[stage]
-    const local = form.value[stage]
-    if (!server || !local) return false
-    return (
-      local.agent_uid !== server.agent_uid ||
-      local.auto !== server.auto ||
-      local.depth !== server.depth ||
-      local.provider_uid !== (server.provider_uid ?? '') ||
-      local.model !== (server.model ?? '') ||
-      Number(local.max_wall_seconds || 0) !== (server.max_wall_seconds ?? 0) ||
-      local.run_policy_uid !== (server.run_policy_uid ?? '')
-    )
-  })
-})
+function stageDirty(stage: WorkflowStage): boolean {
+  const server = config.value?.stages[stage]
+  const local = form.value[stage]
+  if (!server || !local) return false
+  return (
+    local.agent_uid !== server.agent_uid ||
+    local.auto !== server.auto ||
+    local.depth !== server.depth ||
+    local.provider_uid !== (server.provider_uid ?? '') ||
+    local.model !== (server.model ?? '') ||
+    Number(local.max_wall_seconds || 0) !== (server.max_wall_seconds ?? 0) ||
+    local.run_policy_uid !== (server.run_policy_uid ?? '')
+  )
+}
+
+const dirty = computed(() => !!config.value && STAGE_ORDER.some(stageDirty))
 
 function isAutoStage(stage: WorkflowStage): boolean {
   return config.value?.auto_stages.includes(stage) ?? false
@@ -199,11 +255,12 @@ async function save() {
           <Workflow class="h-4 w-4 text-muted-foreground" /> Workflow
         </CardTitle>
         <div class="text-xs text-muted-foreground mt-0.5">
-          Each stage defaults to its seeded “OpenSweep default” guidance agent —
-          edit those in the Agent library, or swap in another agent per stage here.
-          Per stage you can also pin an LLM provider, override its model, set a
-          wall-clock ceiling, and choose a run policy (its full ceiling bundle);
-          empty/0 inherit the platform defaults.
+          Each stage's runs get its guidance prompt appended — by default the
+          seeded “OpenSweep default” agent (edit those in the Agent library),
+          or swap in another agent per stage here. Expand a stage to preview
+          the guidance text, pin an LLM provider, override its model, set a
+          wall-clock ceiling, or choose a run policy; empty/0 inherit the
+          platform defaults.
         </div>
       </div>
       <Button
@@ -216,23 +273,46 @@ async function save() {
         Save
       </Button>
     </CardHeader>
-    <CardContent>
-      <div v-if="loading" class="text-sm text-muted-foreground">Loading workflow…</div>
-      <div v-else-if="loadError" class="text-sm text-muted-foreground">
+    <CardContent class="p-0">
+      <div v-if="loading" class="p-4 text-sm text-muted-foreground">Loading workflow…</div>
+      <div v-else-if="loadError" class="p-4 text-sm text-muted-foreground">
         Couldn’t load the workflow: {{ loadError }}
         <Button variant="outline" size="sm" class="ml-2" @click="load">Retry</Button>
       </div>
-      <div v-else-if="config" class="space-y-4 text-sm">
-        <div
-          v-for="stage in STAGE_ORDER"
-          :key="stage"
-          class="grid gap-3 lg:grid-cols-[8rem_1fr_auto] lg:items-start"
-        >
-          <div>
-            <div class="text-xs font-medium text-foreground capitalize">{{ stage }}</div>
-            <p class="text-xs text-muted-foreground">{{ STAGE_HELP[stage] }}</p>
+      <div v-else-if="config" class="divide-y divide-border text-sm">
+        <div v-for="stage in STAGE_ORDER" :key="stage">
+          <!-- Summary row: the whole row toggles disclosure; the auto switch
+               is the one control worth reaching without expanding. -->
+          <div class="flex items-center gap-2 px-4 py-2.5">
+            <button
+              type="button"
+              class="flex min-w-0 flex-1 items-center gap-2 text-left"
+              @click="expanded[stage] = !expanded[stage]"
+            >
+              <ChevronRight
+                class="size-3.5 shrink-0 text-muted-foreground transition-transform"
+                :class="expanded[stage] ? 'rotate-90' : ''"
+              />
+              <span class="w-20 shrink-0 font-medium capitalize">
+                {{ stage }}<span v-if="stageDirty(stage)" class="text-primary" title="Unsaved changes">*</span>
+              </span>
+              <span class="min-w-0 truncate text-muted-foreground">{{ guidanceSummary(stage) }}</span>
+              <Badge v-if="DEPTH_STAGES.includes(stage)" variant="outline" class="shrink-0 capitalize">
+                {{ form[stage].depth }}
+              </Badge>
+              <Badge v-if="overridesSummary(stage)" variant="secondary" class="shrink-0">
+                {{ overridesSummary(stage) }}
+              </Badge>
+            </button>
+            <div v-if="isAutoStage(stage)" class="flex shrink-0 items-center gap-1.5" :title="AUTO_HELP[stage]">
+              <span class="text-xs text-muted-foreground">auto</span>
+              <Switch v-model="form[stage].auto" />
+            </div>
           </div>
-          <div class="space-y-2 min-w-0">
+
+          <!-- Expanded controls -->
+          <div v-if="expanded[stage]" class="space-y-2 border-t border-border/60 bg-muted/30 px-4 py-3 lg:pl-10">
+            <p class="text-xs text-muted-foreground">{{ STAGE_HELP[stage] }}</p>
             <div class="flex flex-wrap items-center gap-2">
               <Select
                 :model-value="toSelect(form[stage].agent_uid)"
@@ -240,11 +320,11 @@ async function save() {
               >
                 <SelectTrigger class="flex-1 min-w-40">
                   <SelectValue
-                    :placeholder="isKnownPrompt(form[stage].agent_uid) ? undefined : 'No guidance (structural intent only)'"
+                    :placeholder="pinnedButUnknown(stage) ? 'Unknown agent (disabled or deleted)' : undefined"
                   />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem v-for="o in promptOptions" :key="o.value" :value="o.value">{{ o.label }}</SelectItem>
+                  <SelectItem v-for="o in promptOptions(stage)" :key="o.value" :value="o.value">{{ o.label }}</SelectItem>
                 </SelectContent>
               </Select>
               <Select
@@ -263,6 +343,28 @@ async function save() {
                 </SelectContent>
               </Select>
             </div>
+
+            <!-- Guidance preview: what this stage's runs actually receive. -->
+            <div v-if="effectiveAgent(stage)" class="flex flex-wrap items-center gap-3 text-xs">
+              <button
+                type="button"
+                class="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                @click="showGuidance[stage] = !showGuidance[stage]"
+              >
+                {{ showGuidance[stage] ? 'Hide guidance text' : 'Show guidance text' }}
+              </button>
+              <RouterLink
+                :to="{ name: 'agent-detail', params: { uid: effectiveAgent(stage)!.uid } }"
+                class="inline-flex items-center gap-1 text-primary hover:underline"
+              >
+                Edit in library <ExternalLink class="size-3" />
+              </RouterLink>
+            </div>
+            <pre
+              v-if="showGuidance[stage] && effectiveAgent(stage)"
+              class="max-h-64 overflow-y-auto whitespace-pre-wrap rounded-md border bg-background p-3 font-sans text-xs text-muted-foreground"
+            >{{ effectiveAgent(stage)!.prompt || '(this agent has an empty prompt body)' }}</pre>
+
             <div class="flex flex-wrap items-center gap-2">
               <Select
                 :model-value="toSelect(form[stage].provider_uid)"
@@ -312,11 +414,6 @@ async function save() {
               </Select>
             </div>
           </div>
-          <div v-if="isAutoStage(stage)" class="flex items-center gap-2">
-            <p class="max-w-52 text-xs text-muted-foreground lg:text-right">{{ AUTO_HELP[stage] }}</p>
-            <Switch v-model="form[stage].auto" />
-          </div>
-          <div v-else class="hidden lg:block" />
         </div>
       </div>
     </CardContent>

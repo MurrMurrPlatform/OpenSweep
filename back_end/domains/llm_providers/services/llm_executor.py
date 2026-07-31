@@ -402,13 +402,33 @@ def _prepare_opencode_config(
         os.makedirs(config_dir, exist_ok=True)
         config_path = os.path.join(config_dir, "opencode.json")
         proxied_base_url = base_url
+        options: dict = {"baseURL": proxied_base_url}
+        # The AI SDK provider packages read the key from `options.apiKey` ONLY —
+        # they ignore OPENAI_API_KEY in the environment, so a hosted endpoint
+        # answers 401 unless the credential is written into the config. (Local
+        # servers accept anything, which is why this went unnoticed.)
+        api_key = _resolve_api_key(provider)
+        if api_key:
+            options["apiKey"] = api_key
+
+        overrides = _parse_extra_args(getattr(provider, "extra_args", "") or "")
+        # `@ai-sdk/openai-compatible` always emits `max_tokens`, which reasoning
+        # models reject outright (HTTP 400 `unsupported_parameter`). The first-
+        # party `@ai-sdk/openai` package knows to send `max_completion_tokens`
+        # instead. opencode builds the request, so this is the only lever we
+        # have over it. Override with extra_args={"opencode_npm": "..."}.
+        reasoning = bool(overrides.get("reasoning", _is_reasoning_model(model_id)))
+        npm = str(
+            overrides.get("opencode_npm")
+            or ("@ai-sdk/openai" if reasoning else "@ai-sdk/openai-compatible")
+        )
         payload = {
             "$schema": "https://opencode.ai/config.json",
             "provider": {
                 _OPENCODE_GENERATED_PROVIDER_NAME: {
-                    "npm": "@ai-sdk/openai-compatible",
+                    "npm": npm,
                     "name": f"OpenSweep-managed ({provider.label})",
-                    "options": {"baseURL": proxied_base_url},
+                    "options": options,
                     "models": {model_id: {}},
                 },
             },
@@ -567,7 +587,15 @@ async def _run_http(
     # 8192 gives them ~2-3 KB of thinking *plus* a JSON answer. Override per
     # provider via extra_args={"max_tokens": …}.
     max_tokens = int(overrides.pop("max_tokens", 8192))
-    temperature = float(overrides.pop("temperature", 0.2))
+    # Reasoning models reject any non-default temperature (Azure answers HTTP
+    # 400 `unsupported_value`), so we omit it for them unless extra_args names
+    # one explicitly — an override is the operator opting into the failure.
+    # Azure deployment names are operator-chosen, so the name heuristic can miss
+    # (a gpt-5 deployment called "gambit-prod"). extra_args={"reasoning": true}
+    # forces it; {"reasoning": false} opts a false-positive back out.
+    reasoning = bool(overrides.pop("reasoning", _is_reasoning_model(provider.model or "")))
+    raw_temperature = overrides.pop("temperature", None if reasoning else 0.2)
+    temperature = None if raw_temperature is None else float(raw_temperature)
     stream = bool(overrides.pop("stream", True))
     suppress_thinking = bool(overrides.pop("suppress_thinking", True))
 
@@ -587,9 +615,14 @@ async def _run_http(
             {"role": "user", "content": instruction},
         ],
         "stream": stream,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
     }
+    # Reasoning models spend the budget on hidden thinking tokens, so the API
+    # renamed the cap: `max_tokens` is refused outright (HTTP 400
+    # `unsupported_parameter`) in favour of `max_completion_tokens`.
+    token_param = "max_completion_tokens" if reasoning else "max_tokens"
+    payload[token_param] = max_tokens
+    if temperature is not None:
+        payload["temperature"] = temperature
     # Anything else in extra_args is passed through verbatim (eg. {"top_p": 0.9}).
     payload.update(overrides)
 
@@ -599,8 +632,11 @@ async def _run_http(
         headers["Authorization"] = f"Bearer {api_key}"
 
     inv.transport = "http"
+    # `token_param` (not a hardcoded "max_tokens") so the trace names the cap as
+    # it went on the wire — otherwise it misleads whoever reads it to diagnose a
+    # 400 from the provider.
     inv.command_excerpt = (
-        f"POST {url} model={provider.model or '-'} max_tokens={max_tokens} "
+        f"POST {url} model={provider.model or '-'} {token_param}={max_tokens} "
         f"stream={'on' if stream else 'off'}"
     )
     # Mirror rendered prompts back onto the invocation in case the caller wants
@@ -703,6 +739,22 @@ def _parse_extra_args(raw: str) -> dict:
         return {}
 
 
+_REASONING_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+
+
+def _is_reasoning_model(model: str) -> bool:
+    """Heuristic — OpenAI reasoning families constrain the sampling params:
+    they take `max_completion_tokens` (never `max_tokens`) and only the default
+    temperature. Both are hard HTTP 400s on Azure, not silent ignores.
+
+    Matched loosely because the value may be an Azure *deployment* name rather
+    than a model id (`gpt-5-mini-gambit`). Override per-provider with
+    extra_args={"reasoning": true|false}.
+    """
+    m = (model or "").lower().removeprefix("openai/")
+    return any(m == p or m.startswith(p + "-") for p in _REASONING_PREFIXES)
+
+
 def _looks_like_thinking_model(model: str) -> bool:
     """Heuristic — Qwen3/Qwen3.x families emit chain-of-thought unless told not to.
 
@@ -722,7 +774,7 @@ def _resolve_api_key(provider: LLMProvider) -> str:
     secret = provider_secret(provider)
     if secret:
         return secret
-    env = (provider.api_key_env or "").strip()
+    env = (getattr(provider, "api_key_env", "") or "").strip()
     if env:
         return os.environ.get(env, "")
     return ""

@@ -77,9 +77,10 @@ _LENSES: dict[str, dict[str, Any]] = {
             "Evidence must include a concrete exploit scenario: who the attacker is,\n"
             "what they send or do, and what they gain — if you cannot sketch an attack\n"
             "path, it is not a finding. Do NOT file denial-of-service, missing rate\n"
-            "limiting, \"lack of hardening\" without an exploit, or attacks requiring\n"
-            "control of the environment (env vars, CLI flags, local config) — those\n"
-            "are trusted inputs. \"Checked, nothing found\" is a valid verdict."
+            "limiting, \"lack of hardening\" without an exploit, issues confined to\n"
+            "test files or docs, or attacks requiring control of the environment\n"
+            "(env vars, CLI flags, local config) — those are trusted inputs.\n"
+            "\"Checked, nothing found\" is a valid verdict."
         ),
     },
     "simplification": {
@@ -211,6 +212,8 @@ _LENSES: dict[str, dict[str, Any]] = {
         ),
     },
     # ── Global lenses — whole-repo sweeps, dispatched as their own agents ──
+    # Each global lens body describes the same sweep as its seed_variants.py
+    # twin (same slug); keep the two in sync when editing either.
     "architecture-review": {
         "title": "Architecture review",
         "tags": ["audit", "architecture", "global"],
@@ -220,8 +223,10 @@ _LENSES: dict[str, dict[str, Any]] = {
             "Whole-repo architecture audit — judge the shape of the system, not one\n"
             "area.\n"
             "\n"
-            "First check open findings tagged escalate:architecture-review: verify\n"
-            "each against the current code and expand or dismiss it with evidence.\n"
+            "First check open findings tagged escalate:architecture-review — area\n"
+            "runs filed these when they noticed cross-cutting problems outside\n"
+            "their scope, and this sweep is where they get resolved. Verify each\n"
+            "against the current code and expand or dismiss it with evidence.\n"
             "\n"
             "Then sweep for: module boundaries that leak (internals imported across\n"
             "domains), dependency direction violations (lower layers importing\n"
@@ -243,8 +248,10 @@ _LENSES: dict[str, dict[str, Any]] = {
             "Whole-repo promise-vs-reality audit: compare what the product, docs,\n"
             "and README claim against what the code implements.\n"
             "\n"
-            "First check open findings tagged escalate:implementation-gaps: verify\n"
-            "each against the current code and expand or dismiss it with evidence.\n"
+            "First check open findings tagged escalate:implementation-gaps — area\n"
+            "runs filed these when they noticed cross-cutting problems outside\n"
+            "their scope, and this sweep is where they get resolved. Verify each\n"
+            "against the current code and expand or dismiss it with evidence.\n"
             "\n"
             "Then sweep for: advertised features that are stubs or TODO paths, dead\n"
             "feature flags nothing enables, flows that dead-end halfway (a UI\n"

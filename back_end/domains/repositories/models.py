@@ -43,6 +43,20 @@ class Repository(AsyncStructuredNode):
     github_connection_status = StringProperty()  # connected | disconnected | error
     last_synced_at = DateTimeProperty()
 
+    # Freshness cursor: the last default-branch commit whose changed paths were
+    # fed through mark_docs_stale / mark_areas_stale. Webhooks are the realtime
+    # path; the reconcile tick compares this against the live head and replays
+    # the gap, so a dropped delivery self-heals instead of silently leaving
+    # every area "fresh" forever. Empty on a newly registered repo — it adopts
+    # the current head WITHOUT marking anything stale (a new repo is not
+    # retroactively stale for all of its history).
+    freshness_synced_sha = StringProperty(default="")
+    freshness_synced_at = DateTimeProperty()
+    # Non-empty when the last freshness pass could not see everything (compare
+    # truncated at 300 files, provider unavailable, per-node save errors). The
+    # UI must show this instead of a confident "all fresh".
+    freshness_degraded_reason = StringProperty(default="")
+
     metadata = JSONProperty(default={})
 
     # Per-repo workflow config: pipeline stage → {agent_uid, auto}.

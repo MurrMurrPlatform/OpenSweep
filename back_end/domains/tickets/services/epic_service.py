@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from domains.tickets.models import TICKET_PRIORITIES, EpicProposal, Ticket
 from domains.tickets.schemas import EpicProposalDTO, EpicProposalStatus
 from domains.tickets.services.epics.schemas import (
+    AGENT_AXES,
     MAX_RATIONALE_CHARS,
     EpicAxis,
 )
@@ -23,6 +24,11 @@ from domains.tickets.services.ticket_service import TicketService
 from infrastructure.audit import write_audit
 
 EPIC_AXES = {a.value for a in EpicAxis}
+
+#: The axes an agent-authored proposal may claim. `EpicAxis` members are
+#: compared by value everywhere here — a StrEnum hashes by NAME, so a set of
+#: members would never contain the raw string an agent sends.
+AGENT_AXIS_VALUES = {a.value for a in AGENT_AXES}
 
 
 def proposal_to_dto(
@@ -127,7 +133,12 @@ class EpicService:
             if set(p.member_ticket_uids or []) == set(member_uids):
                 return p, True
 
-        axis = axis if axis in EPIC_AXES else "root-cause"
+        # An agent may only claim an axis a model is actually needed for. One
+        # stamping `axis='area'` would render as a computed grouping on the
+        # review card — and a reviewer's whole reason for trusting those is
+        # that no model was involved in making them.
+        allowed = AGENT_AXIS_VALUES if origin == "agent" else EPIC_AXES
+        axis = axis if axis in allowed else EpicAxis.ROOT_CAUSE.value
         p = EpicProposal(
             uid=uuid4().hex,
             repository_uid=repository_uid,

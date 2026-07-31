@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 from config import settings
 from infrastructure.git_auth import git_auth_extraheader
@@ -166,6 +167,95 @@ async def validate_sandbox_changes(
     )
 
 
+@dataclass(frozen=True)
+class WriteAccess:
+    """Whether this repo's credential can deliver work, and why not.
+
+    ONE source of truth for two consumers that must never disagree: the
+    dispatch preflight (which refuses to spend a run) and the repository
+    connection banner (which offers to fix it). If the banner said "connected"
+    while dispatch refused, neither would be believable.
+    """
+
+    state: str  # "ok" | "disconnected" | "denied" | "unknown"
+    credential: str  # human description of the credential that was tried
+    reason: str = ""  # "" unless state blocks delivery
+
+    @property
+    def blocks_delivery(self) -> bool:
+        return self.state in ("disconnected", "denied")
+
+
+async def evaluate_write_access(repo: Any) -> WriteAccess:
+    """Ask — before any work is spent — whether we could deliver.
+
+    Read access is enough to clone, so without this the first time write
+    permission is exercised is the push itself, after an agent has already
+    burned a run.
+
+    "unknown" is a first-class answer and never blocks. A preflight that
+    blocked on a timeout or an unrecognized status would turn a GitHub blip
+    into a refusal to work, which is worse than the late failure it replaces.
+    """
+    from infrastructure.git_providers import get_git_credentials, get_provider_client
+    from infrastructure.github_app import describe_repo_credential
+
+    owner = getattr(repo, "github_owner", "") or ""
+    name = getattr(repo, "github_repo", "") or ""
+    if not owner or not name:
+        return WriteAccess(state="unknown", credential="no GitHub coordinates")
+
+    credential = await describe_repo_credential(repo)
+
+    # No credential at all is the other way delivery fails after the fact:
+    # `push_work_branch` refuses on an empty token, but only once the work is
+    # done. Rotating a PAT reaches this state silently, because deleting a
+    # connection leaves every repo's `git_connection_uid` pointing at it.
+    if not await get_git_credentials(repo):
+        logger.warning(
+            f"write preflight: no usable credential for {owner}/{name} — {credential}",
+            extra={"tag": "write_gate"},
+        )
+        return WriteAccess(
+            state="disconnected",
+            credential=credential,
+            reason=(
+                f"No usable GitHub credential for {owner}/{name}: {credential}. "
+                "Link this repository to a connected token or GitHub App installation, "
+                "then retry."
+            ),
+        )
+
+    client = get_provider_client(repo)
+    probe = getattr(client, "check_write_access", None)
+    if probe is None:  # provider without the capability — old behavior
+        return WriteAccess(state="unknown", credential=credential)
+    if await probe(owner, name) is not False:
+        return WriteAccess(state="ok", credential=credential)
+
+    logger.warning(
+        f"write preflight denied for {owner}/{name} using {credential}",
+        extra={"tag": "write_gate"},
+    )
+    return WriteAccess(
+        state="denied",
+        credential=credential,
+        reason=(
+            f"{credential} cannot push to {owner}/{name}. Grant it write access "
+            "(for a fine-grained token: Contents → Read and write, plus Pull "
+            "requests → Read and write so the draft PR can be opened), then retry. "
+            "Note that the repository's own permissions page can show you as an "
+            "admin while the token itself is read-only — check the token, not the repo."
+        ),
+    )
+
+
+async def write_access_denial_reason(repo: Any) -> str:
+    """"" when delivery may proceed, else why not — the dispatch-gate view of
+    `evaluate_write_access`."""
+    return (await evaluate_write_access(repo)).reason
+
+
 async def push_work_branch(
     sandbox_path: str, *, work_branch: str, token: str, default_branch: str = "main"
 ) -> None:
@@ -199,6 +289,30 @@ async def push_work_branch(
     )
 
 
+def _reportable_argv(args: tuple[str, ...]) -> list[str]:
+    """`args` minus the auth plumbing, for error messages.
+
+    Dropping only the `http.extraHeader=…` value left its `-c` flag dangling,
+    so failures read `git -c push origin <branch>` — which looks like a
+    malformed command and sends you looking in the wrong place. The flag and
+    its value are one unit; drop both.
+    """
+    out: list[str] = []
+    skip_next = False
+    for i, arg in enumerate(args):
+        if skip_next:
+            skip_next = False
+            continue
+        following = args[i + 1] if i + 1 < len(args) else ""
+        if arg == "-c" and following.startswith("http.extraHeader"):
+            skip_next = True
+            continue
+        if arg.startswith("http.extraHeader"):
+            continue
+        out.append(arg)
+    return out
+
+
 async def _git(sandbox_path: str, *args: str, redact_token: str = "") -> str:
     """Run git in the sandbox, return stdout. Errors are token-redacted for
     whichever credential was used (PAT and/or installation token)."""
@@ -209,7 +323,7 @@ async def _git(sandbox_path: str, *args: str, redact_token: str = "") -> str:
     out, err = await proc.communicate()
     if proc.returncode != 0:
         message = (
-            f"git {' '.join(a for a in args if not a.startswith('http.extraHeader'))} "
+            f"git {' '.join(_reportable_argv(args))} "
             f"failed: {err.decode(errors='replace')[:300]}"
         )
         for secret in (redact_token, settings.GITHUB_TOKEN):

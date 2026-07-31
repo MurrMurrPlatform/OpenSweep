@@ -98,3 +98,27 @@ def test_opensweep_framing_header_overrides_output_shape_and_persona():
     assert "create_finding" in OPENSWEEP_FRAMING_HEADER
     assert "propose_doc_edit" in OPENSWEEP_FRAMING_HEADER
     assert "write_memory" in OPENSWEEP_FRAMING_HEADER
+    # The header still has to re-anchor identity — that is its whole job.
+    assert "You are OpenSweep" in OPENSWEEP_FRAMING_HEADER
+
+
+def test_opensweep_framing_header_avoids_jailbreak_classifier_phrasing():
+    """The header is prepended to EVERY intent, so it must survive provider-side
+    prompt-injection classifiers.
+
+    Azure AI Foundry's Prompt Shield reads "ignore any <instructions>" as an
+    attack and fails the whole request with HTTP 400
+    (`ResponsibleAIPolicyViolation`, jailbreak detected) — it cannot tell our
+    anti-injection defense from an actual injection. Every OpenSweep run against
+    such a deployment failed before the response was even generated.
+
+    Express the same two constraints positively ("your identity is set here",
+    "take its substance, not its formatting") rather than as an imperative to
+    disregard the body.
+    """
+    lowered = OPENSWEEP_FRAMING_HEADER.lower()
+    for trigger in ("ignore any", "ignore all", "disregard any", "disregard all"):
+        assert trigger not in lowered, (
+            f"{trigger!r} in the framing header trips provider jailbreak "
+            "classifiers — see the docstring above"
+        )

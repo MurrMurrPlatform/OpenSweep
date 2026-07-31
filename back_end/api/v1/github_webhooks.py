@@ -533,22 +533,25 @@ async def _delivery_follow_through(
                 extra={"tag": "delivery"},
             )
 
-    # Webhook-driven doc freshness (§9): push events carry the changed paths,
-    # so mark the Doc pages watching them stale (memory staleness + Checked
-    # drift are computed against code_changed_at at read time) and auto-run any
-    # on-event Investigations whose autonomy allows it. The write-run
-    # finalize does the same off its own changed paths, so this shared helper
-    # is idempotent across both. Best-effort — never fails the webhook.
+    # Webhook-driven freshness (§9): a push to the DEFAULT BRANCH marks the
+    # Doc pages and Areas covering its changed paths stale, and auto-runs any
+    # on-event Investigations whose autonomy allows it. Other branches are
+    # ignored — work on a feature branch is not yet true of the codebase, so
+    # marking areas stale from it would make the badge mean "someone pushed
+    # something somewhere". The changed paths come from the compare range, not
+    # the payload's commit array (capped at 20, merge commits list no files).
+    # The write-run finalize does the same off its own changed paths, so the
+    # underlying helper is idempotent across both. Never fails the webhook.
     if event == "push":
-        changed_paths: list[str] = []
-        for commit in payload.get("commits") or []:
-            for key in ("added", "modified", "removed"):
-                changed_paths.extend(str(p) for p in (commit.get(key) or []))
-        from domains.agents.services.event_triggers import refresh_docs_for_change
+        from domains.repositories.services.freshness_sync import sync_push_freshness
 
-        await refresh_docs_for_change(
-            repository_uid=repo.uid, changed_paths=changed_paths, source="webhook"
-        )
+        try:
+            await sync_push_freshness(repo, payload)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                f"freshness sync failed for {repo.slug}: {type(exc).__name__}: {exc}",
+                extra={"tag": "freshness"},
+            )
 
     # Auto-review (per-repo workflow config, stage `review`): dispatch a
     # review run when a PR opens or its head moves. Failures are logged,

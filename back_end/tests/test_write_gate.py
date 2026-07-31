@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from domains.delivery.models import DEFAULT_PATH_DENYLIST
 from domains.delivery.services.write_gate import (
     WriteGateResult,
+    _reportable_argv,
     denylist_violations,
     effective_denylist,
     evaluate_changes,
@@ -147,3 +148,24 @@ def test_git_auth_header_is_basic_x_access_token():
     b64 = header.rsplit(" ", 1)[1]
     assert base64.b64decode(b64).decode() == "x-access-token:ghs_sekret"
     assert "bearer" not in header
+
+
+# ── Failure-message argv redaction ───────────────────────────────────────────
+
+
+def test_auth_flag_and_value_are_dropped_together():
+    """Stripping only the `http.extraHeader=…` value left its `-c` behind, so a
+    failed push reported `git -c push origin <branch>` — which reads as a
+    malformed command and sends the reader hunting for a bug in the argv
+    instead of at the 403 underneath."""
+    argv = ("-c", "http.extraHeader=AUTHORIZATION: basic abc", "push", "origin", "br")
+    assert _reportable_argv(argv) == ["push", "origin", "br"]
+
+
+def test_unrelated_config_flags_survive():
+    argv = ("-c", "user.name=OpenSweep", "commit", "-m", "x")
+    assert _reportable_argv(argv) == ["-c", "user.name=OpenSweep", "commit", "-m", "x"]
+
+
+def test_trailing_dash_c_does_not_crash():
+    assert _reportable_argv(("push", "-c")) == ["push", "-c"]

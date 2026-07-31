@@ -47,8 +47,14 @@ import TicketStatusPipeline from '@/components/tickets/TicketStatusPipeline.vue'
 import TicketTransitionButtons from '@/components/tickets/TicketTransitionButtons.vue'
 import CommentThread from '@/components/comments/CommentThread.vue'
 import DiscussionChip from '@/components/runs/DiscussionChip.vue'
-import { STATUS_LABELS, priorityVariant, statusVariant } from '@/components/tickets/ticketMeta'
-import type { TicketDTO } from '@/types/api'
+import {
+  STATUS_LABELS,
+  priorityVariant,
+  statusVariant,
+  threadPhaseLabel,
+  threadPhaseVariant,
+} from '@/components/tickets/ticketMeta'
+import type { ThreadDTO, TicketDTO } from '@/types/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -179,15 +185,8 @@ function fmt(ts?: string | null): string {
 // ── Thread — the unified dev flow's conversation per ticket ─────────────────
 
 const threadStore = useThreadStore()
-const activeThreadUid = ref<string | null>(null)
-const activeThreadPhase = ref<string | null>(null)
+const activeThread = ref<ThreadDTO | null>(null)
 const startingThread = ref(false)
-
-const THREAD_PHASE_LABELS: Record<string, string> = {
-  refining: 'Planning',
-  implementing: 'Implementing',
-  in_review: 'In review',
-}
 
 watch(
   ticket,
@@ -195,12 +194,10 @@ watch(
     if (!t) return
     try {
       const existing = await threadStore.listThreads({ subject_ticket_uid: t.uid })
-      const active = existing.find((x) => x.phase !== 'done' && x.phase !== 'abandoned')
-      activeThreadUid.value = active?.uid ?? null
-      activeThreadPhase.value = active?.phase ?? null
+      activeThread.value =
+        existing.find((x) => x.phase !== 'done' && x.phase !== 'abandoned') ?? null
     } catch {
-      activeThreadUid.value = null
-      activeThreadPhase.value = null
+      activeThread.value = null
     }
   },
   { immediate: true },
@@ -211,7 +208,7 @@ async function startThread() {
   startingThread.value = true
   try {
     const targetUid =
-      activeThreadUid.value ?? (await threadStore.createThread(ticket.value.uid)).uid
+      activeThread.value?.uid ?? (await threadStore.createThread(ticket.value.uid)).uid
     void router.push({ name: 'thread-detail', params: { uid: targetUid } })
   } catch (e) {
     const msg = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
@@ -247,12 +244,21 @@ async function startThread() {
            unified header — this bar is ONLY actions. -->
       <ActionMenuBar>
         <!-- The thread carries refine→plan→implement as ONE conversation;
-             once it exists the Thread tab is the way in. Refine stays as a
+             once it exists, "Open thread" is the way in. Refine stays as a
              lighter one-shot that sharpens the ticket without starting it. -->
-        <Button v-if="!activeThreadUid" size="sm" :loading="startingThread" @click="startThread">
+        <Button
+          v-if="!activeThread"
+          size="sm"
+          :disabled="ticket.archived"
+          :loading="startingThread"
+          @click="startThread"
+        >
           <MessagesSquare /> Start thread
         </Button>
-        <TicketRefineButton :ticket="ticket" />
+        <Button v-else size="sm" variant="outline" :loading="startingThread" @click="startThread">
+          <MessagesSquare /> Open thread
+        </Button>
+        <TicketRefineButton v-if="!ticket.archived" :ticket="ticket" />
         <Button variant="ghost" size="sm" :loading="discussing" @click="discussInRun">
           <MessagesSquare /> Discuss
         </Button>
@@ -261,6 +267,26 @@ async function startThread() {
         </Button>
         <TicketTransitionButtons :ticket="ticket" @updated="onUpdated" @deleted="onDeleted" />
         <template #trailing>
+          <!-- What does this ticket need from me? Questions first — they
+               block the agent — then the thread's phase. -->
+          <RouterLink
+            v-if="activeThread && activeThread.questions_open > 0"
+            :to="{ name: 'thread-detail', params: { uid: activeThread.uid } }"
+            title="The agent is blocked on your answers — open the thread to reply"
+          >
+            <Badge variant="warn" class="px-1.5 text-[10px] hover:bg-accent">
+              {{ activeThread.questions_open }} question{{ activeThread.questions_open === 1 ? '' : 's' }} waiting
+            </Badge>
+          </RouterLink>
+          <RouterLink
+            v-if="activeThread"
+            :to="{ name: 'thread-detail', params: { uid: activeThread.uid } }"
+            title="Open the thread"
+          >
+            <Badge :variant="threadPhaseVariant(activeThread.phase)" class="px-1.5 text-[10px] hover:bg-accent">
+              <MessagesSquare class="size-3" /> {{ threadPhaseLabel(activeThread.phase) }}
+            </Badge>
+          </RouterLink>
           <Badge v-for="label in ticket.labels" :key="label" variant="secondary" class="px-1.5 text-[10px]">{{ label }}</Badge>
           <Badge v-if="ticket.size" variant="outline" class="px-1.5 text-[10px]">{{ ticket.size }}</Badge>
           <DiscussionChip v-for="chat in discussions" :key="chat.uid" :run="chat" />
@@ -364,14 +390,24 @@ async function startThread() {
             </CardHeader>
             <CardContent class="p-6 pt-4">
               <div v-if="children.length === 0" class="text-sm text-muted-foreground">
-                No subtickets. Split large tickets so each child converges on its own PR.
+                No subtickets. Group related tickets here and the epic ships them
+                all in one run and one PR.
               </div>
               <div v-else class="space-y-2">
+                <p class="pb-1 text-xs text-muted-foreground">
+                  Approved and implemented as one — subtickets have no gate of their own,
+                  and the merged PR closes every one of them.
+                </p>
                 <div v-for="child in children" :key="child.uid" class="relative">
                   <Badge variant="outline" class="absolute right-3 top-3 z-10 px-1.5 text-[10px]">
                     {{ STATUS_LABELS[child.status] }}
                   </Badge>
-                  <TicketCard :ticket="child" @updated="onChildUpdated" @deleted="onChildDeleted" />
+                  <TicketCard
+                    :ticket="child"
+                    nested-in-epic
+                    @updated="onChildUpdated"
+                    @deleted="onChildDeleted"
+                  />
                 </div>
               </div>
             </CardContent>

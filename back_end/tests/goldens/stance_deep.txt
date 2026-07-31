@@ -8,7 +8,8 @@ This run has ~60 minutes of wall clock, ~200 tool turns, ~3 continuation passes.
 - Never end the run without `complete_run` — an unfinished run gets
   resumed and told to continue.
 
-Stance: DEEP — exhaustive. Work lens by lens: correctness, security,
+Stance: DEEP — exhaustive. Work lens by lens — the run's assigned lens
+checklist when the intent carries one, otherwise correctness, security,
 API/compatibility, performance, tests, maintainability. Where your
 executor supports subagents, delegate one lens per subagent and merge
 their results. No hard finding cap; file every issue you can defend

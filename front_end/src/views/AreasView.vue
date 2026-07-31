@@ -2,30 +2,39 @@
 import { computed, ref, onMounted, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import {
+  CalendarClock,
   Check,
   ChevronDown,
   ChevronRight,
   FolderTree,
   HelpCircle,
   Map as MapIcon,
+  Radar,
+  Search,
   TriangleAlert,
   X,
 } from 'lucide-vue-next'
 import { useAreaStore } from '@/stores/areaStore'
 import { useCampaignStore } from '@/stores/campaignStore'
+import { useDocStore } from '@/stores/docStore'
+import { useAnalysisStore, type AnalysisDTO } from '@/stores/analysisStore'
+import { useScheduledAgentStore } from '@/stores/scheduledAgentStore'
 import { useCurrentRepo } from '@/composables/useCurrentRepo'
 import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
+import { daysAgo } from '@/lib/utils'
 import { AREA_KIND_HELP, areaStaleTitle } from '@/lib/areas'
 import { buildTreeRows } from '@/lib/treeRows'
 import type { TreeRow } from '@/lib/treeRows'
 import AreaEditReviewCard from '@/components/areas/AreaEditReviewCard.vue'
+import AreaHealthCells from '@/components/areas/AreaHealthCells.vue'
+import CronScheduleInput from '@/components/agents/CronScheduleInput.vue'
 import { MarkdownView } from '@/components/ui/markdown'
 import { PageHeader } from '@/components/ui/page-header'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
+import { Badge, type BadgeVariants } from '@/components/ui/badge'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -36,39 +45,87 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
+import { Textarea } from '@/components/ui/textarea'
 import { Skeleton } from '@/components/ui/skeleton'
+import { AnimatedNumber } from '@/components/ui/animated-number'
 import { EmptyState } from '@/components/ui/empty-state'
 import { ErrorState } from '@/components/ui/error-state'
-import type { AreaDTO, AreaEditDTO, CampaignAreasPreview } from '@/types/api'
+import type {
+  AreaDTO,
+  AreaEditDTO,
+  AreaHealthRowDTO,
+  AreasHealthDTO,
+  Autonomy,
+  CampaignAreasPreview,
+  ScheduledAgentDTO,
+} from '@/types/api'
 
 const areaStore = useAreaStore()
 const campaignStore = useCampaignStore()
+const docs = useDocStore()
+const analyses = useAnalysisStore()
+const scheduledAgents = useScheduledAgentStore()
 const toast = useToast()
-const { uid: repoUid } = useCurrentRepo()
+const { uid: repoUid, slug: repoSlug } = useCurrentRepo()
 
 const loading = ref(true)
 const error = ref<string | null>(null)
+const latestAnalysis = ref<AnalysisDTO | null>(null)
 
 // ── Load ─────────────────────────────────────────────────────────────────────
 
-/** Best-effort partition health (campaign-areas preview) — null hides the strip. */
+/** Best-effort partition drift (campaign-areas preview) — null hides the strip. */
 const preview = ref<CampaignAreasPreview | null>(null)
+
+/** Review / docs / audit state per area — the folded-in Health page. */
+const health = ref<AreasHealthDTO | null>(null)
 
 async function reload() {
   if (!repoUid.value) return
   loading.value = true
   error.value = null
-  // The health strip is best-effort: any preview failure just hides it.
+  // The drift strip is best-effort: any preview failure just hides it.
   preview.value = null
   void campaignStore
     .fetchAreas(repoUid.value)
     .then((p) => (preview.value = p))
     .catch(() => (preview.value = null))
+  // The latest deep-scan report link is decorative — never block the board.
+  void analyses
+    .latestForRepo(repoUid.value)
+    .then((a) => (latestAnalysis.value = a))
+    .catch(() => (latestAnalysis.value = null))
+  void scheduledAgents
+    .fetchAll(repoUid.value)
+    .then((all) => {
+      auditScheduleBinding.value = all.find((s) => s.agent_key === 'audit-stale') ?? null
+    })
+    .catch(() => (auditScheduleBinding.value = null))
   try {
-    await Promise.all([
+    const [, , h] = await Promise.all([
       areaStore.fetchAreas(repoUid.value),
       areaStore.fetchEdits(repoUid.value, 'pending'),
+      areaStore.fetchHealth(repoUid.value),
     ])
+    health.value = h
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -111,7 +168,234 @@ async function mapAreas() {
   }
 }
 
-// ── Health strip (partition drift, from the campaign-areas preview) ──────────
+// ── Upkeep state per area (review / docs / audit) ────────────────────────────
+
+const healthByUid = computed<Map<string, AreaHealthRowDTO>>(
+  () => new Map((health.value?.rows ?? []).map((r) => [r.uid, r])),
+)
+
+function healthFor(uid: string): AreaHealthRowDTO | null {
+  return healthByUid.value.get(uid) ?? null
+}
+
+/** Stale leaves under a key — what a grouping row reports instead of its own
+ *  staleness (a grouping owns no paths, so it can never itself be stale). */
+function staleUnder(key: string): number {
+  let total = 0
+  for (const r of health.value?.rows ?? []) {
+    if (r.stale && r.key.startsWith(key + '/')) total++
+  }
+  return total
+}
+
+function outcomeVariant(outcome: string): BadgeVariants['variant'] {
+  if (outcome === 'clean') return 'success'
+  if (outcome === 'findings') return 'info'
+  if (outcome === 'failed') return 'destructive'
+  return 'secondary'
+}
+
+const summary = computed(
+  () => health.value?.summary ?? { total: 0, stale: 0, never_audited: 0, fresh: 0 },
+)
+
+/** Confirm-current: clear stale after eyeballing an area, without inventing a
+ *  no-op edit just to move the badge. */
+const confirmingUid = ref('')
+
+async function confirmCurrent(area: AreaDTO) {
+  if (confirmingUid.value) return
+  confirmingUid.value = area.uid
+  try {
+    await areaStore.confirmCurrent(area.uid)
+    if (repoUid.value) health.value = await areaStore.fetchHealth(repoUid.value)
+    toast.success('Marked reviewed', `${area.key} is current as of now`)
+  } catch (e: unknown) {
+    const msg = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
+    toast.error('Couldn’t confirm', msg)
+  } finally {
+    confirmingUid.value = ''
+  }
+}
+
+// ── Audit dispatch (staleness-driven or whole repo) ──────────────────────────
+
+const auditOpen = ref(false)
+const auditing = ref(false)
+/** true = pick the stalest / never-checked pages automatically. */
+const auditAutoSelect = ref(true)
+const auditLimit = ref('3')
+const auditMaxFindings = ref('')
+const auditIntent = ref('')
+
+function openAudit() {
+  auditAutoSelect.value = true
+  auditOpen.value = true
+}
+
+async function dispatchAudit() {
+  if (!repoUid.value || auditing.value) return
+  auditing.value = true
+  try {
+    const budget = Number.parseInt(auditMaxFindings.value, 10)
+    const limit = Number.parseInt(auditLimit.value, 10)
+    const result = await docs.audit(repoUid.value, [], {
+      auto_select: auditAutoSelect.value,
+      limit: Number.isFinite(limit) && limit > 0 ? limit : 3,
+      custom_intent: auditIntent.value.trim() || undefined,
+      max_findings: Number.isFinite(budget) && budget > 0 ? budget : undefined,
+    })
+    auditOpen.value = false
+    auditIntent.value = ''
+    const picked = result.selected.length
+      ? `picked: ${result.selected.map((s) => s.slug).join(', ')}`
+      : null
+    if (result.runs_dispatched.length === 0 && result.errors.length === 0) {
+      toast.success('Nothing to audit', result.summary)
+    } else if (result.errors.length) {
+      toast.error('Audit partially dispatched', result.errors.join(' · '))
+    } else {
+      toast.success(result.summary, picked ?? undefined)
+    }
+  } catch (e) {
+    const msg = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
+    toast.error('Couldn’t dispatch audit', msg)
+  } finally {
+    auditing.value = false
+  }
+}
+
+// ── Deep scan (one long whole-repo sweep: plan → sweep → synthesize) ─────────
+
+const deepScanOpen = ref(false)
+const deepScanning = ref(false)
+const deepScanIntent = ref('')
+const deepScanMaxFindings = ref('')
+
+async function dispatchDeepScan() {
+  if (!repoUid.value || deepScanning.value) return
+  deepScanning.value = true
+  try {
+    const budget = Number.parseInt(deepScanMaxFindings.value, 10)
+    const result = await docs.deepScan(repoUid.value, {
+      custom_intent: deepScanIntent.value.trim() || undefined,
+      max_findings: Number.isFinite(budget) && budget > 0 ? budget : undefined,
+    })
+    deepScanOpen.value = false
+    deepScanIntent.value = ''
+    deepScanMaxFindings.value = ''
+    if (result.errors.length) {
+      toast.error('Deep scan not dispatched', result.errors.join(' · '))
+    } else {
+      toast.success(result.summary, 'One long run — findings land as it works through the repo.')
+    }
+  } catch (e) {
+    const msg = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
+    toast.error('Couldn’t start deep scan', msg)
+  } finally {
+    deepScanning.value = false
+  }
+}
+
+// ── Scheduled audits — edits the repo's seeded "Audit stale code" binding ────
+
+const scheduleOpen = ref(false)
+const scheduleLoading = ref(false)
+const savingSchedule = ref(false)
+const auditScheduleBinding = ref<ScheduledAgentDTO | null>(null)
+
+type ScheduleMode = 'manual' | 'cron'
+const scheduleMode = ref<ScheduleMode>('manual')
+const cronExpr = ref('')
+const dial = ref<Autonomy>('ask-before-run')
+const schedulePagesPerTick = ref('3')
+
+const SCHEDULE_OPTIONS = [
+  { label: 'Off — audit only when I click', value: 'manual' },
+  { label: 'On a schedule (cron)', value: 'cron' },
+]
+
+const DIAL_OPTIONS = [
+  { label: 'Disabled — kill switch, never runs', value: 'disabled' },
+  { label: 'Ask before run', value: 'ask-before-run' },
+  { label: 'Auto-run on free (local) compute', value: 'auto-run-cheap' },
+  { label: 'Auto-run on any provider', value: 'auto-run-any' },
+]
+
+const scheduleSummary = computed(() => {
+  const sa = auditScheduleBinding.value
+  if (!sa || !sa.trigger.startsWith('cron:')) return null
+  if (sa.autonomy === 'disabled') return 'scheduled · disabled'
+  return `cron ${sa.trigger.slice('cron:'.length)}`
+})
+
+async function openSchedule() {
+  if (!repoUid.value) return
+  scheduleOpen.value = true
+  scheduleLoading.value = true
+  try {
+    const all = await scheduledAgents.fetchAll(repoUid.value)
+    const sa = all.find((s) => s.agent_key === 'audit-stale') ?? null
+    auditScheduleBinding.value = sa
+    if (sa?.trigger.startsWith('cron:')) {
+      scheduleMode.value = 'cron'
+      cronExpr.value = sa.trigger.slice('cron:'.length)
+    } else {
+      scheduleMode.value = 'manual'
+      cronExpr.value = ''
+    }
+    dial.value = sa?.autonomy ?? 'ask-before-run'
+    const rawLimit = sa?.target?.limit
+    schedulePagesPerTick.value = String(
+      typeof rawLimit === 'number' && rawLimit > 0 ? rawLimit : 3,
+    )
+  } catch (e) {
+    toast.error('Couldn’t load audit schedule', e instanceof Error ? e.message : String(e))
+    scheduleOpen.value = false
+  } finally {
+    scheduleLoading.value = false
+  }
+}
+
+async function saveSchedule() {
+  if (!repoUid.value || savingSchedule.value) return
+  if (scheduleMode.value === 'cron' && !cronExpr.value.trim()) {
+    toast.error('Cron expression required', 'Pick a preset or enter a 5-field crontab.')
+    return
+  }
+  savingSchedule.value = true
+  try {
+    const limit = Number.parseInt(schedulePagesPerTick.value, 10)
+    const payload = {
+      trigger: scheduleMode.value === 'cron' ? `cron:${cronExpr.value.trim()}` : '',
+      autonomy: dial.value,
+      target: { limit: Number.isFinite(limit) && limit > 0 ? limit : 3 },
+    }
+    if (!auditScheduleBinding.value) {
+      // The seeded binding is created on repo registration; if it is missing
+      // the backend seeding hasn't run — surface that instead of guessing.
+      throw new Error('Seeded "Audit stale code" binding not found for this repository')
+    }
+    auditScheduleBinding.value = await scheduledAgents.update(
+      auditScheduleBinding.value.uid,
+      payload,
+    )
+    scheduleOpen.value = false
+    toast.success(
+      scheduleMode.value === 'cron' ? 'Scheduled audits on' : 'Scheduled audits off',
+      scheduleMode.value === 'cron'
+        ? `cron ${cronExpr.value.trim()} · up to ${payload.target.limit} stalest pages per tick`
+        : undefined,
+    )
+  } catch (e) {
+    const msg = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
+    toast.error('Couldn’t save schedule', msg)
+  } finally {
+    savingSchedule.value = false
+  }
+}
+
+// ── Drift strip (partition drift, from the campaign-areas preview) ───────────
 
 const n = (x: number) => x.toLocaleString('en-US')
 
@@ -151,10 +435,13 @@ const featureTreeRows = computed<TreeRow<AreaDTO>[]>(() =>
   buildTreeRows(features.value, (a) => a.key),
 )
 
-/** area_key → file_count, from the preview (best-effort rollups). */
+/** area_key → file_count. The health rollup is authoritative (it sizes every
+ *  area against the tree in one pass); the campaign preview is the fallback
+ *  while health is still loading. */
 const fileCountByKey = computed<Map<string, number | null>>(() => {
   const m = new Map<string, number | null>()
   for (const a of preview.value?.areas ?? []) if (a.area_key) m.set(a.area_key, a.file_count)
+  for (const r of health.value?.rows ?? []) m.set(r.key, r.file_count)
   return m
 })
 
@@ -396,31 +683,212 @@ async function confirmResolveAll() {
   <div class="space-y-4">
     <PageHeader
       title="Areas"
-      subtitle="The reviewed audit partition: path-keyed areas that carry what to check where. Agents propose the map; every change lands here for review."
+      subtitle="The reviewed audit partition: path-keyed areas that carry what to check where, with how current each one is. Stale = code moved under the scope since the last review; it clears on review, not on an audit."
     >
-      <Button
-        v-if="areaStore.areas.length || areaStore.edits.length"
-        size="sm"
-        variant="outline"
-        class="text-destructive hover:text-destructive"
-        :loading="resetting"
-        title="Delete every area and pending edit for this repository."
-        @click="resetOpen = true"
-      >
-        Reset map…
-      </Button>
-      <Button
-        size="sm"
-        :loading="mapping"
-        title="Dispatch one LLM run that walks the repository and proposes the area map. Proposals land below as pending edits."
-        @click="mapAreas"
-      >
-        <MapIcon v-if="!mapping" />
-        Map areas
-      </Button>
+      <div class="flex flex-wrap items-center gap-2">
+        <Button
+          v-if="areaStore.areas.length || areaStore.edits.length"
+          size="sm"
+          variant="outline"
+          class="text-destructive hover:text-destructive"
+          :loading="resetting"
+          title="Delete every area and pending edit for this repository."
+          @click="resetOpen = true"
+        >
+          Reset map…
+        </Button>
+        <Button variant="outline" size="sm" :disabled="!repoUid" @click="openSchedule">
+          <CalendarClock />
+          Scheduled audits
+          <Badge v-if="scheduleSummary" class="ml-1 px-1.5 text-[10px]">{{ scheduleSummary }}</Badge>
+        </Button>
+        <RouterLink
+          v-if="latestAnalysis"
+          :to="{ name: 'analysis-detail', params: { uid: latestAnalysis.uid } }"
+          class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs transition-colors hover:bg-accent"
+          title="Open the latest deep-scan report"
+        >
+          Latest report
+          <Badge v-if="latestAnalysis.health_grade" class="px-1.5 text-[10px]">{{ latestAnalysis.health_grade }}</Badge>
+        </RouterLink>
+        <Button variant="outline" size="sm" :disabled="!repoUid" @click="deepScanOpen = true">
+          <Radar /> Deep scan
+        </Button>
+        <Button variant="outline" size="sm" :disabled="!repoUid" @click="openAudit()">
+          <Search /> Audit
+        </Button>
+        <Button
+          size="sm"
+          :loading="mapping"
+          title="Dispatch one LLM run that walks the repository and proposes the area map. Proposals land below as pending edits."
+          @click="mapAreas"
+        >
+          <MapIcon v-if="!mapping" />
+          Map areas
+        </Button>
+      </div>
     </PageHeader>
 
+    <Dialog v-model:open="deepScanOpen">
+      <DialogContent class="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Deep scan — whole repository</DialogTitle>
+          <DialogDescription>
+            One long run that plans its own scan, then works through the whole codebase area by area — correctness, security, tests, simplifications, performance — filing findings as it goes. Best on a deep-effort provider; only one runs per repo at a time.
+          </DialogDescription>
+        </DialogHeader>
+        <div class="space-y-4">
+          <div class="space-y-1.5">
+            <Label for="deep-budget">Finding budget (optional)</Label>
+            <Input id="deep-budget" v-model="deepScanMaxFindings" type="number" min="1" max="200" placeholder="no cap" />
+            <p class="text-xs text-muted-foreground">
+              Cap total findings for the whole scan, ranked by severity × confidence. Empty = find everything defensible.
+            </p>
+          </div>
+          <div class="space-y-1.5">
+            <Label for="deep-focus">Focus (optional)</Label>
+            <Textarea
+              id="deep-focus"
+              v-model="deepScanIntent"
+              :rows="2"
+              placeholder="e.g. weight the scan toward security and the multi-tenancy boundaries"
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" @click="deepScanOpen = false">Cancel</Button>
+          <Button :loading="deepScanning" @click="dispatchDeepScan">
+            <Radar /> Start deep scan
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog v-model:open="scheduleOpen">
+      <DialogContent class="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Scheduled audits</DialogTitle>
+          <DialogDescription>
+            Automatically audit what most needs a look — never-checked first, then longest-stale. One scoped run per target.
+          </DialogDescription>
+        </DialogHeader>
+        <div v-if="scheduleLoading" class="space-y-3">
+          <Skeleton class="h-9" />
+          <Skeleton class="h-9" />
+        </div>
+        <div v-else class="space-y-4">
+          <div class="space-y-1.5">
+            <Label>Trigger</Label>
+            <Select
+              :model-value="scheduleMode"
+              @update:model-value="scheduleMode = $event as ScheduleMode"
+            >
+              <SelectTrigger class="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem v-for="o in SCHEDULE_OPTIONS" :key="o.value" :value="o.value">
+                  {{ o.label }}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <template v-if="scheduleMode === 'cron'">
+            <div class="space-y-1.5">
+              <Label>Schedule</Label>
+              <CronScheduleInput v-model="cronExpr" />
+            </div>
+            <div class="grid gap-3 sm:grid-cols-2">
+              <div class="space-y-1.5">
+                <Label for="pages-per-tick">Targets per tick</Label>
+                <Input id="pages-per-tick" v-model="schedulePagesPerTick" type="number" min="1" max="20" />
+              </div>
+              <div class="space-y-1.5">
+                <Label>Compute</Label>
+                <Select
+                  :model-value="dial"
+                  @update:model-value="dial = $event as Autonomy"
+                >
+                  <SelectTrigger class="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem v-for="o in DIAL_OPTIONS" :key="o.value" :value="o.value">
+                      {{ o.label }}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <p class="text-xs text-muted-foreground">
+              When everything is fresh, a tick dispatches nothing. “Auto-run on free compute”
+              makes the whole loop cost nothing on a local provider.
+            </p>
+          </template>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" @click="scheduleOpen = false">Cancel</Button>
+          <Button :loading="savingSchedule" :disabled="scheduleLoading" @click="saveSchedule">
+            Save
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog v-model:open="auditOpen">
+      <DialogContent class="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Audit repository</DialogTitle>
+          <DialogDescription>
+            Dispatch scoped audit runs against the code that most needs a look.
+          </DialogDescription>
+        </DialogHeader>
+        <div class="space-y-4">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <p class="text-sm font-medium">Auto-select stale targets</p>
+              <p class="text-xs text-muted-foreground">
+                Pick what most needs a look: never-checked first, then longest-stale.
+                Off = one whole-repository run with no scoping.
+              </p>
+            </div>
+            <Switch v-model="auditAutoSelect" class="mt-0.5 shrink-0" />
+          </div>
+          <div v-if="auditAutoSelect" class="space-y-1.5">
+            <Label for="audit-limit">Targets per audit</Label>
+            <Input id="audit-limit" v-model="auditLimit" type="number" min="1" max="20" placeholder="3" />
+            <p class="text-xs text-muted-foreground">Each selected target gets its own scoped run.</p>
+          </div>
+          <div class="space-y-1.5">
+            <Label for="audit-budget">Finding budget per run</Label>
+            <Input id="audit-budget" v-model="auditMaxFindings" type="number" min="1" max="50" placeholder="no cap" />
+            <p class="text-xs text-muted-foreground">
+              Cap findings per run, ranked by severity × confidence. Empty = find everything defensible.
+            </p>
+          </div>
+          <div class="space-y-1.5">
+            <Label for="audit-focus">Focus (optional)</Label>
+            <Textarea
+              id="audit-focus"
+              v-model="auditIntent"
+              :rows="2"
+              placeholder="e.g. focus on security of the auth flows"
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" @click="auditOpen = false">Cancel</Button>
+          <Button :loading="auditing" @click="dispatchAudit">
+            <Search /> Dispatch audit
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
     <template v-if="loading">
+      <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Skeleton v-for="i in 4" :key="i" class="h-[72px]" />
+      </div>
       <Skeleton class="h-24" />
       <Skeleton class="h-64" />
     </template>
@@ -430,7 +898,48 @@ async function confirmResolveAll() {
     </ErrorState>
 
     <template v-else>
-      <!-- ── Health strip (drift between the map and the tree) ───────────── -->
+      <!-- ── Upkeep tiles, over auditable leaves (groupings own no files) ── -->
+      <section v-if="health && summary.total" class="grid grid-cols-2 gap-3 text-sm lg:grid-cols-4">
+        <Card>
+          <CardContent class="p-3">
+            <div class="text-xs uppercase tracking-wide text-muted-foreground">Areas</div>
+            <div class="mt-1 text-xl font-semibold tabular-nums"><AnimatedNumber :value="summary.total" /></div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent class="p-3">
+            <div class="text-xs uppercase tracking-wide text-muted-foreground">Fresh</div>
+            <div class="mt-1 text-xl font-semibold tabular-nums text-good"><AnimatedNumber :value="summary.fresh" /></div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent class="p-3">
+            <div class="text-xs uppercase tracking-wide text-muted-foreground">Stale</div>
+            <div class="mt-1 text-xl font-semibold tabular-nums text-warn"><AnimatedNumber :value="summary.stale" /></div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent class="p-3">
+            <div class="text-xs uppercase tracking-wide text-muted-foreground">Never audited</div>
+            <div class="mt-1 text-xl font-semibold tabular-nums text-muted-foreground"><AnimatedNumber :value="summary.never_audited" /></div>
+          </CardContent>
+        </Card>
+      </section>
+
+      <!-- Freshness honesty: a board that can't see recent commits must say so
+           rather than render a confident all-fresh green. -->
+      <p
+        v-if="health?.freshness_degraded_reason"
+        class="flex items-center gap-1.5 text-xs text-warn"
+      >
+        <TriangleAlert class="h-3.5 w-3.5 shrink-0" />
+        Staleness may be incomplete — {{ health.freshness_degraded_reason }}
+      </p>
+      <p v-else-if="health?.freshness_synced_at" class="text-xs text-muted-foreground">
+        Staleness current as of {{ daysAgo(health.freshness_synced_at) }} (default branch).
+      </p>
+
+      <!-- ── Drift strip (drift between the map and the tree) ────────────── -->
       <Card v-if="preview && sortedAreas.length">
         <CardContent class="space-y-2 p-4">
           <template v-if="hasDrift">
@@ -579,6 +1088,16 @@ async function confirmResolveAll() {
                   <component :is="collapsedKeys.has(row.key) ? ChevronRight : ChevronDown" class="h-3.5 w-3.5 shrink-0" />
                   <FolderTree class="h-3.5 w-3.5 shrink-0" />
                   <span class="truncate font-mono">{{ row.name }}/</span>
+                  <!-- A grouping owns no paths and so can never itself be
+                       stale; report its children instead of reading clean. -->
+                  <Badge
+                    v-if="staleUnder(row.key) > 0"
+                    variant="warn"
+                    class="ml-1 shrink-0 px-1.5 text-[10px] font-normal"
+                    :title="`${staleUnder(row.key)} area(s) under this group need a review`"
+                  >
+                    {{ staleUnder(row.key) }} stale
+                  </Badge>
                   <span v-if="row.fileTotal != null" class="ml-auto font-normal tabular-nums">
                     {{ n(row.fileTotal) }} files
                   </span>
@@ -642,9 +1161,17 @@ async function confirmResolveAll() {
                         </span>
                       </div>
                     </div>
-                    <span v-if="row.fileTotal != null" class="shrink-0 text-xs tabular-nums text-muted-foreground">
-                      {{ n(row.fileTotal) }} files
-                    </span>
+                    <!-- Every real area row is confirmable: a parent that owns
+                         scope paths can go stale too. Only synthetic group
+                         headers (row.type === 'group') own nothing, and they
+                         never render these cells. -->
+                    <AreaHealthCells
+                      :health="healthFor(row.area.uid)"
+                      :file-total="row.fileTotal"
+                      confirmable
+                      :confirming="confirmingUid === row.area.uid"
+                      @confirm="confirmCurrent(row.area)"
+                    />
                   </RouterLink>
                   <div
                     v-if="expandedSpecs.has(row.area.uid) && row.area.spec"
@@ -741,6 +1268,13 @@ async function confirmResolveAll() {
                       </div>
                       <div class="truncate font-mono text-[10px] text-muted-foreground">{{ row.item.key }}</div>
                     </div>
+                    <AreaHealthCells
+                      :health="healthFor(row.item.uid)"
+                      :file-total="fileCountByKey.get(row.item.key) ?? null"
+                      confirmable
+                      :confirming="confirmingUid === row.item.uid"
+                      @confirm="confirmCurrent(row.item)"
+                    />
                   </RouterLink>
                   <div
                     v-if="expandedSpecs.has(row.item.uid) && row.item.spec"
@@ -780,8 +1314,26 @@ async function confirmResolveAll() {
                   :class="{ 'opacity-60': !a.enabled }"
                 >
                   <span class="shrink-0 font-mono text-xs">{{ a.key }}</span>
-                  <span class="min-w-0 truncate text-xs italic" :title="a.spec">{{ specSummary(a) || 'no reason recorded' }}</span>
+                  <!-- An ignore area whose files moved is exactly the case
+                       where the recorded reason may no longer hold. -->
+                  <span
+                    v-if="a.stale"
+                    class="h-2 w-2 shrink-0 rounded-full bg-amber-500"
+                    :title="areaStaleTitle(a)"
+                  />
+                  <span class="min-w-0 flex-1 truncate text-xs italic" :title="a.spec">{{ specSummary(a) || 'no reason recorded' }}</span>
                   <Badge v-if="!a.enabled" variant="outline" class="shrink-0 px-1.5 text-[10px]">disabled</Badge>
+                  <Button
+                    v-if="a.stale"
+                    variant="ghost"
+                    size="sm"
+                    class="h-6 shrink-0 px-1.5 text-[10px]"
+                    :loading="confirmingUid === a.uid"
+                    title="I checked — this is still correctly ignored."
+                    @click.stop.prevent="confirmCurrent(a)"
+                  >
+                    <Check class="h-3 w-3" /> Reviewed
+                  </Button>
                 </RouterLink>
               </li>
             </ul>
@@ -789,6 +1341,44 @@ async function confirmResolveAll() {
         </Card>
         </TabsContent>
       </Tabs>
+
+      <!-- ── Doc pages no area covers ───────────────────────────────────── -->
+      <Card v-if="health?.unassigned_docs.length">
+        <CardHeader class="flex-row items-center justify-between space-y-0">
+          <CardTitle class="flex items-center gap-1.5 text-base">
+            Unassigned pages
+            <HelpCircle
+              class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+              title="Doc pages whose watch paths fall outside every area's scope. Either the map has a gap, or the page documents something the map does not model."
+            />
+          </CardTitle>
+          <span class="text-xs text-muted-foreground">
+            {{ health.unassigned_docs.length }} page{{ health.unassigned_docs.length === 1 ? '' : 's' }} outside the map
+          </span>
+        </CardHeader>
+        <CardContent class="p-0">
+          <ul class="divide-y divide-border">
+            <li v-for="d in health.unassigned_docs" :key="d.uid">
+              <RouterLink
+                :to="{ name: 'documentation', params: { repoSlug: repoSlug || '' }, query: { doc: d.slug } }"
+                class="flex items-center gap-2 px-4 py-2 transition-colors hover:bg-accent/50"
+              >
+                <span class="min-w-0 flex-1 truncate text-sm">{{ d.title || d.slug }}</span>
+                <span class="hidden shrink-0 truncate font-mono text-[10px] text-muted-foreground sm:block">{{ d.slug }}</span>
+                <Badge v-if="d.stale" variant="warn" class="shrink-0 px-1.5 text-[10px]">stale</Badge>
+                <Badge
+                  v-if="d.last_checked"
+                  :variant="outcomeVariant(d.outcome)"
+                  class="shrink-0 px-1.5 text-[10px]"
+                >
+                  {{ d.outcome }} · {{ daysAgo(d.last_checked) }}
+                </Badge>
+                <Badge v-else variant="outline" class="shrink-0 px-1.5 text-[10px]">never audited</Badge>
+              </RouterLink>
+            </li>
+          </ul>
+        </CardContent>
+      </Card>
     </template>
 
     <AlertDialog v-model:open="bulkResolveOpen">

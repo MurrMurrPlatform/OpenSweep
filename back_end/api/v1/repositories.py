@@ -8,8 +8,11 @@ from api.dependencies import (
     require_role,
 )
 from domains.repositories.schemas import (
+    ConnectionCandidateDTO,
     CreateRepositoryRequest,
     FileContentDTO,
+    LinkConnectionRequest,
+    RepoConnectionDTO,
     RepositoryDTO,
     SetKillSwitchRequest,
     UpdateRepositoryRequest,
@@ -181,3 +184,93 @@ async def toggle_repo_kill_switch(
         payload={"active": req.active},
     )
     return await svc.get_repository(uid, user.org_uid)
+
+
+# ── Git credential linkage ──────────────────────────────────────────────────
+#
+# Credentials outlive registration: tokens are rotated, App installations are
+# reinstalled, an org connects a second token for a different set of repos.
+# Registration used to be the ONLY writer of `git_connection_uid`, so a repo
+# whose connection went away had no supported way back — these two routes are
+# that way back.
+
+
+async def _repo_node_in_org(uid: str, org_uid: str):
+    """The Repository NODE for a repo in this org — credential resolution reads
+    live node fields, and `require_repo_in_org` only asserts tenancy."""
+    from domains.repositories.models import Repository
+    from domains.tenancy import require_repo_in_org
+
+    await require_repo_in_org(uid, org_uid)
+    repo = await Repository.nodes.get_or_none(uid=uid)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="not found")
+    return repo
+
+
+def _candidates_to_dto(candidates) -> list[ConnectionCandidateDTO]:
+    return [
+        ConnectionCandidateDTO(
+            kind=c.kind,
+            uid=c.uid,
+            account=c.account,
+            installation_id=c.installation_id,
+            is_current=c.is_current,
+        )
+        for c in candidates
+    ]
+
+
+@router.get(
+    "/{uid}/connection",
+    response_model=RepoConnectionDTO,
+    operation_id="opensweep_get_repo_connection",
+)
+async def get_repo_connection(
+    uid: str,
+    user: UserDTO = Depends(require_role("maintainer")),
+) -> RepoConnectionDTO:
+    """Delivery-credential health for one repo, plus what it could link to."""
+    from domains.delivery.services.write_gate import evaluate_write_access
+    from domains.repositories.services.connection_link import connection_candidates
+
+    repo = await _repo_node_in_org(uid, user.org_uid)
+    access = await evaluate_write_access(repo)
+    return RepoConnectionDTO(
+        state=access.state,
+        credential=access.credential,
+        reason=access.reason,
+        candidates=_candidates_to_dto(await connection_candidates(repo, user.org_uid)),
+    )
+
+
+@router.put(
+    "/{uid}/connection",
+    response_model=RepoConnectionDTO,
+    operation_id="opensweep_link_repo_connection",
+)
+async def link_repo_connection(
+    uid: str,
+    req: LinkConnectionRequest,
+    user: UserDTO = Depends(require_role("maintainer")),
+) -> RepoConnectionDTO:
+    """Link this repo to one of the org's connections. Verified before it
+    sticks — recording an unusable credential would just move the failure to
+    the next run, which is the problem this is meant to end."""
+    from domains.delivery.services.write_gate import evaluate_write_access
+    from domains.repositories.services.connection_link import (
+        connection_candidates,
+        link_repository_connection,
+    )
+
+    repo = await _repo_node_in_org(uid, user.org_uid)
+    repo = await link_repository_connection(
+        repo, connection_uid=req.connection_uid, org_uid=user.org_uid, actor_uid=user.uid
+    )
+    access = await evaluate_write_access(repo)
+    return RepoConnectionDTO(
+        state=access.state,
+        credential=access.credential,
+        reason=access.reason,
+        candidates=_candidates_to_dto(await connection_candidates(repo, user.org_uid)),
+    )

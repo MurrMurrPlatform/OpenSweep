@@ -45,3 +45,17 @@ def test_has_active_thread_true_for_non_terminal():
 def test_has_active_thread_false_for_terminal_only():
     assert not has_active_thread([_thread(phase="done"), _thread(phase="abandoned")])
     assert not has_active_thread([])
+
+
+def test_dto_counts_only_open_questions():
+    events = [
+        {"type": "question", "status": "open"},
+        {"type": "question", "status": "open"},
+        {"type": "question", "status": "answered"},
+        {"type": "question", "status": "dismissed"},
+        {"type": "plan_approved"},
+    ]
+    assert thread_to_dto(_thread(events=events)).questions_open == 2
+    assert thread_to_dto(_thread(events=[])).questions_open == 0
+    # Node-shaped objects without the attribute (older test doubles) → 0.
+    assert thread_to_dto(_thread(events=None)).questions_open == 0

@@ -129,8 +129,19 @@ function stoppable(r: RunDTO): boolean {
   return ['queued', 'running', 'paused_quota', 'awaiting_input'].includes(r.status)
 }
 
+// The confirm dialogs are driven by a separate `open` boolean, not by the
+// target ref being non-null: AlertDialogAction closes the dialog (update:open
+// fires) before the forwarded @click runs, so deriving `open` from the target
+// and nulling it on close would wipe the target before confirmStop/confirmDelete
+// could read it.
 const stopTarget = ref<RunDTO | null>(null)
+const stopOpen = ref(false)
 const stoppingUid = ref<string | null>(null)
+
+function requestStop(r: RunDTO) {
+  stopTarget.value = r
+  stopOpen.value = true
+}
 
 function stopVerb(r: RunDTO | null): 'end' | 'cancel' {
   return r?.status === 'awaiting_input' ? 'end' : 'cancel'
@@ -138,7 +149,6 @@ function stopVerb(r: RunDTO | null): 'end' | 'cancel' {
 
 async function confirmStop() {
   const target = stopTarget.value
-  stopTarget.value = null
   if (!target || stoppingUid.value) return
   stoppingUid.value = target.uid
   try {
@@ -162,7 +172,13 @@ async function confirmStop() {
 // ── Delete (active/awaiting-input runs must be cancelled or ended first) ─────
 
 const deleteTarget = ref<RunDTO | null>(null)
+const deleteOpen = ref(false)
 const deleting = ref(false)
+
+function requestDelete(r: RunDTO) {
+  deleteTarget.value = r
+  deleteOpen.value = true
+}
 
 function deletable(r: RunDTO): boolean {
   return !stoppable(r)
@@ -181,7 +197,6 @@ async function confirmDelete() {
     toast.error('Couldn’t delete run', msg)
   } finally {
     deleting.value = false
-    deleteTarget.value = null
   }
 }
 
@@ -350,7 +365,7 @@ async function startChat() {
                         ? 'End run — destroys the workspace, keeps the transcript'
                         : 'Cancel run — stops the in-flight turn'
                     "
-                    @click="stopTarget = r"
+                    @click="requestStop(r)"
                   >
                     <CircleStop />
                   </Button>
@@ -365,7 +380,7 @@ async function startChat() {
                       size="icon-sm"
                       class="text-muted-foreground hover:text-destructive"
                       :disabled="!deletable(r)"
-                      @click="deleteTarget = r"
+                      @click="requestDelete(r)"
                     >
                       <Trash2 />
                     </Button>
@@ -411,7 +426,7 @@ async function startChat() {
       </DialogContent>
     </Dialog>
 
-    <AlertDialog :open="!!stopTarget" @update:open="(v: boolean) => { if (!v) stopTarget = null }">
+    <AlertDialog v-model:open="stopOpen">
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>
@@ -440,7 +455,7 @@ async function startChat() {
       </AlertDialogContent>
     </AlertDialog>
 
-    <AlertDialog :open="!!deleteTarget" @update:open="(v: boolean) => { if (!v) deleteTarget = null }">
+    <AlertDialog v-model:open="deleteOpen">
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Delete this run?</AlertDialogTitle>

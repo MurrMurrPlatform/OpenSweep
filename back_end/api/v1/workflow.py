@@ -34,19 +34,25 @@ class WorkflowStageDTO(BaseModel):
 
 
 class WorkflowDTO(BaseModel):
+    # STORED per-stage config: agent_uid "" means "inherit the seeded stage
+    # default" (see default_agent_uids). GET and PUT both return this shape.
     stages: dict[str, WorkflowStageDTO]
     # Which stages have a defined automatic trigger (UI shows toggles only here).
     auto_stages: list[str] = Field(default_factory=list)
+    # stage → uid of the seeded platform prompt an unset stage resolves to
+    # ("" when that prompt was deleted or disabled).
+    default_agent_uids: dict[str, str] = Field(default_factory=dict)
 
 
 class UpdateWorkflowRequest(BaseModel):
     stages: dict[str, WorkflowStageDTO] = Field(default_factory=dict)
 
 
-def _to_dto(config: dict[str, dict[str, Any]]) -> WorkflowDTO:
+async def _to_dto(config: dict[str, dict[str, Any]]) -> WorkflowDTO:
     return WorkflowDTO(
         stages={stage: WorkflowStageDTO(**entry) for stage, entry in config.items()},
         auto_stages=list(workflow_service.AUTO_STAGES),
+        default_agent_uids=await workflow_service.default_agent_uids(),
     )
 
 
@@ -55,7 +61,10 @@ async def get_workflow(
     repository_uid: str, user: UserDTO = Depends(get_current_user)
 ) -> WorkflowDTO:
     await require_repo_in_org(repository_uid, user.org_uid)
-    return _to_dto(await workflow_service.get_workflow(repository_uid))
+    # Stored (unresolved) shape — matches what PUT accepts and returns, so a
+    # stage reset to "Default" doesn't appear to flip back to a pinned agent
+    # on reload. Run-time consumers keep using the resolved get_workflow().
+    return await _to_dto(await workflow_service.get_workflow_stored(repository_uid))
 
 
 @router.put("/{repository_uid}/workflow", operation_id="opensweep_update_workflow")
@@ -76,7 +85,7 @@ async def update_workflow(
         actor_uid=user.uid,
         payload=config,
     )
-    return _to_dto(config)
+    return await _to_dto(config)
 
 
 # ── Static-analyzer config (sibling per-repo config, §E) ─────────────────────

@@ -1,8 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { apiDelete, apiGet, apiPatch, apiPost } from '@/services/api'
+import { apiDelete, apiGet, apiPatch, apiPost, apiPut } from '@/services/api'
 import { useUiStore } from '@/stores/uiStore'
-import type { RepositoryDTO } from '@/types/api'
+import type { RepoConnectionDTO, RepositoryDTO } from '@/types/api'
 
 export const useRepositoryStore = defineStore('repositories', () => {
   const list = ref<RepositoryDTO[]>([])
@@ -60,5 +60,34 @@ export const useRepositoryStore = defineStore('repositories', () => {
     }
   }
 
-  return { list, loaded, fetchAll, find, findBySlug, get, getBySlug, create, update, remove }
+  /** Delivery-credential health + the connections this repo could link to. */
+  async function getConnection(uid: string): Promise<RepoConnectionDTO> {
+    return apiGet<RepoConnectionDTO>(`/repositories/${uid}/connection`)
+  }
+
+  /**
+   * Point the repo at one of the org's connections. The backend verifies the
+   * credential before it sticks and 422s rather than record an unusable one, so
+   * a resolved promise means delivery really can proceed.
+   */
+  async function linkConnection(uid: string, connectionUid: string): Promise<RepoConnectionDTO> {
+    return apiPut<RepoConnectionDTO>(`/repositories/${uid}/connection`, {
+      connection_uid: connectionUid,
+    })
+  }
+
+  return {
+    list,
+    loaded,
+    fetchAll,
+    find,
+    findBySlug,
+    get,
+    getBySlug,
+    create,
+    update,
+    remove,
+    getConnection,
+    linkConnection,
+  }
 })
