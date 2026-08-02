@@ -406,6 +406,7 @@ async def test_subsystem_coverage_keys_slice_and_bundle_the_plan(plan_seams):
     assert source == "area-map" and degraded == ""
     # The two undersized backend siblings (10 files each) bundle into one
     # area part carrying both keys; frontend is filtered out.
+    parts = [p for p in parts if p["kind"] != "synthesis"]
     assert [p["area_keys"] for p in parts] == [["backend/api", "backend/core"]]
     assert all(p["kind"] == "area" for p in parts)
     # Empty lens_keys fell back to the subsystem default lenses.
@@ -441,11 +442,13 @@ async def test_feature_kind_plans_only_feature_parts(plan_seams):
         k=3,
     )
     assert source == "area-map"
+    parts = [p for p in parts if p["kind"] != "synthesis"]
     assert all(p["kind"] == "feature" for p in parts)
     assert [p["area_keys"] for p in parts] == [["features/checkout"], ["features/theming"]]
     # Feature default lens.
     assert parts[0]["lens_keys"] == ["implementation-gaps"]
-    assert summary["total_runs"] == 2 and summary["by_kind"]["feature"] == 2
+    assert summary["by_kind"]["feature"] == 2
+    assert summary["total_runs"] == 3  # two feature parts + synthesis
 
 
 async def test_global_kind_plans_one_part_per_global_lens(plan_seams):
@@ -458,9 +461,11 @@ async def test_global_kind_plans_one_part_per_global_lens(plan_seams):
         k=3,
     )
     assert source == "global"
-    assert [p["kind"] for p in parts] == ["global"]
+    # Synthesis is appended last to every non-empty plan.
+    assert [p["kind"] for p in parts] == ["global", "synthesis"]
     assert parts[0]["lens_keys"] == ["architecture-review"]
-    assert summary["total_runs"] == 1 and summary["by_kind"]["global"] == 1
+    assert summary["by_kind"]["global"] == 1
+    assert summary["total_runs"] == 2  # the global sweep + synthesis
 
 
 async def test_lens_selection_intersects_enabled_lenses(plan_seams):
@@ -511,8 +516,9 @@ async def test_plan_summary_narrates_an_area_map_plan(plan_seams):
         "bundled_leaves": 2,  # backend/api + backend/core share one part
         "feature_parts": 0,
         "global_parts": 0,
-        "total_runs": 2,
-        "by_kind": {"area": 2, "feature": 0, "global": 0},
+        "synthesis_parts": 1,
+        "total_runs": 3,  # two area parts + synthesis
+        "by_kind": {"area": 2, "feature": 0, "global": 0, "synthesis": 1},
         "oversized": ["frontend"],
         "degraded": "",
         "coverage_keys": [],
@@ -545,8 +551,9 @@ async def test_plan_summary_keeps_its_shape_for_docs_plans(plan_seams):
         "bundled_leaves": 0,
         "feature_parts": 0,
         "global_parts": 0,
-        "total_runs": 1,
-        "by_kind": {"area": 1, "feature": 0, "global": 0},
+        "synthesis_parts": 1,
+        "total_runs": 2,  # the area part + synthesis
+        "by_kind": {"area": 1, "feature": 0, "global": 0, "synthesis": 1},
         "oversized": [],
         "degraded": "",
         "coverage_keys": [],

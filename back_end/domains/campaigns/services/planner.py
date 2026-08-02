@@ -649,6 +649,7 @@ def build_plan_by_kind(
     path_recency: dict | None = None,
     feature_areas: list[dict] | None = None,
     scope_hint: list[str] | None = None,
+    synthesis: bool = False,
 ) -> list[dict]:
     """Kind-dispatched plan builder. Additive alongside the existing build_plan.
 
@@ -716,6 +717,14 @@ def build_plan_by_kind(
 
     else:  # batch (and any unknown kind)
         return []
+
+    if synthesis and parts:
+        # Last, and only when there is something to synthesize. The campaign
+        # digest is a tally — counts by severity, coverage rows, holes — and
+        # nothing ever read the findings AS A SET and said what they mean.
+        # This part does, into an Analysis. Skipped for an empty plan: there
+        # is no honest report to write about zero work.
+        parts.append(_part(0, "synthesis", "Synthesis — campaign report", None, []))
 
     for idx, part in enumerate(parts):
         part["idx"] = idx

@@ -92,7 +92,9 @@ async def _plan(kind="subsystem", selection="stale"):
         lens_keys=["bugs"],
         k=3,
     )
-    return parts
+    # The synthesis part is appended to every non-empty plan and is not what
+    # these tests are about; it has its own coverage in test_campaign_synthesis.
+    return [p for p in parts if p["kind"] != "synthesis"]
 
 
 @pytest.mark.asyncio

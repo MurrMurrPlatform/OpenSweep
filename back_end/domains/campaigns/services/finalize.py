@@ -171,9 +171,14 @@ def build_summary(
     }
 
 
-async def finalize_campaign(campaign) -> None:
-    """finalizing → done|failed, with the digest saved and audited."""
-    from domains.campaigns.models import Campaign, is_legal_status_transition
+async def compute_digest(campaign) -> tuple[dict, list]:
+    """(summary, the campaign's Finding rows) from its parts' runs.
+
+    Split out of finalize_campaign so the SYNTHESIS part can be handed the
+    same numbers mid-flight: it dispatches while the campaign is still
+    running, so `campaign.summary` is not written yet, and a synthesis run
+    working from an empty digest would report a campaign that found nothing.
+    """
     from domains.checked.models import Checked
     from domains.findings.models import Finding
 
@@ -235,6 +240,15 @@ async def finalize_campaign(campaign) -> None:
         for path in (p.get("scope_paths") or [])
     ]
     summary = build_summary(parts, findings_by_part, holes)
+    return summary, list(campaign_findings.values())
+
+
+async def finalize_campaign(campaign) -> None:
+    """finalizing → done|failed, with the digest saved and audited."""
+    from domains.campaigns.models import Campaign, is_legal_status_transition
+
+    parts = [dict(p) for p in (campaign.parts or [])]
+    summary, campaign_findings = await compute_digest(campaign)
 
     all_failed = bool(parts) and all(p.get("state") == "failed" for p in parts)
     to_status = "failed" if all_failed else "done"
@@ -276,7 +290,7 @@ async def finalize_campaign(campaign) -> None:
     # per crash would be the obvious way to get that wrong. Past this point
     # the row is terminal, so finalize_campaign returns at the legality gate
     # on any re-entry.
-    await _verify_findings(fresh, list(campaign_findings.values()))
+    await _verify_findings(fresh, campaign_findings)
 
 
 async def _verify_findings(campaign, findings: list) -> None:

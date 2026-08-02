@@ -424,7 +424,7 @@ async def _plan_parts(
                 }
             )
         parts = planner.build_plan_by_kind(
-            "global", [], lenses, scope_hint=scope_hint
+            "global", [], lenses, scope_hint=scope_hint, synthesis=True
         )
         source = "global"
         map_stats = _map_stats(None)
@@ -447,7 +447,12 @@ async def _plan_parts(
                     f"{degraded_reason}; {note}" if degraded_reason else note
                 )
             parts = planner.build_plan_by_kind(
-                "feature", [], lenses, selection=selection, feature_areas=feature_areas
+                "feature",
+                [],
+                lenses,
+                selection=selection,
+                feature_areas=feature_areas,
+                synthesis=True,
             )
             areas = feature_areas
         else:  # subsystem
@@ -475,6 +480,7 @@ async def _plan_parts(
                 selection=selection,
                 k=k,
                 path_recency=path_recency,
+                synthesis=True,
             )
 
     # The plan's own explanation — how the map's rows became this part list.
@@ -485,6 +491,7 @@ async def _plan_parts(
         "area": sum(1 for p in parts if p["kind"] == "area"),
         "feature": sum(1 for p in parts if p["kind"] == "feature"),
         "global": sum(1 for p in parts if p["kind"] == "global"),
+        "synthesis": sum(1 for p in parts if p["kind"] == "synthesis"),
     }
     plan_summary = {
         "source": source,
@@ -495,6 +502,7 @@ async def _plan_parts(
         ),
         "feature_parts": by_kind["feature"],
         "global_parts": by_kind["global"],
+        "synthesis_parts": by_kind["synthesis"],
         "total_runs": len(parts),
         "by_kind": by_kind,
         "oversized": [str(a.get("title") or "") for a in areas if a.get("oversized")],

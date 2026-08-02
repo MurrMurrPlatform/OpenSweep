@@ -305,6 +305,120 @@ async def _dispatch_global(campaign, part: dict) -> str:
     return run.uid
 
 
+_SYNTHESIS_CONTRACT = """# What this run is
+
+Every other part of this campaign has finished. Your job is NOT to audit the
+repository again — it is to read what this campaign produced and say what it
+MEANS, as one Analysis a maintainer can act on.
+
+The campaign's own digest is a tally: counts by severity, coverage rows, a
+list of parts. Nobody has read the findings AS A SET and answered the
+questions a maintainer actually has — what is worst, what is systemic, what
+should be done first, and where the audit itself fell short.
+
+# Your inputs
+
+- `list_findings` / `search_findings` — the findings this campaign filed.
+  Read the real ones; do not work from the summary below alone.
+- The campaign digest below: per-part coverage, per-lens verdicts, and the
+  scopes no part completed.
+- The repository itself, to check anything the findings leave ambiguous.
+
+# What you produce
+
+ONE Analysis, authored with the analysis tools:
+
+* `upsert_analysis` — call early with a title and status="in_progress", then
+  again at the end with `health_grade` (A-F), a `scorecard` over the
+  dimensions this campaign actually covered, `confidence`, `limitations`,
+  and `stats`. Finish with status="complete".
+* `set_analysis_section` — at minimum `executive_summary` (what a maintainer
+  needs to know in one paragraph), `top_changes` (the highest-value changes,
+  ordered), and `implementation_plan` (staged: containment → low-risk fixes
+  → reliability/security → structural work).
+* `add_analysis_note` — note_type="coverage" per area, using the REAL
+  coverage below rather than assuming full coverage; "strength" for what this
+  campaign found to be in good shape; "validation" for checks that ran.
+
+# Honesty requirements
+
+- `limitations` must state what this campaign did NOT cover: scopes with no
+  completed part, lenses skipped or never answered for, and — where a part
+  reported no measured coverage — that its coverage is the scope it was
+  aimed at rather than what it read.
+- Do not invent severity. If the findings are all low, the grade says so.
+- Do not file new findings. If you notice something new, it belongs to a
+  later audit; this run reports on work already done.
+
+Finish with `complete_run`."""
+
+
+def _digest_block(summary: dict) -> str:
+    """The campaign's own numbers, as the synthesis run's starting point."""
+    coverage = dict(summary.get("coverage") or {})
+    lines = ["## This campaign's digest"]
+    counts = dict(summary.get("counts") or {})
+    if counts:
+        by_sev = ", ".join(
+            f"{k}: {v}" for k, v in sorted((counts.get("by_severity") or {}).items())
+        )
+        lines.append(f"- findings: {counts.get('total', 0)}" + (f" ({by_sev})" if by_sev else ""))
+    for row in coverage.get("lens_rollup") or []:
+        lines.append(
+            f"- lens {row.get('lens')}: {row.get('checked-clean', 0)} clean, "
+            f"{row.get('checked-findings', 0)} with findings, "
+            f"{row.get('skipped', 0)} skipped, {row.get('missing', 0)} no verdict"
+        )
+    for row in coverage.get("parts") or []:
+        lines.append(
+            f"- part {row.get('idx')} ({row.get('title')}): {row.get('state')}, "
+            f"{row.get('covered', 0)} claimed / {row.get('observed', 0)} measured "
+            f"[{row.get('coverage_source', 'unknown')}]"
+        )
+    holes = coverage.get("holes") or []
+    if holes:
+        lines.append(f"- scopes NO part completed: {', '.join(str(h) for h in holes[:20])}")
+    return "\n".join(lines)
+
+
+async def _dispatch_synthesis(campaign, part: dict) -> str:
+    """Dispatch the campaign's synthesis run — one Analysis over its output.
+
+    The digest is computed LIVE: this part dispatches while the campaign is
+    still running, so `campaign.summary` has not been written yet, and a
+    synthesis run reading an empty summary would report a campaign that found
+    nothing.
+    """
+    from domains.campaigns.services.finalize import compute_digest
+
+    summary, _findings = await compute_digest(campaign)
+    structural = "\n\n".join([_SYNTHESIS_CONTRACT, _digest_block(summary)])
+    composed = await compose_agent_intent(
+        repository_uid=campaign.repository_uid,
+        agent_key="deep-scan",  # the Analysis-authoring base
+        prompt_body=None,
+        structural=structural,
+    )
+    tier = normalize_effort(campaign.effort or "normal")
+    policy = await ensure_policy_for_effort(tier)
+    run = await trigger_run(
+        repository_uid=campaign.repository_uid,
+        intent=composed.text,
+        playbook="ask",
+        title=f"Synthesis: {campaign.title or 'campaign'}",
+        target=_target(campaign, part, synthesis=True),
+        run_policy_uid=policy.uid,
+        effort=tier.value,
+        agent_uid=composed.agent_uid,
+        agent_rev=composed.agent_rev,
+        trigger=_campaign_trigger(campaign),
+        triggered_by=campaign.created_by or "campaign",
+        composed_degraded=composed.composed_degraded,
+        degraded_layers=composed.degraded_layers,
+    )
+    return run.uid
+
+
 async def dispatch_part(campaign, part: dict) -> str:
     """Dispatch one pending part; returns the child run's uid."""
     kind = part.get("kind") or "area"
@@ -312,4 +426,6 @@ async def dispatch_part(campaign, part: dict) -> str:
         return await _dispatch_global(campaign, part)
     if kind == "feature":
         return await _dispatch_feature(campaign, part)
+    if kind == "synthesis":
+        return await _dispatch_synthesis(campaign, part)
     return await _dispatch_area(campaign, part)

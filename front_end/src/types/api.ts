@@ -2006,7 +2006,16 @@ export interface CampaignAreasPreview {
 // ── Analysis (whole-repo deep-scan reports) ─────────────────────────────────
 // Mirror back_end/domains/analysis/schemas.py.
 
-export type AnalysisStatus = 'in_progress' | 'complete' | 'superseded' | 'archived'
+/** `incomplete` = the run ended before authoring a verdict (a killed or
+ *  forgetful scan). The backend writes it and drops any partial grade so it
+ *  never surfaces as a current one — this type omitted it, so a status the
+ *  API really returns was unrepresentable. */
+export type AnalysisStatus =
+  | 'in_progress'
+  | 'complete'
+  | 'incomplete'
+  | 'superseded'
+  | 'archived'
 export type QuestionStatus = 'open' | 'answered' | 'dismissed'
 
 export interface ScorecardEntry {

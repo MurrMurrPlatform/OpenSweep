@@ -207,6 +207,31 @@ async def trigger_scheduled_agent(
                 f"map-areas run {result.run_uid} dispatched but not found"
             )
         return run
+    if agent_key(agent.source_url or "") == "deep-scan":
+        # Same reason as map-areas: the Analysis authoring contract lives in
+        # run_deep_scan's structural slot, so a plain dispatch_agent would
+        # produce a run that never calls upsert_analysis and leaves no
+        # Analysis behind — a scheduled deep scan that silently produces
+        # nothing is exactly the class of dead wiring this branch exists to
+        # avoid.
+        from domains.runs.models import Run
+        from domains.runs.services.sweep import run_deep_scan
+
+        result = await run_deep_scan(
+            repository_uid=s.repository_uid,
+            triggered_by=triggered_by,
+        )
+        if not result.run_uid:
+            raise LifecycleError(
+                "deep-scan dispatch failed: "
+                + ("; ".join(result.errors) or "no run dispatched")
+            )
+        run = await Run.nodes.get_or_none(uid=result.run_uid)
+        if run is None:
+            raise LifecycleError(
+                f"deep-scan run {result.run_uid} dispatched but not found"
+            )
+        return run
     return await dispatch_agent(
         agent=agent,
         repository_uid=s.repository_uid,
