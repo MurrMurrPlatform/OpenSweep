@@ -36,6 +36,16 @@ class Checked(AsyncStructuredNode):
     # run's target paths when the agent didn't report covered_paths.
     covered_paths = JSONProperty(default=[])  # repo-relative paths examined
     skipped_paths = JSONProperty(default=[])  # in-scope paths not examined
+    # reported | inferred | unknown — "inferred" means the agent declared no
+    # coverage and covered_paths is really the dispatched target, i.e. what the
+    # run was POINTED at rather than what it read. Kept distinct so a stamp can
+    # never silently pass off intent as evidence.
+    #
+    # Defaults to "unknown", not "reported": stamps written before this field
+    # existed cannot be classified after the fact, and defaulting them to
+    # "reported" would have the whole backlog assert evidence it never had.
+    # record_for_run always writes an explicit value (m0022 backfills the rest).
+    coverage_source = StringProperty(default="unknown", index=True)
     # [{lens, verdict: checked-clean|checked-findings|skipped, note?}] — one
     # entry per audit lens the run was assigned.
     lens_verdicts = JSONProperty(default=[])

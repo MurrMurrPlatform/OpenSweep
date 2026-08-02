@@ -99,6 +99,18 @@ export const useDocStore = defineStore('docs', () => {
     list.value = list.value.filter((d) => d.uid !== uid)
   }
 
+  /** "I read it; the page is still right" — clears stale without a no-op edit. */
+  async function confirmCurrent(uid: string): Promise<DocDTO> {
+    const doc = await apiPost<DocDTO>(`/docs/${uid}/confirm-current`)
+    // Only list_docs computes pending_edits; every single-doc endpoint returns
+    // the DocDTO default of 0. Carry the known count over or confirming a page
+    // that has edits waiting silently clears its badge until the next fetch.
+    list.value = list.value.map((d) =>
+      d.uid === uid ? { ...doc, pending_edits: d.pending_edits } : d,
+    )
+    return doc
+  }
+
   async function setPinned(uid: string, pinned: boolean): Promise<DocDTO> {
     const doc = await apiPost<DocDTO>(`/docs/${uid}/pin`, { pinned })
     list.value = list.value.map((d) => (d.uid === uid ? doc : d))
@@ -245,6 +257,7 @@ export const useDocStore = defineStore('docs', () => {
     create,
     update,
     remove,
+    confirmCurrent,
     setPinned,
     draft,
     verify,

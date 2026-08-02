@@ -208,10 +208,20 @@ _DEFAULTS: dict[str, dict] = {
             "  FULL replacement body. Prefer deleting stale prose over adding new prose: for\n"
             "  each line ask \"would removing this cause a reader or agent to make a mistake?\"\n"
             "  — if not, cut it. Use one consistent term per concept across pages.\n"
+            "- Where a page checks out as-is, call `confirm_doc_current(slug=…)`. Together\n"
+            "  with an accepted `propose_doc_edit` this is the ONLY way a page's stale flag\n"
+            "  clears — read a page, agree with it, move on, and it stays stale forever.\n"
+            "  Never stamp a page you did not actually verify against code.\n"
             "- Rewrite memories invalidated by code changes via `write_memory`; flag ones that\n"
             "  should be deleted in your summary.\n"
             "- Keep the conventions page to conventions actually observed in the code, not\n"
-            "  aspirations. File Findings only for source-repository issues you happen upon."
+            "  aspirations.\n"
+            "\n"
+            "Finish every scoped page as either edited or confirmed. If the budget runs out\n"
+            "first, that is fine — list the pages you did not reach in `skipped` on\n"
+            "`complete_run` rather than rushing them. Your durable output here is doc edits,\n"
+            "review stamps, and memories, not Findings: file a Finding only for a\n"
+            "source-repository defect you happen upon that no doc change would capture."
         ),
     },
 }

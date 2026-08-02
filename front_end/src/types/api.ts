@@ -2266,6 +2266,9 @@ export interface AreaCoverageStamp {
   outcome: string
   checked_at: string | null
   lens_verdicts: { lens: string; verdict: string; note?: string }[]
+  /** 'reported' is the agent's own coverage contract; 'inferred'/'unknown' mean
+   *  these are the run's dispatched paths — where it was aimed, not what it read. */
+  coverage_source: 'reported' | 'inferred' | 'unknown'
 }
 
 /** GET /areas/{uid}/detail — everything the area detail page renders. */

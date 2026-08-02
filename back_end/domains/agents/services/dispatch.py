@@ -25,16 +25,69 @@ from domains.agents.services.registry import (
 from domains.runs.schemas import Effort, RunTrigger, normalize_effort, resolve_reasoning
 
 
-def _scope_summary(target: dict[str, Any]) -> str:
+async def _resolve_scope_docs(
+    repository_uid: str, doc_uids: list[str]
+) -> dict[str, tuple[str, str, bool, bool]]:
+    """{doc_uid: (slug, title, stale, archived)} for the scoped pages.
+
+    The scope block used to print bare uids, but `read_doc` is keyed by SLUG
+    and no uid-keyed read tool exists — so the agent had to reverse the uids
+    through `list_docs` before it could open anything. Resolve them here.
+
+    Archived pages are fetched rather than filtered out: a retired page sitting
+    in an Area's doc_uids should be named and marked, not silently dropped from
+    a scope the caller asked for.
+    """
+    from domains.docs.models import Doc, doc_is_stale
+
+    if not doc_uids:
+        return {}
+    return {
+        d.uid: (
+            d.slug or "",
+            d.title or d.slug or "",
+            doc_is_stale(d),
+            bool(d.archived),
+        )
+        for d in await Doc.nodes.filter(
+            repository_uid=repository_uid, uid__in=list(dict.fromkeys(doc_uids))
+        )
+    }
+
+
+def _scope_summary(
+    target: dict[str, Any],
+    scope_docs: dict[str, tuple[str, str, bool, bool]] | None = None,
+) -> str:
     """Human-readable scope block for the composed intent."""
     parts: list[str] = []
+    scope_docs = scope_docs or {}
     paths = [str(p) for p in (target.get("paths") or []) if str(p).strip()]
     doc_uids = [str(d) for d in (target.get("doc_uids") or []) if str(d).strip()]
     if paths:
         parts.append("Limit the investigation to these repository paths:\n" +
                       "\n".join(f"- {p}" for p in paths))
     if doc_uids:
-        parts.append("Scope: the documentation pages with uids " + ", ".join(doc_uids))
+        lines: list[str] = []
+        for uid in doc_uids:
+            resolved = scope_docs.get(uid)
+            if resolved is None:
+                # Deleted between dispatch and compose, or an unresolvable uid.
+                lines.append(f"- (unknown page uid={uid})")
+                continue
+            slug, title, stale, archived = resolved
+            if archived:
+                flag = " — ARCHIVED, skip it"
+            elif stale:
+                flag = " — STALE, code changed since last review"
+            else:
+                flag = ""
+            lines.append(f"- {slug} ({title}){flag}")
+        parts.append(
+            "Scope: these documentation pages — read each with "
+            "`read_doc(slug=…)`, and finish each as either `propose_doc_edit` "
+            "or `confirm_doc_current(slug=…)`:\n" + "\n".join(lines)
+        )
     if not parts:
         parts.append("Scope: the whole repository.")
     return "\n\n".join(parts)
@@ -72,7 +125,10 @@ async def dispatch_agent(
     target = dict(target or {})
 
     is_system = (agent.provenance or "") == "system" and key
-    structural = _scope_summary(target)
+    scope_docs = await _resolve_scope_docs(
+        repository_uid, [str(d) for d in (target.get("doc_uids") or []) if str(d).strip()]
+    )
+    structural = _scope_summary(target, scope_docs)
     if structural_extra.strip():
         structural = f"{structural}\n\n{structural_extra.strip()}"
     composed = await compose_agent_intent(

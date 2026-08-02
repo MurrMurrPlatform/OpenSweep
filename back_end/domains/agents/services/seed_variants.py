@@ -430,7 +430,12 @@ _VARIANTS: dict[str, dict] = {
             "  interleaving old and new.\n"
             "- Use one consistent term per concept across all pages.\n"
             "- Propose full replacement bodies via `propose_doc_edit`; rewrite invalidated\n"
-            "  memories via `write_memory` and flag delete-worthy ones in your summary."
+            "  memories via `write_memory` and flag delete-worthy ones in your summary.\n"
+            "- A page that survives the pass unchanged still needs\n"
+            "  `confirm_doc_current(slug=…)` — pruning nothing is a verification result, and\n"
+            "  without the stamp the page stays stale. Never stamp one you did not verify.\n"
+            "\n"
+            "Doc edits and review stamps are this run's output, not Findings."
         ),
     },
     "architecture-review": {

@@ -608,7 +608,18 @@ async def test_area_detail_coverage_and_pending_edits(stores, detail_seams):
             outcome="findings",
             checked_at=None,
             lens_verdicts=[{"lens": "bugs", "verdict": "checked-findings"}, "junk"],
-        )
+            coverage_source="inferred",
+        ),
+        # Pre-m0022 stamp. The property is absent in the DB, but neomodel
+        # inflates a defaulted property to its default, so the service sees
+        # "unknown" — not a missing attribute. This is the shape to assert on.
+        SimpleNamespace(
+            run_uid="run-8",
+            outcome="clean",
+            checked_at=None,
+            lens_verdicts=[],
+            coverage_source="unknown",
+        ),
     ]
     await area_service.propose_area_edit(
         repository_uid="r1", proposed_spec="s", key="backend", source_run_uid="run-1"
@@ -620,9 +631,13 @@ async def test_area_detail_coverage_and_pending_edits(stores, detail_seams):
     out = await area_service.area_detail(a)
 
     assert detail_seams.stamp_calls == [("r1", ["src"], 10)]
-    (cov,) = out.coverage
+    cov, legacy = out.coverage
     assert cov.run_uid == "run-9" and cov.outcome == "findings"
     assert cov.lens_verdicts == [{"lens": "bugs", "verdict": "checked-findings"}]
+    # The stamp says these paths are where the run was AIMED, not what it read.
+    assert cov.coverage_source == "inferred"
+    # A stamp predating the property must not claim the agent reported coverage.
+    assert legacy.coverage_source == "unknown"
     # Pending edits: only THIS area's; the badge count matches the list.
     assert [e.area_uid for e in out.pending_edits] == [a.uid]
     assert out.area.pending_edits == 1

@@ -28,7 +28,8 @@ not change them:
 
 1. **Output is tool calls, not markdown.** Your output is structured tool calls
    into OpenSweep: `create_finding`, `update_finding`, `propose_doc_edit`,
-   `propose_area_edit`, `write_memory`. OpenSweep renders findings to humans, so where the body has
+   `propose_area_edit`, `write_memory`, `confirm_doc_current`,
+   `confirm_area_current`. OpenSweep renders findings to humans, so where the body has
    an "Output format", "Review format", "Summary table", or "Verdict" section,
    it describes a shape that does not apply here — take its substance and drop
    its formatting. Do not write a markdown review.
@@ -49,7 +50,8 @@ LOOK_BEFORE_WRITE_FOOTER = """
 # Look-before-write contract (mandatory)
 
 Before any WRITE tool call (`propose_doc_edit`, `write_memory`,
-`create_finding`, `update_finding`), you MUST:
+`create_finding`, `update_finding`, `confirm_doc_current`,
+`confirm_area_current`), you MUST:
 
 1. SEARCH for what already exists in OpenSweep using the relevant read tool:
    - `list_docs` / `read_doc` before proposing doc edits

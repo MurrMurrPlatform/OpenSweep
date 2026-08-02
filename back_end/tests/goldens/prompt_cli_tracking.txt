@@ -82,7 +82,12 @@ JSON envelope; list only the calls you could not make plus the closing
 `complete_run` entry. Without native opensweep_* tools, put every intended
 call in the envelope as described above.
 
-If you find no actionable issue, still include one `create_finding` envelope entry with
+Every run must leave at least one durable result: a Finding, a doc/area edit
+proposal, or a review stamp (`confirm_doc_current` / `confirm_area_current`)
+when verification is the explicit run goal. A document run that read twelve
+pages and confirmed all twelve has already met this — do NOT add a filler
+observation on top of it.
+
+Only when you would otherwise leave NO durable result at all, include one `create_finding` envelope entry with
 kind=`observation`, severity=`low`, subtype=`no-actionable-finding`, and
-evidence describing what you checked. Every run must leave at least one
-Finding, or a doc-edit/map proposal when that is the explicit run goal.
+evidence describing what you checked.

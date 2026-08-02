@@ -134,6 +134,10 @@ class AreaCoverageDTO(BaseModel):
     outcome: str = ""
     checked_at: datetime | None = None
     lens_verdicts: list[dict] = Field(default_factory=list)
+    # reported | inferred | unknown — "reported" is the only value backed by the
+    # agent's own coverage contract. The other two mean the paths are the run's
+    # dispatched scope, so this row says where a run was aimed, not what it read.
+    coverage_source: str = "unknown"
 
 
 class AreaHealthRowDTO(BaseModel):

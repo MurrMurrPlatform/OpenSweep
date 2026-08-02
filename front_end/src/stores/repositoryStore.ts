@@ -33,7 +33,9 @@ export const useRepositoryStore = defineStore('repositories', () => {
   async function getBySlug(slug: string): Promise<RepositoryDTO> {
     const cached = findBySlug(slug)
     if (cached) return cached
-    const r = await apiGet<RepositoryDTO>(`/repositories/by-slug/${slug}`)
+    const r = await apiGet<RepositoryDTO>(
+      `/repositories/by-slug/${slug.split('/').map(encodeURIComponent).join('/')}`,
+    )
     if (!list.value.some((x) => x.uid === r.uid)) list.value = [...list.value, r]
     return r
   }

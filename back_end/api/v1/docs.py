@@ -81,6 +81,29 @@ async def update_doc(
     return doc_service.doc_to_dto(d)
 
 
+@router.post("/docs/{uid}/confirm-current", operation_id="opensweep_confirm_doc_current")
+async def confirm_doc_current_endpoint(
+    uid: str, user: UserDTO = Depends(require_role("maintainer"))
+) -> DocDTO:
+    """"I read it; the page is still right" — advance the review stamp without
+    inventing an edit.
+
+    Mirrors POST /areas/{uid}/confirm-current. Stale clears only on review, and
+    a human's only reviews were a real edit or accepting a DocEdit — so anyone
+    who checked a page and agreed with it had to fake an edit to clear the
+    badge, which is how a review signal stops meaning anything. The agent path
+    (`confirm_doc_current`) has always existed; this is its human door.
+    """
+    d = await doc_service.get_doc(uid)
+    await require_repo_in_org(d.repository_uid, user.org_uid)
+    from domains.docs.services.doc_freshness import confirm_doc_current
+
+    confirmed = await confirm_doc_current(d.repository_uid, d.slug)
+    if confirmed is None:
+        raise HTTPException(status_code=404, detail=f"doc {uid} not found")
+    return doc_service.doc_to_dto(confirmed)
+
+
 @router.delete("/docs/{uid}", operation_id="opensweep_delete_doc")
 async def delete_doc(uid: str, user: UserDTO = Depends(require_role("maintainer"))) -> dict:
     d = await doc_service.get_doc(uid)
