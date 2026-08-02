@@ -2150,6 +2150,9 @@ export interface AreaHealthRowDTO {
   last_checked?: string | null
   outcome: string
   revision: string
+  /** Provenance of the stamp behind `last_checked`. Non-'reported' means a run
+   *  was aimed at these paths without reporting what it actually examined. */
+  coverage_source: 'reported' | 'inferred' | 'unknown'
 }
 
 /** A doc page no area covers — surfaced so it doesn't vanish with the Health page. */

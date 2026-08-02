@@ -21,7 +21,7 @@ from domains.findings.schemas import (
     SourcePath,
 )
 from domains.platform_tools.add_analysis_note import add_analysis_note
-from domains.platform_tools.areas_tools import propose_area_edit
+from domains.platform_tools.areas_tools import confirm_area_current, propose_area_edit
 from domains.platform_tools.ask_question import ask_question
 from domains.platform_tools.attach_artifact import attach_artifact
 from domains.platform_tools.complete_run import complete_run
@@ -145,6 +145,13 @@ class ProposeAreaEditRequest(BaseModel):
 class ConfirmDocCurrentRequest(BaseModel):
     repository_uid: str
     slug: str
+
+
+class ConfirmAreaCurrentRequest(BaseModel):
+    # Areas are addressed by `key`, not uid — that is what an agent knows and
+    # what area_freshness.confirm_area_current takes.
+    repository_uid: str
+    key: str
 
 
 class WriteMemoryRequest(BaseModel):
@@ -543,6 +550,29 @@ async def http_confirm_doc_current(
     await require_tool_repo_access(request, user, req.repository_uid)
     return await _invoke_platform_tool(
         "confirm_doc_current", confirm_doc_current, **req.model_dump()
+    )
+
+
+@router.post(
+    "/confirm-area-current", operation_id="opensweep_platform_confirm_area_current"
+)
+async def http_confirm_area_current(
+    req: ConfirmAreaCurrentRequest,
+    request: Request,
+    user: UserDTO = Depends(get_current_user),
+):
+    """The agent door for confirm_area_current.
+
+    The tool was registered in the dispatcher and advertised in every executor
+    prompt, but had no `opensweep_platform_*` route — so it worked over the
+    envelope transport and silently did not exist for MCP executors
+    (claude_code, codex), which is most runs. The areas equivalent in
+    api/v1/areas.py is the HUMAN door: keyed by uid and gated on a maintainer
+    role a run token does not have.
+    """
+    await require_tool_repo_access(request, user, req.repository_uid)
+    return await _invoke_platform_tool(
+        "confirm_area_current", confirm_area_current, **req.model_dump()
     )
 
 

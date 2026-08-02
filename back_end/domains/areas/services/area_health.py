@@ -240,6 +240,7 @@ async def area_health(repository_uid: str) -> AreasHealthDTO:
                 last_checked=stamp.checked_at if stamp else None,
                 outcome=(stamp.outcome or "") if stamp else "",
                 revision=(stamp.revision or "") if stamp else "",
+                coverage_source=(stamp.coverage_source or "unknown") if stamp else "unknown",
             )
         )
 
@@ -269,6 +270,11 @@ async def area_health(repository_uid: str) -> AreasHealthDTO:
         for r in rows
         if r.enabled and r.is_leaf and r.kind not in _NON_AUDITABLE_KINDS
     ]
+    # The tiles count ANY stamp as coverage, including inferred ones — the row
+    # carries coverage_source so a reader can see the difference, but redefining
+    # `fresh`/`never_audited` around it would reclassify every historical stamp
+    # (m0022 backfills them all to "unknown") and animate Fresh to ~0 on the
+    # first load after deploy, for no actionable gain.
     summary = AreaHealthSummaryDTO(
         total=len(auditable),
         stale=sum(1 for r in auditable if r.stale),

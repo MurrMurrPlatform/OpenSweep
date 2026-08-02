@@ -1,6 +1,7 @@
 """Staleness-driven audit target ranking (§F) — pure."""
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 from domains.runs.services.audit_selection import PageInfo, path_recency, rank_targets
 
@@ -115,3 +116,70 @@ def test_path_recency_ignores_failed_stamps():
 def test_path_recency_skips_stamps_without_a_timestamp():
     assert path_recency([_stamp(["a.py"], checked=None)]) == {}
     assert path_recency([]) == {}
+
+
+# ── coverage_recency_for (the DB→dict projection rotation ranks on) ──────────
+
+
+def _checked(paths, *, checked, source, outcome="clean"):
+    return SimpleNamespace(
+        covered_paths=paths,
+        checked_at=checked,
+        outcome=outcome,
+        coverage_source=source,
+    )
+
+
+class _CheckedNodes:
+    def __init__(self, rows):
+        self._rows = rows
+
+    async def filter(self, **kwargs):
+        return list(self._rows)
+
+
+async def test_rotation_recency_ignores_coverage_source(monkeypatch):
+    """Rotation must rank on WHEN a path was covered, never on how well the
+    run described it.
+
+    An earlier revision aged non-"reported" stamps by a constant. Because
+    recency is rotation's only memory of what it already dispatched, a constant
+    penalty pins an inferred-only area's apparent age at that constant no matter
+    how often it is audited — auditing it never retires it from the queue, and
+    the areas whose agents DID report get starved. `coverage_source` tracks
+    model compliance with _REPORTING_CONTRACT, not the dispatch path, so it is
+    not a ranking signal at all. Keep these timestamps untouched.
+    """
+    from domains.runs.services import audit_selection
+
+    monkeypatch.setattr(
+        audit_selection,
+        "Checked",
+        SimpleNamespace(nodes=_CheckedNodes([
+            _checked(["src/reported"], checked=NOW, source="reported"),
+            _checked(["src/inferred"], checked=NOW, source="inferred"),
+            # Pre-m0022 stamps cannot be classified after the fact.
+            _checked(["src/legacy"], checked=NOW, source="unknown"),
+        ])),
+    )
+    out = await audit_selection.coverage_recency_for("r1")
+
+    assert out == {"src/reported": NOW, "src/inferred": NOW, "src/legacy": NOW}
+
+
+async def test_rotation_recency_still_drops_failed_and_undated_stamps(monkeypatch):
+    """The filters that DO belong here keep working through the projection."""
+    from domains.runs.services import audit_selection
+
+    monkeypatch.setattr(
+        audit_selection,
+        "Checked",
+        SimpleNamespace(nodes=_CheckedNodes([
+            _checked(["src/failed"], checked=NOW, source="reported", outcome="failed"),
+            _checked(["src/undated"], checked=None, source="reported"),
+            _checked(["src/ok"], checked=NOW, source="inferred"),
+        ])),
+    )
+    out = await audit_selection.coverage_recency_for("r1")
+
+    assert out == {"src/ok": NOW}

@@ -48,9 +48,14 @@ def _coverage_fields(
     35-page scope still lands the whole scope in covered_paths. It stays
     (dropping it would blank the area coverage strip for every run that omits
     the contract) but is labelled `coverage_source="inferred"` so a reader can
-    tell the two apart. NOTE: the label is currently carried through to
-    AreaCoverageDTO only — `area_health` and `audit_selection.coverage_recency_for`
-    still weigh inferred paths exactly like reported ones. Pure for testability."""
+    tell the two apart — the areas board and the coverage strip badge it
+    "scope only".
+
+    The label is deliberately NOT used to rank or filter anywhere: it records
+    whether the model complied with the coverage contract, not which dispatch
+    path a run took, so ranking on it ranks on prompt compliance. See
+    audit_selection.coverage_recency_for for the worked argument. Pure for
+    testability."""
     coverage = dict(usage.get("coverage") or {})
 
     def _paths(value: Any) -> list[str]:

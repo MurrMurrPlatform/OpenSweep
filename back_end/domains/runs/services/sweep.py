@@ -28,10 +28,7 @@ from typing import Any, Optional
 from domains.areas.models import Area, area_is_stale, is_leaf
 from domains.docs.models import Doc
 from domains.runs.schemas import RunTrigger
-from domains.runs.services._intent_helpers import (
-    build_intent,
-    load_agent_prompt_body,
-)
+from domains.runs.services._intent_helpers import load_agent_prompt_body
 from domains.runs.services.lifecycle import (
     LifecycleError,
     trigger_run,
@@ -507,13 +504,18 @@ async def run_audit(
     selected areas: their scope paths become the run's target and their
     specs ride along in the structural block.
     """
+    # The budget rides the STRUCTURAL slot, never custom_intent. Folding it into
+    # custom_intent made it outrank prompt_body, so an audit whose only knob was
+    # max_findings shipped an instructions layer consisting of one budget
+    # sentence — the stage prompt and the page contract both vanished. Same rule
+    # deep-scan already follows (_deep_scan_intent).
+    budget_line = ""
     if max_findings:
-        budget = (
+        budget_line = (
             f"File at most {max_findings} findings — rank by severity × confidence "
             "and file the clearest, highest-impact ones first. An empty result is "
             "a valid result."
         )
-        custom_intent = f"{custom_intent}\n\n{budget}" if custom_intent else budget
     result = AuditResult(
         repository_uid=repository_uid,
         doc_count=len(doc_uids),
@@ -554,6 +556,9 @@ async def run_audit(
             title = f"Audit — {shown}" + (
                 f" +{len(keys) - 3}" if len(keys) > 3 else ""
             )
+        # After the area branch, which replaces `structural` wholesale.
+        if budget_line:
+            structural = f"{structural}\n\n{budget_line}"
         prompt_body = await load_agent_prompt_body(agent_uid)
         if prompt_body is None:
             prompt_body = await _workflow_prompt(repository_uid, "ask")
@@ -583,6 +588,11 @@ async def run_audit(
                 effort=effort,
                 trigger=RunTrigger.MANUAL,
                 triggered_by=triggered_by or "audit",
+                agent_uid=composed.agent_uid,
+                agent_rev=composed.agent_rev,
+                stage="ask",
+                composed_degraded=composed.composed_degraded,
+                degraded_layers=composed.degraded_layers,
             )
             result.runs_dispatched.append(run.uid)
         except LifecycleError as exc:
@@ -623,11 +633,16 @@ async def run_audit(
         prompt_body = await _workflow_prompt(repository_uid, "ask")
     for doc in docs:
         try:
+            composed = await _audit_intent(
+                repository_uid=repository_uid,
+                doc=doc,
+                prompt_body=prompt_body,
+                custom_intent=custom_intent,
+                budget_line=budget_line,
+            )
             run = await trigger_run(
                 repository_uid=repository_uid,
-                intent=_audit_intent(
-                    doc=doc, prompt_body=prompt_body, custom_intent=custom_intent
-                ),
+                intent=composed.text,
                 playbook="ask",
                 title=f"Audit — {doc.title or doc.slug}",
                 target={"doc_uids": [doc.uid], "paths": list(doc.watch_paths or [])},
@@ -635,6 +650,11 @@ async def run_audit(
                 effort=effort,
                 trigger=RunTrigger.MANUAL,
                 triggered_by=triggered_by or "audit",
+                agent_uid=composed.agent_uid,
+                agent_rev=composed.agent_rev,
+                stage="ask",
+                composed_degraded=composed.composed_degraded,
+                degraded_layers=composed.degraded_layers,
             )
             result.runs_dispatched.append(run.uid)
         except LifecycleError as exc:
@@ -1096,28 +1116,45 @@ async def _generate_specs_intent(
     )
 
 
-def _audit_intent(
+async def _audit_intent(
     *,
+    repository_uid: str,
     doc: Doc,
     prompt_body: Optional[str] = None,
     custom_intent: Optional[str] = None,
-) -> str:
+    budget_line: str = "",
+):
+    """Compose one doc-scoped audit intent through the org-agent-overlays layers.
+
+    Mirrors _deep_scan_intent / _map_areas_intent: the seeded "ask" base is the
+    instructions layer (the repo's ask-stage prompt or an explicit agent prompt
+    replaces it via prompt_body), and the page contract + findings budget ride
+    the structural slot where no override can displace them. Previously this
+    called build_intent directly with the page contract as `default_intent`,
+    which meant the run also skipped the platform base, the org overlay and the
+    repo guidance section entirely.
+    """
+    from domains.agents.services.composition import compose_agent_intent
+
     watch = ", ".join(doc.watch_paths or []) or "(no watch paths — use the page body to find the code)"
-    default_intent = _AUDIT_INTENT_TEMPLATE.format(
-        doc_title=doc.title or doc.slug,
-        doc_slug=doc.slug,
-        doc_uid=doc.uid,
-        watch_paths=watch,
-    )
-    scope_summary = (
-        f"doc_slug={doc.slug}\ntitle={doc.title or doc.slug}\n"
-        f"watch_paths={watch}"
-    )
-    return build_intent(
-        prompt_body=prompt_body,
+    structural_parts = [
+        _AUDIT_PAGE_CONTRACT.format(
+            doc_title=doc.title or doc.slug,
+            doc_slug=doc.slug,
+            doc_uid=doc.uid,
+            watch_paths=watch,
+        )
+    ]
+    if budget_line:
+        structural_parts.append(budget_line)
+    return await compose_agent_intent(
+        repository_uid=repository_uid,
+        agent_key="ask",
+        stage="ask",
+        repo_guidance="",
         custom_intent=custom_intent,
-        default_intent=default_intent,
-        scope_summary=scope_summary,
+        prompt_body=prompt_body,
+        structural="\n\n".join(structural_parts),
     )
 
 
@@ -1171,26 +1208,35 @@ entry points changed. Read the current code at each leaf's scope paths
 with your native file tools before writing its contract."""
 
 
-_AUDIT_INTENT_TEMPLATE = """Audit the code behind this documentation page.
+# The findings taxonomy that used to open this template ("correctness/security
+# defects -> kind=defect", etc.) is gone rather than moved: it duplicated the
+# seeded "ask" base and stage default verbatim, and those now supply the
+# instructions layer for this run like they do for every other ask run.
+#
+# Code-owned per-page contract for doc-scoped audit runs — lands in the
+# structural slot, AFTER every guidance layer, so neither the repo's "ask"
+# stage prompt nor an org overlay can displace it.
+#
+# This block used to live in _AUDIT_INTENT_TEMPLATE's instructions slot, where
+# `prompt_body` (the ask stage prompt, which always resolves) silently shadowed
+# it on every run. It carries the three things that exist nowhere else on this
+# path: the slug `read_doc` is keyed by, the uid `write_memory` anchors to, and
+# `confirm_doc_current` — the only call that can clear this page's stale flag.
+_AUDIT_PAGE_CONTRACT = """## The page this run is scoped to
 
 Page: **{doc_title}** (slug={doc_slug})
 Watch paths: {watch_paths}
 
-Read the page with `read_doc(slug={doc_slug})`, then audit the code at
-its watch paths. File high-signal Findings only:
+Read the page with `read_doc(slug={doc_slug})` before auditing the code at its
+watch paths. Persist durable non-obvious facts with `write_memory`
+(anchor_uid={doc_uid}).
 
-* correctness/security defects -> kind=defect with severity reflecting impact.
-* missing tests                -> kind=gap.
-* stale/missing source-repo docs -> kind=gap, tags=["docs"].
-* maintainability              -> kind=improvement.
-
-Along the way, persist durable non-obvious facts with `write_memory`
-(anchor_uid={doc_uid}), and if the page itself is wrong or stale, fix it
-with `propose_doc_edit` — or `confirm_doc_current(slug={doc_slug})` if
-you verified it and it holds.
-
-Be concise. If the page's scope is small or unclear, file fewer Findings
-rather than padding."""
+Finish the page in one of exactly two ways: correct it with `propose_doc_edit`
+if it is wrong or stale, or call `confirm_doc_current(slug={doc_slug})` if you
+verified it against the code and it holds. Those are the only two calls that
+clear this page's stale flag — read it, agree with it, move on, and it stays
+stale and gets re-audited by every later run. Never confirm a page you did not
+actually check."""
 
 
 # Code-owned Analysis authoring contract for deep-scan runs — lands in the

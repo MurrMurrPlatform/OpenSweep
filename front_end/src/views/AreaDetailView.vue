@@ -702,6 +702,14 @@ async function confirmDelete() {
             <li v-for="(stamp, i) in detail.coverage" :key="`${stamp.run_uid}-${i}`" class="space-y-1 px-4 py-2">
               <div class="flex flex-wrap items-center gap-2">
                 <Badge :variant="outcomeVariant(stamp.outcome)" class="px-1.5 text-[10px]">{{ stamp.outcome }}</Badge>
+                <Badge
+                  v-if="stamp.coverage_source !== 'reported'"
+                  variant="outline"
+                  class="px-1.5 text-[10px]"
+                  title="These are the paths the run was dispatched at, not a reported coverage contract — it may have examined only part of them"
+                >
+                  scope only
+                </Badge>
                 <span v-if="stamp.checked_at" class="text-xs text-muted-foreground" :title="stamp.checked_at">
                   {{ formatRelativeTime(stamp.checked_at) }}
                 </span>

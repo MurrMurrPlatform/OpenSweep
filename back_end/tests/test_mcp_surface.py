@@ -129,6 +129,38 @@ def test_every_platform_route_is_exposed_to_executors():
     )
 
 
+def test_every_advertised_write_tool_is_reachable_over_mcp():
+    """A tool we PROMISE agents in the prompt must exist on the MCP surface.
+
+    The two tests above both start from the set of registered routes or the
+    allowlist, so a tool that appears in neither is invisible to them — it
+    contributes to no difference set. That is exactly how `confirm_area_current`
+    shipped advertised-but-unreachable: it was in `dispatcher._TOOLS` (so the
+    envelope transport worked) and in `PLATFORM_WRITE_TOOLS` (so every prompt
+    named it), with no route and no allowlist entry, which meant claude_code and
+    codex runs were told to call a tool that did not exist for them.
+
+    This closes the pairing: advertised ⇒ reachable.
+    """
+    from domains.executors import prompt_kit
+
+    # complete_run is reached through the same mount under its own name; every
+    # other advertised write tool maps 1:1 onto opensweep_platform_<name>.
+    advertised = set(prompt_kit.PLATFORM_WRITE_TOOLS)
+    allowlisted = set(OPENSWEEP_PLATFORM_TOOL_OPERATIONS)
+    unreachable = sorted(
+        name for name in advertised
+        if f"opensweep_platform_{name}" not in allowlisted
+    )
+    assert not unreachable, (
+        f"prompt_kit advertises tools with no MCP surface: {unreachable}. "
+        "Every name in PLATFORM_WRITE_TOOLS is rendered into the executor "
+        "prompts and promised as mcp__opensweep-platform__opensweep_platform_"
+        "<name>; add a route in api/v1/platform_tools.py and the operation to "
+        "OPENSWEEP_PLATFORM_TOOL_OPERATIONS in mcp_app.py."
+    )
+
+
 def test_platform_tools_are_tracking_safe():
     """All platform-mounted tools must be tracking-safe.
 
@@ -149,6 +181,7 @@ def test_platform_tools_are_tracking_safe():
         "opensweep_platform_propose_doc_edit",
         "opensweep_platform_propose_area_edit",
         "opensweep_platform_confirm_doc_current",
+        "opensweep_platform_confirm_area_current",
         "opensweep_platform_write_memory",
         "opensweep_platform_attach_artifact",
         "opensweep_platform_complete_run",
