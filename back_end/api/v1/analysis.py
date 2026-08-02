@@ -6,13 +6,14 @@ ask_question). Interactive question answering + refine-with-answers land in
 Phase C.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 
 from api.dependencies import get_current_user, require_role
 from domains.analysis.schemas import AnalysisDTO
 from domains.analysis.services.analysis_service import AnalysisService
-from domains.tenancy import org_repo_uids, require_repo_in_org
+from domains.pagination import Page, page_params, paginate
+from domains.tenancy import repo_scope, require_repo_in_org
 from domains.users.schemas import UserDTO
 from infrastructure.kill_switch import KillSwitchActiveError, assert_runnable
 
@@ -31,22 +32,21 @@ class RefineResult(BaseModel):
 
 @router.get("", response_model=list[AnalysisDTO], operation_id="opensweep_list_analyses")
 async def list_analyses(
+    response: Response,
     repository_uid: str | None = Query(None),
     status: str | None = Query(None),
     include_superseded: bool = Query(True),
+    page: Page = Depends(page_params),
     user: UserDTO = Depends(get_current_user),
 ):
     if repository_uid is not None:
         await require_repo_in_org(repository_uid, user.org_uid)
     items = await AnalysisService().list(
-        repository_uid=repository_uid,
+        repository_uids=await repo_scope(repository_uid, user.org_uid),
         status=status,
         include_superseded=include_superseded,
     )
-    if repository_uid is None:
-        allowed = await org_repo_uids(user.org_uid)
-        items = [a for a in items if a.repository_uid in allowed]
-    return items
+    return paginate(items, page, response)
 
 
 # Declared before /{uid} so the static path wins the match. Latest

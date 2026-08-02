@@ -336,7 +336,7 @@ async def platform_list_tickets(
     # (formerly "all repos") 404s rather than leaking across orgs.
     await require_tool_repo_access(request, user, repository_uid)
     return await TicketService().list(
-        repository_uid=repository_uid,
+        repository_uids=[repository_uid],
         status=status or None,
         origin=origin or None,
         parent_ticket_uid=parent_ticket_uid or None,

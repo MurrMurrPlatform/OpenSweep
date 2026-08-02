@@ -4,7 +4,7 @@ run-triggering buttons: news scan and doc-proposal.
 Conversion of a NewsItem into a Finding is human-only; the news-scout agent
 never files findings or tickets — it only files NewsItems."""
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 from api.dependencies import get_current_user, require_role
@@ -26,7 +26,8 @@ from domains.news.schemas import (
 from domains.news.services.interest_service import InterestService
 from domains.news.services.news_service import NewsService
 from domains.run_policies.services.effort import ensure_policy_for_effort
-from domains.tenancy import org_repo_uids, require_repo_in_org
+from domains.pagination import Page, page_params, paginate
+from domains.tenancy import repo_scope, require_repo_in_org
 from domains.users.schemas import UserDTO
 from infrastructure.audit import write_audit
 
@@ -58,14 +59,14 @@ async def _build_news_scan_intent(repository_uid: str) -> str:
     base = await variant_prompt_body("news-scout") or _SCAN_FALLBACK_INTENT
 
     interests = await InterestService().list(
-        repository_uid=repository_uid, enabled_only=True
+        repository_uids=[repository_uid], enabled_only=True
     )
     interest_lines = (
         "\n".join(f"- {i.title}: {i.details}" for i in interests)
         or "(none entered yet)"
     )
 
-    existing = await NewsService().list(repository_uid=repository_uid)
+    existing = await NewsService().list(repository_uids=[repository_uid])
     existing_lines = (
         "\n".join(f"- {n.title} ({n.url})" for n in existing[:20]) or "(none yet)"
     )
@@ -123,22 +124,21 @@ _DOC_PROPOSAL_INTENT = (
 
 @router.get("", response_model=list[NewsItemDTO], operation_id="opensweep_list_news_items")
 async def list_news_items(
+    response: Response,
     repository_uid: str | None = Query(None),
     category: str | None = Query(None),
     status: str | None = Query(None),
+    page: Page = Depends(page_params),
     user: UserDTO = Depends(get_current_user),
 ):
     if repository_uid is not None:
         await require_repo_in_org(repository_uid, user.org_uid)
     items = await NewsService().list(
-        repository_uid=repository_uid,
+        repository_uids=await repo_scope(repository_uid, user.org_uid),
         category=category,
         status=status,
     )
-    if repository_uid is None:
-        allowed = await org_repo_uids(user.org_uid)
-        items = [n for n in items if n.repository_uid in allowed]
-    return items
+    return paginate(items, page, response)
 
 
 @router.post("", response_model=NewsItemDTO, operation_id="opensweep_create_news_item")

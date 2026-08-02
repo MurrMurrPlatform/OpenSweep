@@ -322,7 +322,9 @@ async def list_open_pull_requests(
     # Tenancy: the queue is always repository-scoped — an empty repository_uid
     # (formerly "all repos") 404s rather than leaking across orgs.
     await require_tool_repo_access(request, user, repository_uid)
-    return await PullRequestService().list(repository_uid=repository_uid, state="open")
+    return await PullRequestService().list(
+        repository_uids=[repository_uid], state="open"
+    )
 
 
 @router.get(

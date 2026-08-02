@@ -65,29 +65,28 @@ class EpicService:
         return p
 
     async def list(
-        self, *, repository_uid: str | None = None, status: str | None = None
+        self, *, repository_uids: list[str], status: str | None = None
     ) -> list[EpicProposalDTO]:
-        filters: dict = {}
-        if repository_uid:
-            filters["repository_uid"] = repository_uid
+        """Proposals in ``repository_uids`` — the caller's tenancy scope, so an
+        empty list means an empty result, never "every proposal"."""
+        if not repository_uids:
+            return []
+        filters: dict = {"repository_uid__in": repository_uids}
         if status:
             filters["status"] = status
-        nodes = await (
-            EpicProposal.nodes.filter(**filters)
-            if filters
-            else EpicProposal.nodes.all()
-        )
-        nodes = list(nodes)
+        nodes = list(await EpicProposal.nodes.filter(**filters))
 
         # Resolve member titles here rather than letting the client match uids
         # against whatever tickets its board happened to have loaded — that
-        # rendered filtered-out members as raw uid fragments. One read per
-        # repository, not one per member.
-        titles: dict[str, str] = {}
-        repo_uids = {p.repository_uid for p in nodes if p.repository_uid}
-        for repo_uid in repo_uids:
-            for t in await Ticket.nodes.filter(repository_uid=repo_uid):
-                titles[t.uid] = t.title or ""
+        # rendered filtered-out members as raw uid fragments. One read for the
+        # members these proposals actually name, not a whole repo of tickets
+        # per proposal.
+        members = {uid for p in nodes for uid in (p.member_ticket_uids or []) if uid}
+        titles: dict[str, str] = (
+            {t.uid: t.title or "" for t in await Ticket.nodes.filter(uid__in=sorted(members))}
+            if members
+            else {}
+        )
 
         out = [
             proposal_to_dto(

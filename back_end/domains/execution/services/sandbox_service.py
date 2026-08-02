@@ -290,9 +290,16 @@ class SandboxService:
         )
         await sb.save()
 
-    async def list_active(self) -> list[SandboxDTO]:
-        sbs = await Sandbox.nodes.all()
-        return [_to_dto(s) for s in sbs if s.status != SandboxStatus.DESTROYED.value]
+    async def list_active(self, *, repository_uids: list[str]) -> list[SandboxDTO]:
+        """Live sandboxes in ``repository_uids`` — the caller's tenancy scope,
+        so an empty list means an empty result, never "every sandbox"."""
+        if not repository_uids:
+            return []
+        return [
+            _to_dto(s)
+            for s in await Sandbox.nodes.filter(repository_uid__in=repository_uids)
+            if s.status != SandboxStatus.DESTROYED.value
+        ]
 
     async def destroy(self, sandbox_uid: str, *, actor_uid: str | None = None) -> SandboxDTO:
         sb = await Sandbox.nodes.get_or_none(uid=sandbox_uid)

@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 from domains.comments.schemas import CommentSubjectType
 from domains.runs.models import RUN_SURFACES, Run
@@ -227,27 +227,24 @@ def runs_api(monkeypatch):
 
         return [n for n in nodes if ok(n)]
 
-    async def fake_reconcile():
-        return None
-
-    async def fake_org_repos(org_uid):
-        return {"repo1"}
+    async def fake_repo_scope(repository_uid, org_uid):
+        return [repository_uid] if repository_uid else ["repo1"]
 
     monkeypatch.setattr(
         runs_module,
         "Run",
         SimpleNamespace(nodes=SimpleNamespace(all=fake_all, filter=fake_filter)),
     )
-    monkeypatch.setattr(runs_module, "reconcile_stale_runs", fake_reconcile)
-    monkeypatch.setattr(runs_module, "org_repo_uids", fake_org_repos)
+    monkeypatch.setattr(runs_module, "repo_scope", fake_repo_scope)
     return runs_module
 
 
 async def _uids(runs_module, **kwargs):
     defaults = dict(
+        response=Response(),
         repository_uid=None, executor=None, status=None, playbook=None,
         linked_pr_uid=None, linked_ticket_uid=None, linked_finding_uid=None,
-        surface=None, limit=100,
+        surface=None, limit=100, offset=0,
     )
     defaults.update(kwargs)
     return [r.uid for r in await runs_module.list_runs(**defaults)]

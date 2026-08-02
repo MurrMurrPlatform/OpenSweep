@@ -86,19 +86,31 @@ async def active_runs_for(
     ticket_uid: str | None = None,
     finding_uid: str | None = None,
     playbooks: list[str] | None = None,
+    repository_uids: list[str] | None = None,
 ) -> list[Run]:
     """Active (queued/running/paused_quota) runs matching the given links
     and/or playbooks. Python-side filtering is fine at the current scale.
 
-    Repairs stuck rows first: a run orphaned by a process restart must not
-    hold the 409 dispatch guard hostage until someone happens to open the
-    runs list."""
-    from domains.runs.services.run_reconciliation import reconcile_stale_runs
+    `repository_uids` narrows the fetch to a tenancy scope, for the API
+    route. The internal dispatch-guard callers pass no scope: the guard is a
+    global "is this work already in flight" question and must see every
+    tenant's rows.
 
-    await reconcile_stale_runs()
-    runs = await Run.nodes.filter(status__in=list(ACTIVE_RUN_STATUSES))
+    Repairs the rows it fetched before reporting them: a run orphaned by a
+    process restart must not hold the 409 dispatch guard hostage until the
+    next beat tick. Only these rows are examined — the graph-wide sweep is
+    the beat task's job."""
+    from domains.runs.services.run_reconciliation import reconcile_runs
+
+    query: dict[str, object] = {"status__in": list(ACTIVE_RUN_STATUSES)}
+    if repository_uids is not None:
+        if not repository_uids:
+            return []
+        query["repository_uid__in"] = repository_uids
+    runs = await Run.nodes.filter(**query)
+    await reconcile_runs(runs)
     return filter_active_runs(
-        runs,
+        [r for r in runs if r.status in ACTIVE_RUN_STATUSES],
         repository_uid=repository_uid,
         pull_request_uid=pull_request_uid,
         ticket_uid=ticket_uid,

@@ -114,7 +114,7 @@ async def list_news_items(
     (new | saved | dismissed | converted).
     """
     items = await NewsService().list(
-        repository_uid=repository_uid, category=category, status=status
+        repository_uids=[repository_uid], category=category, status=status
     )
     return [
         {
@@ -142,7 +142,7 @@ async def list_interests(
     a news scan and make sure every enabled interest gets search coverage.
     """
     interests = await InterestService().list(
-        repository_uid=repository_uid, enabled_only=enabled_only
+        repository_uids=[repository_uid], enabled_only=enabled_only
     )
     return [
         {

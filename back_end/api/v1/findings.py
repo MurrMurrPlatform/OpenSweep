@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 from api.dependencies import get_current_user, require_role
@@ -27,7 +27,8 @@ from domains.runs.schemas import (
 from domains.runs.services.turn_service import run_to_dto
 from domains.runs.services.lifecycle import LifecycleError, trigger_run
 from domains.run_policies.services.effort import ensure_policy_for_effort
-from domains.tenancy import org_repo_uids, require_repo_in_org
+from domains.pagination import Page, page_params, paginate
+from domains.tenancy import repo_scope, require_repo_in_org
 from domains.users.schemas import UserDTO
 from infrastructure.audit import write_audit
 
@@ -40,6 +41,7 @@ class BulkDeleteFindingsRequest(BaseModel):
 
 @router.get("", response_model=list[FindingDTO], operation_id="opensweep_list_findings")
 async def list_findings(
+    response: Response,
     repository_uid: str | None = Query(None),
     source_run_uid: str | None = Query(None),
     tag: str | None = Query(None),
@@ -50,6 +52,7 @@ async def list_findings(
     size: str | None = Query(None),
     sort_by: str = Query("updated_at"),
     sort_dir: str = Query("desc"),
+    page: Page = Depends(page_params),
     user: UserDTO = Depends(get_current_user),
 ):
     """List findings.
@@ -68,7 +71,7 @@ async def list_findings(
     if repository_uid is not None:
         await require_repo_in_org(repository_uid, user.org_uid)
     items = await FindingService().list(
-        repository_uid=repository_uid,
+        repository_uids=await repo_scope(repository_uid, user.org_uid),
         source_run_uid=source_run_uid,
         tag=tag,
         kind=kind,
@@ -79,10 +82,7 @@ async def list_findings(
         sort_by=sort_by,
         sort_dir=sort_dir,
     )
-    if repository_uid is None:
-        allowed = await org_repo_uids(user.org_uid)
-        items = [f for f in items if f.repository_uid in allowed]
-    return items
+    return paginate(items, page, response)
 
 
 @router.get(
@@ -399,10 +399,7 @@ async def verify_finding(uid: str, user: UserDTO = Depends(require_role("maintai
 async def list_finding_verifications(uid: str, user: UserDTO = Depends(get_current_user)):
     f = await FindingService().get_node(uid)
     await require_repo_in_org(f.repository_uid, user.org_uid)
-    nodes = await Run.nodes.all()
-    matching = [
-        r for r in nodes if (r.playbook or "") == "verify" and (r.linked_finding_uid or "") == uid
-    ]
+    matching = list(await Run.nodes.filter(linked_finding_uid=uid, playbook="verify"))
     matching.sort(
         key=lambda r: r.started_at
         or r.created_at

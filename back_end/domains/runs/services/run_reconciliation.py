@@ -7,15 +7,18 @@ process restarts or crashes mid-run, nothing is left to move the row out of
 
   - reconcile_orphaned_runs — startup sweep: the restarting process
     immediately fails the runs it owned (usage["dispatch_runtime"]).
-  - reconcile_stale_runs — periodic (beat tick) + lazy (read endpoints and
-    the in-flight 409 guard): liveness first — the transcript stream going
-    silent covers EVERY provider kind, including local ones that have no
-    wall ceiling — then the wall ceiling for metered kinds.
+  - reconcile_stale_runs — the graph-wide sweep, driven by the 5-minute
+    Celery beat tick and nothing else: liveness first — the transcript
+    stream going silent covers EVERY provider kind, including local ones
+    that have no wall ceiling — then the wall ceiling for metered kinds.
+  - reconcile_runs — the same staleness test over a caller-supplied list.
+    Callers holding rows they already fetched (the in-flight 409 guard, a
+    run-detail read) repair just those instead of scanning the graph.
 """
 
 from __future__ import annotations
 
-import time
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -28,12 +31,6 @@ from domains.run_policies.models import RunPolicy
 from infrastructure.audit import write_audit
 
 _REPAIRABLE_STATUSES = frozenset({"queued", "running"})
-
-# Lazy-sweep debounce: read endpoints call reconcile_stale_runs opportunistically;
-# one sweep per window is plenty (the 5-min Celery beat is the backstop, and it
-# runs in its own process with its own debounce state).
-_DEBOUNCE_SECONDS = 30.0
-_last_sweep_monotonic: float | None = None
 
 
 def last_activity(run: Any) -> datetime | None:
@@ -109,21 +106,31 @@ def is_orphan(
 
 
 async def reconcile_stale_runs(*, grace_seconds: int = 90) -> int:
-    """Mark dead queued/running runs as failed. Safe to call from anywhere;
-    a no-op for runs that are still showing signs of life. Debounced: the
-    lazy sweep runs at most once per _DEBOUNCE_SECONDS per process."""
-    global _last_sweep_monotonic
-    mono = time.monotonic()
-    if _last_sweep_monotonic is not None and mono - _last_sweep_monotonic < _DEBOUNCE_SECONDS:
-        return 0
-    _last_sweep_monotonic = mono
+    """Fail every dead queued/running run in the graph.
+
+    This scans all repairable rows across all tenants, so it belongs on the
+    Celery beat tick (and process startup), never on a request path — see
+    reconcile_runs for the request-path variant.
+    """
+    return await reconcile_runs(
+        await Run.nodes.filter(status__in=list(_REPAIRABLE_STATUSES)),
+        grace_seconds=grace_seconds,
+    )
+
+
+async def reconcile_runs(runs: Iterable[Any], *, grace_seconds: int = 90) -> int:
+    """Fail the dead runs among ``runs``, leaving the live ones untouched.
+
+    Repairs in place: a failed run's in-memory object comes back with
+    status "failed", so callers can re-filter the list they passed in.
+    """
     now = datetime.now(timezone.utc)
     liveness_timeout = int(settings.OPENSWEEP_RUN_LIVENESS_TIMEOUT_SECONDS)
     changed = 0
     # Per-policy wall ceilings are cached for the duration of one pass — one
     # RunPolicy fetch per policy, not per run.
     ceiling_cache: dict[str, int] = {}
-    for run in await Run.nodes.filter(status__in=list(_REPAIRABLE_STATUSES)):
+    for run in runs:
         if run.status not in _REPAIRABLE_STATUSES:
             continue
         started = run.started_at or run.created_at
