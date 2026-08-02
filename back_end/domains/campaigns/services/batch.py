@@ -9,6 +9,18 @@ The parent's status mirrors the fleet: planning until launched, running
 while any child is live, done once every child is terminal and aggregated.
 campaign_service is imported lazily inside functions — it imports batch, so
 a module-level import would be circular.
+
+**The global child launches LAST, and that is load-bearing.** Inside one
+campaign `tick.plan_tick` holds global parts until every area part is
+terminal, so a global sweep's `escalate:<lens>` digest sees the whole
+campaign's findings. A batch splits the kinds across three SEPARATE
+campaigns, and the global child contains only global parts — its
+`areas_terminal` check is `all([])`, vacuously true. Launching all three at
+once therefore dispatched the whole-repo sweeps with an empty digest on a
+first batch, and a one-cycle-stale digest afterwards: the batch defeated the
+very ordering invariant the tick tests protect. `launch_batch` now holds the
+global child in `planning` and `advance_batch` releases it once its siblings
+are terminal.
 """
 
 from __future__ import annotations
@@ -18,9 +30,13 @@ from uuid import uuid4
 from domains.campaigns.models import DEFAULT_MAX_PARALLEL, Campaign
 from domains.campaigns.schemas import CreateCampaignRequest
 from infrastructure.audit import write_audit
+from logging_config import logger
 
 # The child kinds a batch fans out into, in dispatch order.
 _CHILD_KINDS = ("subsystem", "feature", "global")
+
+# Child kinds held back until their siblings finish (see the module docstring).
+_DEFERRED_KINDS = {"global"}
 
 # Child statuses that end a child's contribution to the roll-up.
 _TERMINAL = {"done", "failed", "cancelled"}
@@ -99,46 +115,113 @@ async def create_batch(
     return parent
 
 
-async def launch_batch(parent: Campaign) -> None:
-    """Launch every child campaign, then move the parent to running.
+async def _children(parent: Campaign) -> list[Campaign]:
+    """The parent's child rows, skipping any that no longer exist."""
+    out: list[Campaign] = []
+    for uid in list(parent.child_uids or []):
+        child = await Campaign.nodes.get_or_none(uid=uid)
+        if child is not None:
+            out.append(child)
+    return out
 
-    Each child launches through campaign_service.launch (its own replan +
-    dispatch); the parent just tracks the fleet. A child that fails to launch
-    is immediately cancelled (planning → cancelled, a legal transition) so
-    aggregate_batch sees it as terminal and the parent can finalize rather
-    than hanging in running forever."""
+
+async def _launch_child(parent: Campaign, uid: str) -> bool:
+    """Launch one child; cancel it on failure. Returns whether it launched.
+
+    A child that fails to launch is immediately cancelled (planning →
+    cancelled, a legal transition) so aggregate_batch sees it as terminal and
+    the parent can finalize rather than hanging in running forever."""
+    from domains.campaigns.services import campaign_service
+
+    try:
+        await campaign_service.launch(uid, actor_uid=parent.created_by or "")
+        return True
+    except Exception as exc:  # noqa: BLE001 — one bad child never stalls the batch
+        err_msg = f"{type(exc).__name__}: {exc}"
+        await campaign_service.record_event(
+            parent, "batch_child_launch_failed", child=uid, error=err_msg
+        )
+        try:
+            await campaign_service.cancel(
+                uid,
+                reason=f"batch child failed to launch: {err_msg}",
+                actor_uid=parent.created_by or "",
+            )
+        except Exception:  # noqa: BLE001 — best-effort; must not stall the loop
+            pass
+        return False
+
+
+async def launch_batch(parent: Campaign) -> None:
+    """Launch the batch's immediate children, then move the parent to running.
+
+    Children whose kind is in `_DEFERRED_KINDS` are deliberately left in
+    `planning` — `advance_batch` releases them once their siblings are
+    terminal, so the global sweeps see a complete escalation queue (see the
+    module docstring). Each other child launches through
+    campaign_service.launch (its own replan + dispatch); the parent just
+    tracks the fleet."""
     from domains.campaigns.models import is_legal_status_transition
     from domains.campaigns.services import campaign_service
 
     launched = 0
-    for uid in list(parent.child_uids or []):
-        try:
-            await campaign_service.launch(uid, actor_uid=parent.created_by or "")
+    deferred = 0
+    for child in await _children(parent):
+        if str(getattr(child, "kind", "") or "") in _DEFERRED_KINDS:
+            deferred += 1
+            continue
+        if await _launch_child(parent, child.uid):
             launched += 1
-        except Exception as exc:  # noqa: BLE001 — one bad child never stalls the batch
-            err_msg = f"{type(exc).__name__}: {exc}"
-            await campaign_service.record_event(
-                parent, "batch_child_launch_failed", child=uid, error=err_msg
-            )
-            # Transition the failed child to cancelled so aggregate_batch treats
-            # it as terminal.  We use cancel() which performs the legal
-            # planning → cancelled move; if that itself raises (e.g. the child
-            # was already terminal) we swallow the error so the other children
-            # still get launched.
-            try:
-                await campaign_service.cancel(
-                    uid,
-                    reason=f"batch child failed to launch: {err_msg}",
-                    actor_uid=parent.created_by or "",
-                )
-            except Exception:  # noqa: BLE001 — best-effort; must not stall the loop
-                pass
 
     fresh = await Campaign.nodes.get_or_none(uid=parent.uid) or parent
     if is_legal_status_transition(fresh.status or "planning", "running"):
         fresh.status = "running"
         await fresh.save()
-    await campaign_service.record_event(fresh, "batch_launched", launched=launched)
+    await campaign_service.record_event(
+        fresh, "batch_launched", launched=launched, deferred=deferred
+    )
+
+
+async def advance_batch(parent: Campaign) -> int:
+    """Release deferred children whose siblings have all finished.
+
+    Returns how many were launched this tick (0 = nothing to do, which is the
+    common case). Called from the campaign tick before aggregate_batch: a
+    child still sitting in `planning` is not terminal, so the roll-up cannot
+    complete until this has run.
+
+    A deferred child that fails to launch is cancelled by `_launch_child`,
+    which keeps it terminal and lets the parent finalize instead of hanging.
+    """
+    from domains.campaigns.services import campaign_service
+
+    children = await _children(parent)
+    waiting = [
+        c
+        for c in children
+        if str(getattr(c, "kind", "") or "") in _DEFERRED_KINDS
+        and (c.status or "planning") == "planning"
+    ]
+    if not waiting:
+        return 0
+    siblings = [c for c in children if c.uid not in {w.uid for w in waiting}]
+    if any((c.status or "planning") not in _TERMINAL for c in siblings):
+        return 0
+
+    launched = 0
+    for child in waiting:
+        logger.info(
+            f"batch {parent.uid}: siblings terminal — launching deferred "
+            f"{getattr(child, 'kind', '')!r} child {child.uid}",
+            extra={"tag": "campaigns"},
+        )
+        if await _launch_child(parent, child.uid):
+            launched += 1
+    fresh = await Campaign.nodes.get_or_none(uid=parent.uid) or parent
+    await campaign_service.record_event(
+        fresh, "batch_deferred_launched", launched=launched
+    )
+    return launched
 
 
 async def aggregate_batch(parent: Campaign) -> bool:
@@ -147,14 +230,13 @@ async def aggregate_batch(parent: Campaign) -> bool:
     Returns False (no-op) while any child is still live. Once every child is
     terminal (done/failed/cancelled) it builds parent.summary =
     {children: [{uid, kind, status, counts}], totals: {...}} from each child's
-    own summary.counts and transitions the parent → done; returns True."""
+    own summary.counts and transitions the parent → done; returns True.
+
+    A deferred child still in `planning` is not terminal, so this is also
+    what keeps the parent open until `advance_batch` has released it."""
     from domains.campaigns.services import campaign_service
 
-    children = []
-    for uid in list(parent.child_uids or []):
-        child = await Campaign.nodes.get_or_none(uid=uid)
-        if child is not None:
-            children.append(child)
+    children = await _children(parent)
 
     if not children or any(
         (c.status or "planning") not in _TERMINAL for c in children

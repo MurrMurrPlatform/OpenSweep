@@ -18,6 +18,16 @@ from logging_config import logger
 _RUN_DONE = {"awaiting_input", "ended", "completed"}
 _RUN_FAILED = {"failed", "cancelled", "limit_exceeded"}
 
+#: Dispatch phases, in order. A part only becomes dispatchable once every
+#: part in an EARLIER phase is terminal. Anything unlisted is phase 0 — a new
+#: part kind runs with the area work rather than silently jumping the queue.
+_PHASE = {"global": 1, "synthesis": 2}
+
+
+def _phase_of(part: dict) -> int:
+    return _PHASE.get(str(part.get("kind") or "area"), 0)
+
+
 _LOCK_KEY = "opensweep:campaign-tick"
 _LOCK_TTL = 55  # under the 60s beat interval so a crashed tick self-heals
 
@@ -33,9 +43,13 @@ def plan_tick(
     Done/failed parts NEVER revert — only pending/running parts are
     considered. A running part whose run vanished from the map is failed
     (the row was deleted or never persisted); anything non-terminal
-    (running, queued, paused_quota) stays in flight. Global parts become
-    dispatchable only once every area part is terminal, so their
-    escalation digests see the full campaign's findings.
+    (running, queued, paused_quota) stays in flight.
+
+    Parts dispatch in PHASE order (see `_PHASE`), each phase waiting for
+    every earlier one to go terminal: area/feature work first, then the
+    global sweeps — so their escalation digests see the campaign's full
+    findings — then synthesis, which reads everything the campaign produced
+    and can only be written once there is nothing left to add.
 
     `provider_headroom` is the target provider's remaining capacity
     (llm_providers.services.capacity). None = unknown, don't clamp. It
@@ -67,11 +81,13 @@ def plan_tick(
             return "failed"
         return str(part.get("state") or "pending")
 
-    areas_terminal = all(
-        _state_after(p) in {"done", "failed"}
-        for p in parts
-        if (p.get("kind") or "area") != "global"
-    )
+    def _phase_clear(phase: int) -> bool:
+        """Is every part in an earlier phase terminal?"""
+        return all(
+            _state_after(p) in {"done", "failed"}
+            for p in parts
+            if _phase_of(p) < phase
+        )
 
     capacity = max(int(max_parallel) - in_flight, 0)
     if provider_headroom is not None:
@@ -84,7 +100,7 @@ def plan_tick(
         pending_left += 1
         if len(dispatch) >= capacity:
             continue
-        if (part.get("kind") or "area") == "global" and not areas_terminal:
+        if not _phase_clear(_phase_of(part)):
             continue
         dispatch.append(int(part["idx"]))
 
@@ -322,17 +338,22 @@ async def tick_campaigns() -> dict:
 
         for c in await Campaign.nodes.filter(status="running"):
             ticked += 1
-            # Batch parents own no parts — they roll their children up instead
-            # of dispatching. aggregate_batch is a no-op until all children
-            # are terminal, then it finalizes the parent.
+            # Batch parents own no parts — they advance and roll up their
+            # children instead of dispatching. advance_batch releases the
+            # deferred global child once its siblings are terminal, so its
+            # escalation digest sees the whole batch's findings;
+            # aggregate_batch is a no-op until EVERY child is terminal
+            # (a child still in `planning` is not), then finalizes the parent.
             if str(getattr(c, "kind", "") or "") == "batch":
                 try:
+                    dispatched += await batch.advance_batch(c)
                     if await batch.aggregate_batch(c):
                         finalized += 1
                 except Exception as exc:  # noqa: BLE001 — one batch never stalls the rest
                     errors += 1
                     logger.warning(
-                        f"campaign {c.uid}: batch aggregate failed: {type(exc).__name__}: {exc}",
+                        f"campaign {c.uid}: batch advance/aggregate failed: "
+                        f"{type(exc).__name__}: {exc}",
                         extra={"tag": "campaigns"},
                     )
                 continue

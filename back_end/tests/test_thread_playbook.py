@@ -29,6 +29,13 @@ def test_thread_playbook_is_registered_everywhere():
     assert "thread" in CHECKED_PLAYBOOKS
 
 
+def test_the_playbook_vocabulary_has_exactly_one_definition():
+    """The service set and the model set were two literals that drifted — the
+    model's omitted `refine`, which lifecycle would happily dispatch."""
+    assert PLAYBOOKS is MODEL_PLAYBOOKS
+    assert "refine" in PLAYBOOKS
+
+
 def test_quiet_gate_predicate():
     assert is_only_no_commits([NO_COMMITS_VIOLATION])
     assert not is_only_no_commits([])

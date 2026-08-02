@@ -175,8 +175,10 @@ def global_seams(monkeypatch):
         return variant
 
     async def fake_digest(repository_uid, lens_key):
+        # (digest lines, the Finding rows behind them) — the rows are stamped
+        # as delivered after dispatch so the queue rotates.
         captured["digest_args"] = (repository_uid, lens_key)
-        return ["- Leaky boundary (back_end/app.py)"]
+        return ["- Leaky boundary (back_end/app.py)"], []
 
     async def fake_dispatch_agent(**kwargs):
         captured["dispatch_agent"] = kwargs

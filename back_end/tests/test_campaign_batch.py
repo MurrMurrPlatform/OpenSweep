@@ -129,22 +129,128 @@ async def test_aggregate_batch_finalizes_and_sums_child_totals(store, create_sea
     assert sorted(r["counts"]["total"] for r in child_rows) == [0, 3, 5]
 
 
-async def test_launch_batch_launches_each_child_and_runs_the_parent(
-    store, create_seam, monkeypatch
-):
-    parent = await batch.create_batch("repo1", CreateCampaignRequest(kind="batch"))
-    launched = []
+@pytest.fixture
+def launch_seam(monkeypatch):
+    """campaign_service.launch → records the uid and flips the row running."""
+    launched: list[str] = []
 
     async def fake_launch(uid, **_kw):
         launched.append(uid)
         return SimpleNamespace(uid=uid)
 
     monkeypatch.setattr(campaign_service, "launch", fake_launch)
+    return launched
+
+
+def _child_of_kind(store, parent, kind):
+    return next(store.rows[u] for u in parent.child_uids if store.rows[u].kind == kind)
+
+
+async def test_launch_batch_launches_the_siblings_and_defers_the_global_child(
+    store, create_seam, launch_seam
+):
+    """The global child is held back — see the batch module docstring.
+
+    Inside one campaign `plan_tick` holds global parts until the area parts
+    are terminal. A batch puts the globals in their OWN campaign, where that
+    check is `all([])` — vacuously true — so launching all three at once
+    dispatched the whole-repo sweeps with an empty escalation digest.
+    """
+    parent = await batch.create_batch("repo1", CreateCampaignRequest(kind="batch"))
 
     await batch.launch_batch(parent)
 
-    assert sorted(launched) == sorted(parent.child_uids)
+    global_child = _child_of_kind(store, parent, "global")
+    assert global_child.uid not in launch_seam
+    assert global_child.status == "planning"
+    assert sorted(launch_seam) == sorted(
+        u for u in parent.child_uids if u != global_child.uid
+    )
     assert store.rows[parent.uid].status == "running"
+
+
+async def test_the_parent_cannot_finalize_while_the_global_child_waits(
+    store, create_seam, launch_seam
+):
+    """A deferred child is not terminal, so the roll-up must stay open."""
+    parent = await batch.create_batch("repo1", CreateCampaignRequest(kind="batch"))
+    await batch.launch_batch(parent)
+
+    for kind in ("subsystem", "feature"):
+        child = _child_of_kind(store, parent, kind)
+        child.status = "done"
+        await child.save()
+
+    assert await batch.aggregate_batch(store.rows[parent.uid]) is False
+
+
+async def test_advance_batch_waits_while_a_sibling_is_still_running(
+    store, create_seam, launch_seam
+):
+    parent = await batch.create_batch("repo1", CreateCampaignRequest(kind="batch"))
+    await batch.launch_batch(parent)
+    launch_seam.clear()
+
+    _child_of_kind(store, parent, "subsystem").status = "done"
+    _child_of_kind(store, parent, "feature").status = "running"
+
+    assert await batch.advance_batch(store.rows[parent.uid]) == 0
+    assert launch_seam == []
+    assert _child_of_kind(store, parent, "global").status == "planning"
+
+
+async def test_advance_batch_releases_the_global_child_once_siblings_finish(
+    store, create_seam, launch_seam
+):
+    parent = await batch.create_batch("repo1", CreateCampaignRequest(kind="batch"))
+    await batch.launch_batch(parent)
+    launch_seam.clear()
+
+    # One done, one failed — a failed sibling still counts as terminal, exactly
+    # as plan_tick treats a failed area part as unlocking the globals.
+    _child_of_kind(store, parent, "subsystem").status = "done"
+    _child_of_kind(store, parent, "feature").status = "failed"
+
+    global_uid = _child_of_kind(store, parent, "global").uid
+    assert await batch.advance_batch(store.rows[parent.uid]) == 1
+    assert launch_seam == [global_uid]
+
+    # ...and it only fires once: the child is no longer in `planning`.
+    _child_of_kind(store, parent, "global").status = "running"
+    launch_seam.clear()
+    assert await batch.advance_batch(store.rows[parent.uid]) == 0
+    assert launch_seam == []
+
+
+async def test_a_deferred_child_that_fails_to_launch_is_cancelled(
+    store, create_seam, monkeypatch
+):
+    """Otherwise the parent hangs in running forever — same failure mode the
+    immediate-launch path already guards against."""
+    parent = await batch.create_batch("repo1", CreateCampaignRequest(kind="batch"))
+    global_uid = _child_of_kind(store, parent, "global").uid
+
+    async def fake_launch(uid, **_kw):
+        if uid == global_uid:
+            raise RuntimeError("simulated dispatch error")
+        return SimpleNamespace(uid=uid)
+
+    async def fake_cancel(uid, *, reason="", actor_uid=""):
+        store.rows[uid].status = "cancelled"
+
+    monkeypatch.setattr(campaign_service, "launch", fake_launch)
+    monkeypatch.setattr(campaign_service, "cancel", fake_cancel)
+
+    await batch.launch_batch(parent)
+    for kind in ("subsystem", "feature"):
+        child = _child_of_kind(store, parent, kind)
+        child.status = "done"
+        child.summary = {"counts": {"total": 1}}
+
+    assert await batch.advance_batch(store.rows[parent.uid]) == 0
+    assert _child_of_kind(store, parent, "global").status == "cancelled"
+    assert await batch.aggregate_batch(store.rows[parent.uid]) is True
+    assert store.rows[parent.uid].status == "done"
 
 
 async def test_batch_parent_finalizes_when_one_child_fails_to_launch(
@@ -155,8 +261,10 @@ async def test_batch_parent_finalizes_when_one_child_fails_to_launch(
     can reach done rather than hanging in running forever."""
     parent = await batch.create_batch("repo1", CreateCampaignRequest(kind="batch"))
 
-    # Pick the first child uid — its launch will raise; the others succeed.
-    failing_uid = parent.child_uids[0]
+    # The subsystem child launches immediately; its launch will raise. (The
+    # global child is deferred, so it cannot stand in for this case — see
+    # test_a_deferred_child_that_fails_to_launch_is_cancelled.)
+    failing_uid = _child_of_kind(store, parent, "subsystem").uid
 
     async def fake_launch(uid, **_kw):
         if uid == failing_uid:
@@ -184,6 +292,9 @@ async def test_batch_parent_finalizes_when_one_child_fails_to_launch(
             child.status = "done"
             child.summary = {"counts": {"total": 2}}
             await child.save()
+
+    # The deferred global child is `done` above, so nothing is left to release.
+    assert await batch.advance_batch(store.rows[parent.uid]) == 0
 
     # aggregate_batch must now return True (parent reaches done).
     fresh_parent = store.rows[parent.uid]

@@ -74,6 +74,48 @@ def _feature_rollup(parts: list[dict]) -> list[dict]:
     return out
 
 
+def _lens_rollup(parts: list[dict]) -> list[dict]:
+    """Per-lens verdict tallies across the campaign's parts. Pure.
+
+    `lens_verdicts` is what the coverage contract exists to collect — the
+    agent saying, per discipline, "checked and clean" / "checked, filed
+    something" / "skipped". Every area run was asked for it, complete_run
+    validated it, and Checked stored it; then the digest discarded it and
+    reported finding COUNTS instead. "performance skipped in 4 of 11 parts"
+    is the honest coverage statement that was already being gathered.
+
+    A lens with no returned verdict counts as `missing`, deliberately NOT
+    folded into `skipped`: an agent saying "I skipped performance" and an
+    agent silently omitting it are different failures, and only the first is
+    the contract working.
+    """
+    tally: dict[str, dict] = {}
+    order: list[str] = []
+    for part in parts:
+        verdicts = {
+            str(v.get("lens") or ""): str(v.get("verdict") or "")
+            for v in (part.get("lens_verdicts") or [])
+            if isinstance(v, dict)
+        }
+        for lens in (str(k) for k in (part.get("lens_keys") or []) if k):
+            row = tally.get(lens)
+            if row is None:
+                row = {
+                    "lens": lens,
+                    "checked-clean": 0,
+                    "checked-findings": 0,
+                    "skipped": 0,
+                    "missing": 0,
+                    "parts": 0,
+                }
+                tally[lens] = row
+                order.append(lens)
+            row["parts"] += 1
+            verdict = verdicts.get(lens) or "missing"
+            row[verdict if verdict in row else "missing"] += 1
+    return [tally[lens] for lens in order]
+
+
 def build_summary(
     parts: list[dict],
     findings_by_part: dict[int, list[dict]],
@@ -113,12 +155,15 @@ def build_summary(
                     "title": p.get("title") or "",
                     "covered": int(p.get("covered") or 0),
                     "skipped": int(p.get("skipped") or 0),
+                    "observed": int(p.get("observed") or 0),
+                    "coverage_source": str(p.get("coverage_source") or "unknown"),
                     "state": p.get("state") or "pending",
                 }
                 for p in sorted(parts, key=lambda p: int(p["idx"]))
             ],
             "holes": list(holes),
             "feature_rollup": rollup,
+            "lens_rollup": _lens_rollup(parts),
         },
         "failed_parts": sorted(
             int(p["idx"]) for p in parts if p.get("state") == "failed"
@@ -126,9 +171,14 @@ def build_summary(
     }
 
 
-async def finalize_campaign(campaign) -> None:
-    """finalizing → done|failed, with the digest saved and audited."""
-    from domains.campaigns.models import Campaign, is_legal_status_transition
+async def compute_digest(campaign) -> tuple[dict, list]:
+    """(summary, the campaign's Finding rows) from its parts' runs.
+
+    Split out of finalize_campaign so the SYNTHESIS part can be handed the
+    same numbers mid-flight: it dispatches while the campaign is still
+    running, so `campaign.summary` is not written yet, and a synthesis run
+    working from an empty digest would report a campaign that found nothing.
+    """
     from domains.checked.models import Checked
     from domains.findings.models import Finding
 
@@ -137,6 +187,9 @@ async def finalize_campaign(campaign) -> None:
 
     findings = list(await Finding.nodes.filter(repository_uid=campaign.repository_uid))
     findings_by_part: dict[int, list[dict]] = {}
+    # The Finding objects themselves, deduped — the digest only needs a
+    # projection, but the verification pass needs the rows.
+    campaign_findings: dict[str, object] = {}
     for idx, run_uid in run_by_idx.items():
         if not run_uid:
             continue
@@ -150,25 +203,35 @@ async def finalize_campaign(campaign) -> None:
                 {"severity": f.severity or "medium", "tags": list(f.tags or []), "title": f.title}
                 for f in matched
             ]
+            for f in matched:
+                campaign_findings[f.uid] = f
 
-    # Coverage counts from the runs' Checked stamps (complete_run contract).
-    coverage_by_run: dict[str, tuple[int, int]] = {}
+    # Coverage from the runs' Checked stamps (complete_run contract). The
+    # lens verdicts ride along: they are what the contract was collecting all
+    # along, and the digest used to drop them on the floor.
+    coverage_by_run: dict[str, dict] = {}
     try:
         for c in await Checked.nodes.filter(repository_uid=campaign.repository_uid):
             if c.run_uid in run_by_idx.values():
-                coverage_by_run[c.run_uid] = (
-                    len(c.covered_paths or []),
-                    len(c.skipped_paths or []),
-                )
+                coverage_by_run[c.run_uid] = {
+                    "covered": len(c.covered_paths or []),
+                    "skipped": len(c.skipped_paths or []),
+                    "observed": len(c.covered_paths_observed or []),
+                    "coverage_source": c.coverage_source or "unknown",
+                    "lens_verdicts": list(c.lens_verdicts or []),
+                }
     except Exception as exc:  # noqa: BLE001 — coverage counts are best-effort
         logger.warning(
             f"campaign {campaign.uid}: coverage stamps unavailable: {exc}",
             extra={"tag": "campaigns"},
         )
     for p in parts:
-        covered, skipped = coverage_by_run.get(p.get("run_uid") or "", (0, 0))
-        p["covered"] = covered
-        p["skipped"] = skipped
+        stamp = coverage_by_run.get(p.get("run_uid") or "") or {}
+        p["covered"] = int(stamp.get("covered") or 0)
+        p["skipped"] = int(stamp.get("skipped") or 0)
+        p["observed"] = int(stamp.get("observed") or 0)
+        p["coverage_source"] = stamp.get("coverage_source") or "unknown"
+        p["lens_verdicts"] = list(stamp.get("lens_verdicts") or [])
 
     holes = [
         path
@@ -177,6 +240,15 @@ async def finalize_campaign(campaign) -> None:
         for path in (p.get("scope_paths") or [])
     ]
     summary = build_summary(parts, findings_by_part, holes)
+    return summary, list(campaign_findings.values())
+
+
+async def finalize_campaign(campaign) -> None:
+    """finalizing → done|failed, with the digest saved and audited."""
+    from domains.campaigns.models import Campaign, is_legal_status_transition
+
+    parts = [dict(p) for p in (campaign.parts or [])]
+    summary, campaign_findings = await compute_digest(campaign)
 
     all_failed = bool(parts) and all(p.get("state") == "failed" for p in parts)
     to_status = "failed" if all_failed else "done"
@@ -211,3 +283,47 @@ async def finalize_campaign(campaign) -> None:
     ]
     fresh.updated_at = now
     await fresh.save()
+
+    # AFTER the status save, deliberately: everything above this line
+    # re-executes when a crashed finalize is retried from `finalizing`
+    # (tick.py's recovery loop), and dispatching a duplicate verification run
+    # per crash would be the obvious way to get that wrong. Past this point
+    # the row is terminal, so finalize_campaign returns at the legality gate
+    # on any re-entry.
+    await _verify_findings(fresh, campaign_findings)
+
+
+async def _verify_findings(campaign, findings: list) -> None:
+    """Dispatch the skeptic pass over this campaign's findings. Best-effort.
+
+    Never raises: a campaign that has already reported its results must not be
+    dragged back out of `done` because a follow-up dispatch failed. The
+    single-shot marker means a failure here is not retried — deliberate, since
+    the alternative is a campaign that re-dispatches a verify run on every
+    beat of the tick.
+    """
+    from domains.campaigns.models import Campaign
+
+    if not findings or (campaign.verification_run_uid or ""):
+        return
+    try:
+        from domains.delivery.services.verification_run_service import (
+            trigger_campaign_verification_run,
+        )
+
+        run = await trigger_campaign_verification_run(campaign, findings)
+        if run is None:
+            return
+        fresh = await Campaign.nodes.get_or_none(uid=campaign.uid) or campaign
+        fresh.verification_run_uid = run.uid
+        await fresh.save()
+        logger.info(
+            f"campaign {campaign.uid}: verification run {run.uid} dispatched",
+            extra={"tag": "campaigns"},
+        )
+    except Exception as exc:  # noqa: BLE001 — the campaign is already done
+        logger.warning(
+            f"campaign {campaign.uid}: verification dispatch failed: "
+            f"{type(exc).__name__}: {exc}",
+            extra={"tag": "campaigns"},
+        )

@@ -19,6 +19,7 @@ from domains.agents.services.composition import compose_agent_intent
 from domains.agents.services.dispatch import dispatch_agent
 from domains.agents.services.registry import system_agent_by_url, variant_source_url
 from domains.areas.services import area_service
+from domains.executors.prompt_kit import coverage_contract
 from domains.lenses.services import lens_service
 from domains.lenses.services.lens_service import lens_checklist
 from domains.run_policies.services.effort import ensure_policy_for_effort
@@ -29,6 +30,10 @@ from logging_config import logger
 
 # How many escalated findings a global sweep's digest carries.
 _MAX_ESCALATIONS = 20
+
+# Evidence key recording which runs have already been handed this escalation.
+# See `_escalation_digest` for why delivery is ranked rather than consumed.
+_DELIVERED_KEY = "escalation_delivered_to"
 
 
 def _campaign_trigger(campaign) -> RunTrigger:
@@ -53,14 +58,6 @@ def _scope_contract(campaign, part: dict) -> str:
     return "\n".join(lines)
 
 
-# Intent-level reinforcement of prompt_kit.COVERAGE_NOTE for the runs that
-# most need it — the verdict enum here must change in lockstep with it.
-_REPORTING_CONTRACT = (
-    "When done, call complete_run with covered_paths (paths you actually "
-    "examined), skipped_paths (in-scope paths you did not), and "
-    "lens_verdicts — one entry per lens above "
-    "({lens, verdict: checked-clean|checked-findings|skipped, note})."
-)
 
 
 def _target(campaign, part: dict, **extra: Any) -> dict[str, Any]:
@@ -70,25 +67,77 @@ def _target(campaign, part: dict, **extra: Any) -> dict[str, Any]:
         "campaign_uid": campaign.uid,
         "campaign_part": int(part["idx"]),
         "area_keys": [str(k) for k in (part.get("area_keys") or [])],
+        # The lenses this part was assigned. Carried so the dispatch side can
+        # honour `Lens.wants` (lifecycle._run_wants_static_analysis) instead
+        # of running every analyzer for every run regardless of what the
+        # lenses actually asked for.
+        "lens_keys": [str(k) for k in (part.get("lens_keys") or [])],
         **extra,
     }
 
 
-async def _escalation_digest(repository_uid: str, lens_key: str) -> list[str]:
-    """Open findings the area runs escalated to this lens, as digest lines."""
+async def _escalation_digest(repository_uid: str, lens_key: str) -> tuple[list[str], list]:
+    """Open findings the area runs escalated to this lens → (digest lines, rows).
+
+    Ranks NEVER-DELIVERED escalations first, then previously-delivered ones
+    oldest-delivery-first, and only then by age. The queue was sorted purely
+    newest-first and truncated at _MAX_ESCALATIONS with nothing ever marking
+    an item handled, so on a repo with more than 20 open escalations the same
+    newest 20 rode every sweep forever and items 21+ were never seen at all.
+
+    Delivery is RANKED, not consumed — the same argument
+    `audit_selection.coverage_recency_for` makes about coverage stamps. A
+    hard "consumed" flag would drop an escalation permanently the first time
+    a sweep was handed it, including when that sweep then failed; ranking
+    rotates the queue without ever losing an item. The digest is built at
+    dispatch, so delivery is exactly what we can honestly claim.
+    """
     from domains.findings.models import Finding
 
+    _EPOCH = datetime.min.replace(tzinfo=UTC)
     tag = f"escalate:{lens_key}"
     rows = [
         f
         for f in await Finding.nodes.filter(repository_uid=repository_uid)
         if (f.status or "") == "open" and tag in (f.tags or [])
     ]
-    rows.sort(key=lambda f: f.created_at or datetime.min.replace(tzinfo=UTC), reverse=True)
-    return [
-        f"- {f.title} ({(list(f.affected_paths or []) or [''])[0]})"
-        for f in rows[:_MAX_ESCALATIONS]
+
+    def _delivery_count(f) -> int:
+        return len(((f.evidence or {}).get(_DELIVERED_KEY)) or [])
+
+    rows.sort(key=lambda f: (_delivery_count(f), -(f.created_at or _EPOCH).timestamp()))
+    selected = rows[:_MAX_ESCALATIONS]
+    lines = [
+        f"- {f.title} ({(list(f.affected_paths or []) or [''])[0]})" for f in selected
     ]
+    if len(rows) > len(selected):
+        logger.info(
+            f"escalation digest for lens {lens_key!r} truncated: "
+            f"{len(selected)} of {len(rows)} open escalations carried "
+            f"(least-recently-delivered first)",
+            extra={"tag": "campaigns"},
+        )
+    return lines, selected
+
+
+async def _mark_escalations_delivered(rows: list, run_uid: str) -> None:
+    """Record that these escalations rode a sweep's digest. Best-effort: a
+    failure here costs rotation fairness, never the run."""
+    for f in rows:
+        try:
+            evidence = dict(f.evidence or {})
+            delivered = [str(u) for u in (evidence.get(_DELIVERED_KEY) or [])]
+            if run_uid in delivered:
+                continue
+            evidence[_DELIVERED_KEY] = [*delivered, run_uid]
+            f.evidence = evidence
+            await f.save()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                f"could not stamp escalation delivery on finding "
+                f"{getattr(f, 'uid', '?')}: {type(exc).__name__}: {exc}",
+                extra={"tag": "campaigns"},
+            )
 
 
 async def _dispatch_area(campaign, part: dict, *, spec_block: str = "") -> str:
@@ -96,7 +145,7 @@ async def _dispatch_area(campaign, part: dict, *, spec_block: str = "") -> str:
     blocks = [_scope_contract(campaign, part), lens_checklist(lenses)]
     if spec_block:
         blocks.append(spec_block)
-    blocks.append(_REPORTING_CONTRACT)
+    blocks.append(coverage_contract(lens_keys=part.get("lens_keys") or []))
     structural = "\n\n".join(blocks)
     composed = await compose_agent_intent(
         repository_uid=campaign.repository_uid,
@@ -212,7 +261,7 @@ async def _dispatch_global(campaign, part: dict) -> str:
             f"no seeded variant agent for global lens {lens.key!r} "
             f"(slug {lens.global_agent_key or lens.key!r})"
         )
-    digest = await _escalation_digest(campaign.repository_uid, lens.key)
+    digest, escalated = await _escalation_digest(campaign.repository_uid, lens.key)
     structural_extra = ""
     if digest:
         structural_extra = (
@@ -231,6 +280,13 @@ async def _dispatch_global(campaign, part: dict) -> str:
         structural_extra = (
             f"{structural_extra}\n\n{scope_note}" if structural_extra else scope_note
         )
+    # A whole-repo sweep needs the coverage contract MORE than an area part,
+    # not less: without it the platform has no way to know what fraction of the
+    # repository the run actually reached, and silence reads as full coverage.
+    contract = coverage_contract(lens_keys=[lens.key])
+    structural_extra = (
+        f"{structural_extra}\n\n{contract}" if structural_extra else contract
+    )
     run = await dispatch_agent(
         agent=variant,
         repository_uid=campaign.repository_uid,
@@ -243,6 +299,123 @@ async def _dispatch_global(campaign, part: dict) -> str:
         title=f"Campaign: {part.get('title') or lens.key}",
         structural_extra=structural_extra,
     )
+    # Stamp AFTER dispatch: an escalation that never reached a sweep must not
+    # be pushed down the queue.
+    await _mark_escalations_delivered(escalated, run.uid)
+    return run.uid
+
+
+_SYNTHESIS_CONTRACT = """# What this run is
+
+Every other part of this campaign has finished. Your job is NOT to audit the
+repository again — it is to read what this campaign produced and say what it
+MEANS, as one Analysis a maintainer can act on.
+
+The campaign's own digest is a tally: counts by severity, coverage rows, a
+list of parts. Nobody has read the findings AS A SET and answered the
+questions a maintainer actually has — what is worst, what is systemic, what
+should be done first, and where the audit itself fell short.
+
+# Your inputs
+
+- `list_findings` / `search_findings` — the findings this campaign filed.
+  Read the real ones; do not work from the summary below alone.
+- The campaign digest below: per-part coverage, per-lens verdicts, and the
+  scopes no part completed.
+- The repository itself, to check anything the findings leave ambiguous.
+
+# What you produce
+
+ONE Analysis, authored with the analysis tools:
+
+* `upsert_analysis` — call early with a title and status="in_progress", then
+  again at the end with `health_grade` (A-F), a `scorecard` over the
+  dimensions this campaign actually covered, `confidence`, `limitations`,
+  and `stats`. Finish with status="complete".
+* `set_analysis_section` — at minimum `executive_summary` (what a maintainer
+  needs to know in one paragraph), `top_changes` (the highest-value changes,
+  ordered), and `implementation_plan` (staged: containment → low-risk fixes
+  → reliability/security → structural work).
+* `add_analysis_note` — note_type="coverage" per area, using the REAL
+  coverage below rather than assuming full coverage; "strength" for what this
+  campaign found to be in good shape; "validation" for checks that ran.
+
+# Honesty requirements
+
+- `limitations` must state what this campaign did NOT cover: scopes with no
+  completed part, lenses skipped or never answered for, and — where a part
+  reported no measured coverage — that its coverage is the scope it was
+  aimed at rather than what it read.
+- Do not invent severity. If the findings are all low, the grade says so.
+- Do not file new findings. If you notice something new, it belongs to a
+  later audit; this run reports on work already done.
+
+Finish with `complete_run`."""
+
+
+def _digest_block(summary: dict) -> str:
+    """The campaign's own numbers, as the synthesis run's starting point."""
+    coverage = dict(summary.get("coverage") or {})
+    lines = ["## This campaign's digest"]
+    counts = dict(summary.get("counts") or {})
+    if counts:
+        by_sev = ", ".join(
+            f"{k}: {v}" for k, v in sorted((counts.get("by_severity") or {}).items())
+        )
+        lines.append(f"- findings: {counts.get('total', 0)}" + (f" ({by_sev})" if by_sev else ""))
+    for row in coverage.get("lens_rollup") or []:
+        lines.append(
+            f"- lens {row.get('lens')}: {row.get('checked-clean', 0)} clean, "
+            f"{row.get('checked-findings', 0)} with findings, "
+            f"{row.get('skipped', 0)} skipped, {row.get('missing', 0)} no verdict"
+        )
+    for row in coverage.get("parts") or []:
+        lines.append(
+            f"- part {row.get('idx')} ({row.get('title')}): {row.get('state')}, "
+            f"{row.get('covered', 0)} claimed / {row.get('observed', 0)} measured "
+            f"[{row.get('coverage_source', 'unknown')}]"
+        )
+    holes = coverage.get("holes") or []
+    if holes:
+        lines.append(f"- scopes NO part completed: {', '.join(str(h) for h in holes[:20])}")
+    return "\n".join(lines)
+
+
+async def _dispatch_synthesis(campaign, part: dict) -> str:
+    """Dispatch the campaign's synthesis run — one Analysis over its output.
+
+    The digest is computed LIVE: this part dispatches while the campaign is
+    still running, so `campaign.summary` has not been written yet, and a
+    synthesis run reading an empty summary would report a campaign that found
+    nothing.
+    """
+    from domains.campaigns.services.finalize import compute_digest
+
+    summary, _findings = await compute_digest(campaign)
+    structural = "\n\n".join([_SYNTHESIS_CONTRACT, _digest_block(summary)])
+    composed = await compose_agent_intent(
+        repository_uid=campaign.repository_uid,
+        agent_key="deep-scan",  # the Analysis-authoring base
+        prompt_body=None,
+        structural=structural,
+    )
+    tier = normalize_effort(campaign.effort or "normal")
+    policy = await ensure_policy_for_effort(tier)
+    run = await trigger_run(
+        repository_uid=campaign.repository_uid,
+        intent=composed.text,
+        playbook="ask",
+        title=f"Synthesis: {campaign.title or 'campaign'}",
+        target=_target(campaign, part, synthesis=True),
+        run_policy_uid=policy.uid,
+        effort=tier.value,
+        agent_uid=composed.agent_uid,
+        agent_rev=composed.agent_rev,
+        trigger=_campaign_trigger(campaign),
+        triggered_by=campaign.created_by or "campaign",
+        composed_degraded=composed.composed_degraded,
+        degraded_layers=composed.degraded_layers,
+    )
     return run.uid
 
 
@@ -253,4 +426,6 @@ async def dispatch_part(campaign, part: dict) -> str:
         return await _dispatch_global(campaign, part)
     if kind == "feature":
         return await _dispatch_feature(campaign, part)
+    if kind == "synthesis":
+        return await _dispatch_synthesis(campaign, part)
     return await _dispatch_area(campaign, part)

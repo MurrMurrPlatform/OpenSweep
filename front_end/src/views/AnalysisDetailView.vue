@@ -138,6 +138,10 @@ function humanize(key: string): string {
 function statusVariant(s: string): BadgeVariants['variant'] {
   if (s === 'complete') return 'success'
   if (s === 'in_progress') return 'info'
+  // `incomplete` = the scan died before authoring a verdict, so the report is
+  // partial. It fell through to the neutral 'secondary' badge, which reads as
+  // "fine" for the one status that most needs to read as "do not trust this".
+  if (s === 'incomplete') return 'destructive'
   if (s === 'superseded' || s === 'archived') return 'warn'
   return 'secondary'
 }

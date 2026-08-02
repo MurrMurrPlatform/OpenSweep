@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import Iterable, Literal
 
+from domains.platform_tools.complete_run import LENS_VERDICT_VALUES
 from domains.platform_tools.dispatcher import tool_descriptions, tool_names
 from domains.runs.schemas import Effort, normalize_effort
 from infrastructure.code_graph import CODE_GRAPH_PROMPT
@@ -52,8 +53,19 @@ PLATFORM_WRITE_TOOLS = (
     "complete_run",
 )
 
-# Platform-state read tools.
-PLATFORM_READ_TOOLS = ("list_docs", "read_doc", "search_memory")
+# Platform-state read tools — the look-before-write surface. The findings
+# three are load-bearing: _intent_helpers makes them MANDATORY before
+# create_finding, so leaving them unadvertised (while the contract named
+# them under spellings that never resolved) made every audit run blind to
+# what earlier runs had already filed.
+PLATFORM_READ_TOOLS = (
+    "list_docs",
+    "read_doc",
+    "search_memory",
+    "list_findings",
+    "search_findings",
+    "get_finding",
+)
 
 # Deep-scan Analysis authoring — ignored on runs whose intent doesn't ask
 # for a whole-repo report.
@@ -169,11 +181,44 @@ for filing OpenSweep findings. A subagent summary is not a durable result.
     + NO_ACTIONABLE_FINDING_RULE
 )
 
-COVERAGE_NOTE = """When the run has assigned lenses or an explicit path scope, also pass the
-coverage fields on `complete_run`: `covered_paths` (paths you actually
-inspected), `skipped_paths` (paths you did not reach), and `lens_verdicts`
-(one {"lens": …, "verdict": "checked-clean" | "checked-findings" | "skipped",
-"note": …} entry per lens)."""
+#: The verdict vocabulary, rendered from the set `complete_run` validates
+#: against so the prompt and the validator cannot drift. They used to be three
+#: hand-written copies, each carrying a comment asking the next editor to keep
+#: them in lockstep.
+_VERDICT_ENUM = " | ".join(f'"{v}"' for v in sorted(LENS_VERDICT_VALUES))
+
+COVERAGE_NOTE = f"""Always pass the coverage fields on `complete_run`: `covered_paths` (paths you
+actually inspected) and `skipped_paths` (in-scope paths you did not reach).
+This applies to WHOLE-REPO runs too — a sweep that honestly reports what it
+never got to is far more useful than one that reports nothing, and silence is
+read as "the dispatched scope was covered". When the run has assigned lenses,
+also pass `lens_verdicts` (one {{"lens": …, "verdict": {_VERDICT_ENUM},
+"note": …}} entry per lens)."""
+
+
+def coverage_contract(*, lens_keys: Iterable[str] = ()) -> str:
+    """Intent-level restatement of COVERAGE_NOTE, for the runs that most need it.
+
+    The system prompt carries COVERAGE_NOTE for every run; this rides the
+    code-owned `structural` slot, which lands after every guidance layer and
+    cannot be displaced by an org override. Campaign area parts always had it.
+    Whole-repo runs — global lens sweeps, deep scans, the seeded cron sweeps —
+    did not, which is precisely why the platform could never say what fraction
+    of a repository a "whole-repo" run actually looked at.
+    """
+    keys = [str(k) for k in lens_keys if k]
+    verdicts = "|".join(sorted(LENS_VERDICT_VALUES))
+    lens_clause = (
+        " and lens_verdicts — one entry per lens above "
+        "({lens, verdict: " + verdicts + ", note})"
+        if keys
+        else ""
+    )
+    return (
+        "When done, call complete_run with covered_paths (paths you actually "
+        "examined), skipped_paths (in-scope paths you did not)"
+        f"{lens_clause}."
+    )
 
 
 def _report_contract(*, write_run: bool = False) -> str:
@@ -215,7 +260,8 @@ prompts as `opensweep_platform_create_finding`); the same naming applies to
 every platform tool listed above. Platform READ tools additionally carry a
 `read` segment: `list_news_items` appears as
 `opensweep_platform_read_list_news_items` (same for `list_interests`,
-`list_docs`, `search_memory`; `read_doc` is `opensweep_platform_read_doc`)."""
+`list_docs`, `search_memory`, `list_findings`, `search_findings`,
+`get_finding`; `read_doc` is `opensweep_platform_read_doc`)."""
 
 _WRITE_HARD_RULES = """You are a Claude Code agent running inside OpenSweep on a WRITE run
 (implement or fix). You are working in a disposable sandbox clone with the
@@ -364,13 +410,22 @@ def _claude_code_write() -> str:
 
 
 def _cli_tracking() -> str:
+    # The read-tool list and the naming note are NOT optional here: this
+    # prompt carries LOOK_BEFORE_WRITE, which makes a read call mandatory
+    # before every write, and it used to advertise the write tools only. An
+    # agent was told to search before filing while being shown nothing to
+    # search with, under names it could not have guessed.
     return "\n\n".join(
         [
             IDENTITY_TRACKING,
             "You may inspect code and run read-only commands. Platform tools you may\n"
             "call (through the envelope below, or natively when they appear as\n"
-            "`opensweep_*` MCP tools):\n\n" + render_tool_list(PLATFORM_WRITE_TOOLS),
+            "`opensweep_*` MCP tools):\n\n"
+            + render_tool_list(PLATFORM_WRITE_TOOLS)
+            + "\n\nand read tools for platform state:\n\n"
+            + render_tool_list(PLATFORM_READ_TOOLS),
             _specialised_intent_tools(),
+            _MCP_NAMING_NOTE,
             READ_ONLY_RULE,
             LOOK_BEFORE_WRITE,
             INVESTIGATION_ETHOS,

@@ -22,7 +22,7 @@ def create_seams(monkeypatch):
     captured = {}
 
     async def fake_plan_parts(
-        repository_uid, *, kind, coverage_keys, selection, lens_keys, k
+        repository_uid, *, kind, coverage_keys, selection, lens_keys, k, **_extra
     ):
         captured.update(
             kind=kind,
@@ -124,7 +124,7 @@ def preview_seams(monkeypatch):
     asserted without a DB."""
 
     async def fake_plan_parts(
-        repository_uid, *, kind, coverage_keys, selection, lens_keys, k
+        repository_uid, *, kind, coverage_keys, selection, lens_keys, k, **_extra
     ):
         parts = [
             {"idx": 0, "kind": "area", "title": "Backend", "scope_paths": ["be"],
@@ -158,7 +158,7 @@ async def test_preview_plan_reports_run_shape_without_persisting(preview_seams):
 
 async def test_preview_plan_batch_totals_every_child_kind(monkeypatch):
     async def fake_plan_parts(
-        repository_uid, *, kind, coverage_keys, selection, lens_keys, k
+        repository_uid, *, kind, coverage_keys, selection, lens_keys, k, **_extra
     ):
         by_kind = {
             "subsystem": {"area": 3, "feature": 0, "global": 0},

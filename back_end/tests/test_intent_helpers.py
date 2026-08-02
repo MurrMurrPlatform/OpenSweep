@@ -8,10 +8,21 @@ from domains.runs.services._intent_helpers import (
 
 
 def test_footer_names_the_required_read_tools():
+    """Names must be the ones the agent can actually call.
+
+    This assertion used to pin `opensweep_list_findings` — a spelling that
+    resolved to nothing: the served MCP operation is
+    `opensweep_platform_read_list_findings`, and the tool was not in the
+    dispatcher registry either, so no tool list advertised it. The test was
+    enforcing the bug. test_prompt_tool_names_resolve now checks every tool
+    name in every shipped prompt against the real surfaces.
+    """
     assert "list_docs" in LOOK_BEFORE_WRITE_FOOTER
     assert "read_doc" in LOOK_BEFORE_WRITE_FOOTER
     assert "search_memory" in LOOK_BEFORE_WRITE_FOOTER
-    assert "opensweep_list_findings" in LOOK_BEFORE_WRITE_FOOTER
+    assert "list_findings" in LOOK_BEFORE_WRITE_FOOTER
+    assert "search_findings" in LOOK_BEFORE_WRITE_FOOTER
+    assert "get_finding" in LOOK_BEFORE_WRITE_FOOTER
 
 
 def test_footer_lays_out_the_decision_steps():

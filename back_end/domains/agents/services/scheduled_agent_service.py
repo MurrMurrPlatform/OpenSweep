@@ -39,6 +39,8 @@ DEEP_HUNT_WEEKLY_TITLE = "Weekly FULL deep issue hunt (Mon)"
 DEEP_HUNT_DAILY_TITLE = "Daily deep issue hunt (Tue–Sat)"
 SECURITY_AUDIT_WEEKLY_TITLE = "Weekly security audit (Mon)"
 ROTATION_CAMPAIGN_WEEKLY_TITLE = "Weekly rotation campaign"
+DEEP_SCAN_KEY = "deep-scan"
+DEEP_SCAN_MONTHLY_TITLE = "Monthly whole-repo deep scan"
 MAP_AREAS_TITLE = "Map areas"
 MAP_AREAS_MONTHLY_TITLE = "Monthly area-map refresh"
 
@@ -352,6 +354,11 @@ async def seed_audit_agents(repository_uid: str) -> list[ScheduledAgent]:
             False,
             {"kind": "subsystem", "selection": "rotation", "k": 3},
         ),
+        # The whole-repo Analysis was reachable only by clicking Deep scan,
+        # so the one run type that produces a real health verdict could never
+        # happen on its own. Seeded disabled like every other binding here —
+        # it is the most expensive run in the product.
+        (DEEP_SCAN_KEY, DEEP_SCAN_MONTHLY_TITLE, "cron:0 4 1 * *", False, {}),
     ):
         s = await _seed_binding(
             repository_uid,

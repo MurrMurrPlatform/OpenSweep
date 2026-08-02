@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 from domains.areas.models import Area, area_is_stale, is_leaf
 from domains.docs.models import Doc
+from domains.executors.prompt_kit import coverage_contract
 from domains.runs.schemas import RunTrigger
 from domains.runs.services._intent_helpers import load_agent_prompt_body
 from domains.runs.services.lifecycle import (
@@ -557,6 +558,10 @@ async def run_audit(
                 f" +{len(keys) - 3}" if len(keys) > 3 else ""
             )
         # After the area branch, which replaces `structural` wholesale.
+        # The coverage contract rides EVERY audit dispatch, whole-repo
+        # included — a sweep that reports nothing is otherwise recorded as
+        # having covered whatever it was pointed at.
+        structural = f"{structural}\n\n{coverage_contract()}"
         if budget_line:
             structural = f"{structural}\n\n{budget_line}"
         prompt_body = await load_agent_prompt_body(agent_uid)
@@ -961,6 +966,10 @@ async def _deep_scan_intent(
         scope_parts.append(f"Focus for this scan: {focus.strip()}")
     if budget_line:
         scope_parts.append(budget_line)
+    # The Analysis has its own prose `coverage` notes, but those are the
+    # agent's narrative. This is the machine-readable half that lands on a
+    # Checked stamp — the widest run in the product had neither.
+    scope_parts.append(coverage_contract())
     scope_parts.append(_DEEP_SCAN_ANALYSIS_CONTRACT)
     return await compose_agent_intent(
         repository_uid=repository_uid,

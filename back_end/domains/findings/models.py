@@ -71,6 +71,17 @@ class Finding(AsyncStructuredNode):
     # the analyzer's rule/check id the candidate carried (e.g. "F821",
     # a semgrep check_id) — free-form, for cross-referencing the raw output.
 
+    # The skeptic pass's judgment, denormalised from FindingVerification:
+    # confirmed | refuted | needs-human | "" (never verified).
+    #
+    # trust_score treats this as the strongest model-produced signal it has,
+    # and for a long time could not read it at all: trust_score_for's only
+    # production caller passed no verification status, and the outcome lives
+    # on the PR Verdict, which an audit finding does not have. Denormalising
+    # it here is what makes the delta reachable — and costs no round-trip in
+    # the per-finding DTO loop that computes trust.
+    verification_result = StringProperty(default="", index=True)
+
     status = StringProperty(default="open", index=True)
     # open | ticketed | acknowledged | wont-fix | fixed | accepted | superseded
     # | dismissed

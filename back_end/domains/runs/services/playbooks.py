@@ -29,10 +29,12 @@ Hook failures never corrupt the recorded run outcome (logged, not raised).
 
 from __future__ import annotations
 
-from domains.runs.models import Run
+from domains.runs.models import PLAYBOOKS, Run
 from logging_config import logger
 
-PLAYBOOKS = {"chat", "ask", "review", "fix", "implement", "verify", "document", "refine", "thread"}
+# Re-exported, not redefined: `lifecycle` validates dispatch against this name
+# and the model carries the vocabulary. Two copies drifted once already.
+__all__ = ["PLAYBOOKS", "WRITE_PLAYBOOKS", "CHECKED_PLAYBOOKS", "on_turn_complete"]
 
 # Playbooks whose turns run in IMPLEMENT mode (write sandbox + write gate).
 # `thread` is write-CAPABLE but phase-gated: its finalizer runs the write

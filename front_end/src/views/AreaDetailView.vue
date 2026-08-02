@@ -703,7 +703,15 @@ async function confirmDelete() {
               <div class="flex flex-wrap items-center gap-2">
                 <Badge :variant="outcomeVariant(stamp.outcome)" class="px-1.5 text-[10px]">{{ stamp.outcome }}</Badge>
                 <Badge
-                  v-if="stamp.coverage_source !== 'reported'"
+                  v-if="stamp.coverage_source === 'observed'"
+                  variant="outline"
+                  class="px-1.5 text-[10px]"
+                  :title="`Measured from the run's own file reads — ${(stamp.covered_paths_observed ?? []).length} file(s) opened`"
+                >
+                  measured · {{ (stamp.covered_paths_observed ?? []).length }}
+                </Badge>
+                <Badge
+                  v-else-if="stamp.coverage_source !== 'reported'"
                   variant="outline"
                   class="px-1.5 text-[10px]"
                   title="These are the paths the run was dispatched at, not a reported coverage contract — it may have examined only part of them"

@@ -32,16 +32,33 @@ class Checked(AsyncStructuredNode):
     checked_at = DateTimeProperty(default_now=True, index=True)
 
     # Coverage contract (complete_run → Run.usage["coverage"]): what this look
-    # ACTUALLY examined, not just what it was dispatched at. Falls back to the
-    # run's target paths when the agent didn't report covered_paths.
+    # CLAIMS to have examined. Falls back to the run's target paths when the
+    # agent didn't report covered_paths. Entries are dropped when they name a
+    # path the repository does not have (checked_service._validate_claim).
     covered_paths = JSONProperty(default=[])  # repo-relative paths examined
     skipped_paths = JSONProperty(default=[])  # in-scope paths not examined
-    # reported | inferred | unknown — "inferred" means the agent declared no
-    # coverage and covered_paths is really the dispatched target, i.e. what the
-    # run was POINTED at rather than what it read. Kept distinct so a stamp can
-    # never silently pass off intent as evidence.
+    # What the run was OBSERVED to open, derived from its own tool_use events
+    # (checked/services/observed_coverage.py). `covered_paths` is a claim;
+    # this is a measurement, and the gap between them is the useful number.
     #
-    # Defaults to "unknown", not "reported": stamps written before this field
+    # An empty list is ambiguous by itself: it means "measured, found nothing"
+    # only when coverage_source == "observed", and "not measured" otherwise —
+    # an opencode run (whose adapter emits no per-tool-call events at all), or
+    # a stamp predating this field. The discriminator therefore lives on
+    # coverage_source rather than in this list's emptiness, which is also why
+    # this field needs no backfill migration.
+    covered_paths_observed = JSONProperty(default=[])
+    # observed | reported | inferred | unknown — strongest evidence first:
+    #   observed  derived from the run's own tool calls.
+    #   reported  the agent declared covered_paths and they check out.
+    #   inferred  the agent declared nothing, so covered_paths is really the
+    #             dispatched target: what the run was POINTED at rather than
+    #             what it read. Kept distinct so a stamp can never silently
+    #             pass off intent as evidence.
+    #   unknown   predates m0022; readers must treat it as no better than
+    #             inferred.
+    #
+    # Defaults to "unknown", not "reported": stamps written before that field
     # existed cannot be classified after the fact, and defaulting them to
     # "reported" would have the whole backlog assert evidence it never had.
     # record_for_run always writes an explicit value (m0022 backfills the rest).
@@ -52,3 +69,7 @@ class Checked(AsyncStructuredNode):
 
 
 CHECKED_OUTCOMES = {"clean", "findings", "failed"}
+
+#: Ordered strongest-evidence-first — readers that rank or badge coverage
+#: honesty should use this rather than re-listing the values.
+COVERAGE_SOURCES = ("observed", "reported", "inferred", "unknown")

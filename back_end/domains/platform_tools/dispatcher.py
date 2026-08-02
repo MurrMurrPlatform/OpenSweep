@@ -28,12 +28,15 @@ from domains.platform_tools import (
     create_finding,
     create_news_item,
     fetch_url,
+    get_finding,
     list_docs,
+    list_findings,
     list_interests,
     list_news_items,
     propose_area_edit,
     propose_doc_edit,
     read_doc,
+    search_findings,
     search_memory,
     set_analysis_section,
     submit_for_review,
@@ -96,6 +99,27 @@ _TOOLS: dict[str, tuple[_ToolFn, str]] = {
         search_memory,
         "full-text search this repository's memories (facts prior runs "
         "learned that the code cannot express)",
+    ),
+    # The look-before-write contract names these three as MANDATORY before
+    # create_finding. They were reachable over MCP but absent from this
+    # registry, so no generated tool list ever advertised them and the
+    # contract pointed at names that did not resolve — audit runs were
+    # effectively blind to prior findings.
+    "list_findings": (
+        list_findings,
+        "list this repository's Findings (defaults to status=open) — call "
+        "BEFORE create_finding so a repeat report updates instead of "
+        "duplicating",
+    ),
+    "search_findings": (
+        search_findings,
+        "full-text search this repository's Findings by title/description — "
+        "the look-before-write check when you don't know the exact wording",
+    ),
+    "get_finding": (
+        get_finding,
+        "fetch one Finding's full detail by uid, to decide between skip, "
+        "update, merge, create, or supersede",
     ),
     "attach_artifact": (
         attach_artifact,

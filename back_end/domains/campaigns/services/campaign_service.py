@@ -38,6 +38,7 @@ def to_dto(c: Campaign) -> CampaignDTO:
         template=c.template or "rotation",
         kind=str(getattr(c, "kind", "subsystem") or "subsystem"),
         selection=str(getattr(c, "selection", "all") or "all"),
+        lens_grouping=str(getattr(c, "lens_grouping", "single") or "single"),
         coverage_keys=list(getattr(c, "coverage_keys", []) or []),
         parent_uid=str(getattr(c, "parent_uid", "") or ""),
         child_uids=list(getattr(c, "child_uids", []) or []),
@@ -211,6 +212,10 @@ async def _area_map_inputs(repository_uid: str) -> dict | None:
             # selector and generate-specs targeting both read these.
             "stale": area_is_stale(a),
             "has_spec": bool((a.spec or "").strip()),
+            # The audit-recency selector (selection="unaudited") compares this
+            # against the area's Checked coverage, which is a different
+            # question from `stale` (code moved since the MAP was reviewed).
+            "code_changed_at": a.code_changed_at,
         }
 
     subsystems = [a for a in rows if (a.kind or "subsystem") == "subsystem"]
@@ -372,6 +377,7 @@ async def _plan_parts(
     selection: str,
     lens_keys: list[str],
     k: int,
+    lens_grouping: str = "single",
 ) -> tuple[list[dict], str, str, dict]:
     """(part list, degraded_reason, source, plan_summary) for a kind-aware
     plan.
@@ -394,10 +400,35 @@ async def _plan_parts(
     lenses = await _enabled_lenses(kind, lens_keys)
 
     if kind == "global":
-        # A global sweep needs no partition — one part per global lens.
-        parts = planner.build_plan_by_kind("global", [], lenses)
-        source = "global"
+        # A global sweep needs no partition — one part per global lens. The
+        # ONE exception is a prefix-scoped campaign: the sweep agent stays
+        # whole-repo, but part_dispatch steers it with the union of the
+        # covered areas' scopes, so those areas have to be resolved here.
+        # Without this the steer degraded to the bare prefix string —
+        # part_dispatch read `scope_hint` and nothing ever wrote it.
+        scope_hint: list[str] = []
         degraded_reason = ""
+        if coverage_keys:
+            (
+                all_areas,
+                degraded_reason,
+                _total,
+                _source,
+                _features,
+                _health,
+                _stats,
+            ) = await _plan_areas(repository_uid, repo)
+            scope_hint = sorted(
+                {
+                    p
+                    for a in planner.filter_by_keys(all_areas, coverage_keys)
+                    for p in (a.get("scope_paths") or [])
+                }
+            )
+        parts = planner.build_plan_by_kind(
+            "global", [], lenses, scope_hint=scope_hint, synthesis=True
+        )
+        source = "global"
         map_stats = _map_stats(None)
         areas: list[dict] = []
     else:
@@ -418,7 +449,12 @@ async def _plan_parts(
                     f"{degraded_reason}; {note}" if degraded_reason else note
                 )
             parts = planner.build_plan_by_kind(
-                "feature", [], lenses, selection=selection, feature_areas=feature_areas
+                "feature",
+                [],
+                lenses,
+                selection=selection,
+                feature_areas=feature_areas,
+                synthesis=True,
             )
             areas = feature_areas
         else:  # subsystem
@@ -435,7 +471,9 @@ async def _plan_parts(
                 # stalest path).
                 areas = planner.bundle_siblings(areas)
             path_recency = None
-            if selection == "rotation":
+            if selection in ("rotation", "unaudited"):
+                # Rotation ranks by it; unaudited compares it against each
+                # area's code_changed_at.
                 path_recency = await coverage_recency_for(repository_uid)
             parts = planner.build_plan_by_kind(
                 "subsystem",
@@ -444,6 +482,8 @@ async def _plan_parts(
                 selection=selection,
                 k=k,
                 path_recency=path_recency,
+                synthesis=True,
+                lens_grouping=lens_grouping,
             )
 
     # The plan's own explanation — how the map's rows became this part list.
@@ -454,6 +494,7 @@ async def _plan_parts(
         "area": sum(1 for p in parts if p["kind"] == "area"),
         "feature": sum(1 for p in parts if p["kind"] == "feature"),
         "global": sum(1 for p in parts if p["kind"] == "global"),
+        "synthesis": sum(1 for p in parts if p["kind"] == "synthesis"),
     }
     plan_summary = {
         "source": source,
@@ -464,12 +505,14 @@ async def _plan_parts(
         ),
         "feature_parts": by_kind["feature"],
         "global_parts": by_kind["global"],
+        "synthesis_parts": by_kind["synthesis"],
         "total_runs": len(parts),
         "by_kind": by_kind,
         "oversized": [str(a.get("title") or "") for a in areas if a.get("oversized")],
         "degraded": degraded_reason,
         "coverage_keys": list(coverage_keys),
         "selection": selection,
+        "lens_grouping": lens_grouping,
     }
     return parts, degraded_reason, source, plan_summary
 
@@ -591,6 +634,7 @@ async def create(
     # Clamp k up front so the stored value and the plan (and any launch-time
     # replan) are built from the same number.
     k = max(int(req.k or 3), 1)
+    lens_grouping = (req.lens_grouping or "").strip() or "single"
     parts, degraded_reason, source, plan_summary = await _plan_parts(
         repository_uid,
         kind=kind,
@@ -598,6 +642,7 @@ async def create(
         selection=selection,
         lens_keys=lens_keys,
         k=k,
+        lens_grouping=lens_grouping,
     )
 
     c = Campaign(
@@ -608,6 +653,7 @@ async def create(
         template=(req.template or "rotation").strip(),
         kind=kind,
         selection=selection,
+        lens_grouping=lens_grouping,
         coverage_keys=coverage_keys,
         effort=(req.effort or "").strip(),
         lens_keys=lens_keys,
@@ -658,6 +704,7 @@ async def _replan(c: Campaign) -> None:
             kind=str(getattr(c, "kind", "subsystem") or "subsystem"),
             coverage_keys=list(getattr(c, "coverage_keys", []) or []),
             selection=str(getattr(c, "selection", "all") or "all"),
+            lens_grouping=str(getattr(c, "lens_grouping", "single") or "single"),
             lens_keys=list(c.lens_keys or []),
             k=int(getattr(c, "k", 3) or 3),
         )
@@ -747,6 +794,7 @@ async def preview_plan(repository_uid: str, req: CreateCampaignRequest) -> dict:
         }
 
     k = max(int(req.k or 3), 1)
+    lens_grouping = (req.lens_grouping or "").strip() or "single"
     parts, degraded_reason, source, plan_summary = await _plan_parts(
         repository_uid,
         kind=kind,
@@ -754,6 +802,7 @@ async def preview_plan(repository_uid: str, req: CreateCampaignRequest) -> dict:
         selection=selection,
         lens_keys=lens_keys,
         k=k,
+        lens_grouping=lens_grouping,
     )
     areas = [
         {

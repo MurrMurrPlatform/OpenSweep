@@ -7,6 +7,17 @@ revision/with-what-outcome a scope was last looked at), NOT a freshness
 signal: staleness is the single derived review axis on the Doc/Area
 (code_changed_at > last_reviewed_at). `audit_coverage` exposes the per-scope
 latest stamp; it deliberately does not derive any "changed since" flag.
+
+Coverage is recorded on two axes, and keeping them apart is the point:
+
+- `covered_paths` is the CLAIM — what the agent said it examined, or, when it
+  said nothing, the scope it was dispatched at. Entries naming files the
+  repository does not have are dropped (`validate_claim`).
+- `covered_paths_observed` is the MEASUREMENT — the files the run was seen to
+  open, derived from its own tool_use events (`observed_coverage`).
+
+`coverage_source` says which of the two a stamp actually rests on, so a
+reader can tell evidence from intent instead of having to trust the claim.
 """
 
 from __future__ import annotations
@@ -17,10 +28,12 @@ from uuid import uuid4
 
 from domains.checked.models import Checked
 from domains.findings.models import Finding
+from domains.repositories.services.path_matching import normalize_path
 from domains.runs.models import Run
 from domains.repositories.models import Repository
 from infrastructure.audit import write_audit
 from infrastructure.git_providers import get_provider_client
+from logging_config import logger
 
 
 # V3 runs land in awaiting_input after a successful turn (the conversation
@@ -34,26 +47,65 @@ def _outcome_for_run(*, status: str, findings_count: int) -> str:
     return "failed"
 
 
+def validate_claim(
+    claimed: list[str], *, tree: list[str] | None
+) -> tuple[list[str], list[str]]:
+    """Split a coverage claim into (paths the repo has, paths it does not). Pure.
+
+    A claim is only worth storing if it names something real. An entry is kept
+    when it matches a tracked file exactly OR is a prefix of one — agents
+    legitimately report a directory for a scope they swept. `tree=None` means
+    the file list was unavailable (a degraded tree, a torn-down workspace), and
+    then nothing is DROPPED: absence of the tree is not evidence against the
+    claim.
+
+    Normalizing is unconditional, though. `path_recency` keys coverage recency
+    on the exact path string, so "src/" and "src" would otherwise be two
+    different rotation memories for one directory.
+    """
+    paths = [p for p in (normalize_path(str(raw)) for raw in claimed) if p]
+    if tree is None:
+        return paths, []
+    files = {normalize_path(p) for p in tree if p}
+    kept: list[str] = []
+    unknown: list[str] = []
+    for path in paths:
+        if path in files or any(f.startswith(path + "/") for f in files):
+            kept.append(path)
+        else:
+            unknown.append(path)
+    return kept, unknown
+
+
 def _coverage_fields(
-    *, usage: dict[str, Any], target: dict[str, Any]
-) -> tuple[list[str], list[str], list[dict[str, Any]], str]:
-    """(covered_paths, skipped_paths, lens_verdicts, coverage_source).
+    *,
+    usage: dict[str, Any],
+    target: dict[str, Any],
+    observed: list[str] | None = None,
+    tree: list[str] | None = None,
+) -> tuple[list[str], list[str], list[dict[str, Any]], str, list[str], list[str]]:
+    """(covered, skipped, lens_verdicts, coverage_source, observed, unknown).
 
-    Agent-reported coverage (usage["coverage"], written by complete_run) wins;
-    when the agent didn't report covered_paths we fall back to the dispatched
-    target paths — the run was pointed there, so that is the best available
-    claim of what it looked at.
+    Three sources, strongest first:
 
-    That fallback is a guess, not evidence: a run that read one page of a
-    35-page scope still lands the whole scope in covered_paths. It stays
-    (dropping it would blank the area coverage strip for every run that omits
-    the contract) but is labelled `coverage_source="inferred"` so a reader can
-    tell the two apart — the areas board and the coverage strip badge it
-    "scope only".
+    - `observed` — paths derived from the run's own tool_use events
+      (observed_coverage). Measurement, not assertion. Available for
+      claude_code runs only; opencode emits no per-tool-call events.
+    - agent-reported `usage["coverage"]["covered_paths"]` — a claim, kept when
+      it survives `validate_claim`.
+    - the dispatched `target["paths"]` — what the run was POINTED at. Retained
+      because dropping it would blank the coverage strip for every run that
+      omits the contract, but labelled `inferred` so no reader mistakes intent
+      for evidence.
 
-    The label is deliberately NOT used to rank or filter anywhere: it records
-    whether the model complied with the coverage contract, not which dispatch
-    path a run took, so ranking on it ranks on prompt compliance. See
+    `covered_paths` stays the claim in all cases, so existing readers keep
+    working unchanged; `coverage_source` records which of the three we had and
+    `covered_paths_observed` carries the measurement alongside. The gap between
+    the two is what makes an over-broad claim visible instead of authoritative.
+
+    The label is still deliberately NOT used to rank or filter rotation: it
+    records what evidence a run left, and ranking on it would rank on prompt
+    compliance and starve the areas whose agents DID report. See
     audit_selection.coverage_recency_for for the worked argument. Pure for
     testability."""
     coverage = dict(usage.get("coverage") or {})
@@ -62,14 +114,18 @@ def _coverage_fields(
         # Shape guard: a stray string here would iterate per character.
         return [str(p) for p in (value if isinstance(value, (list, tuple)) else []) if p]
 
+    observed = list(observed or [])
     source = "reported"
     covered = _paths(coverage.get("covered_paths"))
     if not covered:
         covered = _paths(target.get("paths"))
         source = "inferred"
-    skipped = _paths(coverage.get("skipped_paths"))
+    covered, unknown = validate_claim(covered, tree=tree)
+    if observed:
+        source = "observed"
+    skipped, _ = validate_claim(_paths(coverage.get("skipped_paths")), tree=tree)
     verdicts = [v for v in (coverage.get("lens_verdicts") or []) if isinstance(v, dict)]
-    return covered, skipped, verdicts, source
+    return covered, skipped, verdicts, source, observed, unknown
 
 
 async def record_for_run(*, run_uid: str) -> list[Checked]:
@@ -110,9 +166,30 @@ async def record_for_run(*, run_uid: str) -> list[Checked]:
     revision = await _repository_revision(repo, run=run)
     outcome = _outcome_for_run(status=run.status or "", findings_count=len(findings))
     now = run.completed_at or datetime.now(UTC)
-    covered_paths, skipped_paths, lens_verdicts, coverage_source = _coverage_fields(
-        usage=dict(run.usage or {}), target=target
+    workspace_root = str(
+        ((run.usage or {}).get("input") or {}).get("repository_local_path") or ""
     )
+    observed = _observed_for(run.uid, workspace_root)
+    tree = await _workspace_tree(workspace_root)
+    (
+        covered_paths,
+        skipped_paths,
+        lens_verdicts,
+        coverage_source,
+        observed_paths,
+        unknown_paths,
+    ) = _coverage_fields(
+        usage=dict(run.usage or {}), target=target, observed=observed, tree=tree
+    )
+    if unknown_paths:
+        # Not fatal — but a claim naming files the repository does not have is
+        # exactly the signal this validation exists to surface, so it must not
+        # vanish silently.
+        logger.warning(
+            f"run {run.uid}: dropped {len(unknown_paths)} claimed coverage "
+            f"path(s) matching no file in the workspace: {unknown_paths[:5]}",
+            extra={"tag": "checked"},
+        )
 
     stamps: list[Checked] = []
     for scope_uid in scopes:
@@ -126,6 +203,7 @@ async def record_for_run(*, run_uid: str) -> list[Checked]:
             checked_at=now,
             covered_paths=covered_paths,
             skipped_paths=skipped_paths,
+            covered_paths_observed=observed_paths,
             lens_verdicts=lens_verdicts,
             coverage_source=coverage_source,
         )
@@ -138,9 +216,61 @@ async def record_for_run(*, run_uid: str) -> list[Checked]:
             subject_uid=run.uid,
             subject_type="Run",
             actor_uid=run.executor,
-            payload={"scopes": len(stamps), "outcome": outcome, "revision": revision},
+            payload={
+                "scopes": len(stamps),
+                "outcome": outcome,
+                "revision": revision,
+                "coverage_source": coverage_source,
+                "claimed": len(covered_paths),
+                "observed": len(observed_paths),
+                "unverifiable": len(unknown_paths),
+            },
         )
     return stamps
+
+
+def _observed_for(run_uid: str, workspace_root: str) -> list[str]:
+    """Observed paths, best-effort — evidence is a bonus, never turn-fatal."""
+    if not workspace_root:
+        return []
+    try:
+        from domains.checked.services.observed_coverage import observed_paths_for_run
+
+        return observed_paths_for_run(run_uid, workspace_root)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            f"observed coverage unavailable for run {run_uid}: "
+            f"{type(exc).__name__}: {exc}",
+            extra={"tag": "checked"},
+        )
+        return []
+
+
+async def _workspace_tree(workspace_root: str) -> list[str] | None:
+    """The workspace's tracked files, or None when it can't be listed.
+
+    None is meaningfully different from []: it means "could not check", and
+    `validate_claim` then drops nothing. A torn-down workspace must never
+    retroactively invalidate a run's honest report.
+
+    Uses `git ls-files` directly rather than run_changes.compute_changes —
+    that computes a full diff with patches, which is a lot of work to throw
+    away when all we need is the file list.
+    """
+    if not workspace_root:
+        return None
+    try:
+        from domains.runs.services.run_changes import _git
+
+        out = await _git(workspace_root, "ls-files")
+        return [line for line in out.splitlines() if line.strip()] or None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            f"workspace tree unavailable at {workspace_root!r}: "
+            f"{type(exc).__name__}: {exc}",
+            extra={"tag": "checked"},
+        )
+        return None
 
 
 async def stamps_for_paths(

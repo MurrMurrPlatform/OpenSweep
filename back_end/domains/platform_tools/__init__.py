@@ -29,6 +29,15 @@ from domains.platform_tools.news_tools import (
     list_interests,
     list_news_items,
 )
+from domains.platform_tools.read_findings import (
+    opensweep_get_finding as get_finding,
+)
+from domains.platform_tools.read_findings import (
+    opensweep_list_findings as list_findings,
+)
+from domains.platform_tools.read_findings import (
+    opensweep_search_findings as search_findings,
+)
 from domains.platform_tools.set_analysis_section import set_analysis_section
 from domains.platform_tools.submit_for_review import submit_for_review
 from domains.platform_tools.submit_thread_plan import submit_thread_plan
@@ -47,6 +56,9 @@ __all__ = [
     "list_docs",
     "read_doc",
     "search_memory",
+    "list_findings",
+    "search_findings",
+    "get_finding",
     "attach_artifact",
     "complete_run",
     "submit_thread_plan",

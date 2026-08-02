@@ -772,9 +772,61 @@ function scopePathsLabel(paths: string[]): string {
                   <td class="w-full break-words py-1.5 pr-3 align-top font-medium">{{ cp.title || `Part ${cp.idx}` }}</td>
                   <td class="whitespace-nowrap py-1.5 pr-3 align-top tabular-nums">
                     {{ cp.covered }} covered · {{ cp.skipped }} skipped
+                    <span
+                      v-if="cp.coverage_source === 'observed'"
+                      class="text-muted-foreground"
+                      :title="`${cp.observed} file(s) measured from the run's own reads — the claim above is what it said, this is what it did`"
+                    >
+                      · {{ cp.observed }} measured
+                    </span>
+                    <span
+                      v-else-if="cp.coverage_source && cp.coverage_source !== 'reported'"
+                      class="text-muted-foreground"
+                      title="The run reported no coverage, so these are the paths it was dispatched at — where it was aimed, not what it read"
+                    >
+                      · scope only
+                    </span>
                   </td>
                   <td class="py-1.5 align-top">
                     <Badge :variant="partStateVariant(cp.state)">{{ cp.state }}</Badge>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div v-if="campaign.summary.coverage?.lens_rollup?.length" class="space-y-1">
+            <h3 class="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Lens coverage
+            </h3>
+            <table class="w-full text-sm">
+              <tbody>
+                <tr
+                  v-for="lr in campaign.summary.coverage.lens_rollup"
+                  :key="lr.lens"
+                  class="border-t border-border first:border-t-0"
+                >
+                  <td class="w-full break-words py-1.5 pr-3 align-top font-medium">{{ lr.lens }}</td>
+                  <td class="whitespace-nowrap py-1.5 pr-3 align-top tabular-nums text-muted-foreground">
+                    {{ lr['checked-clean'] }} clean · {{ lr['checked-findings'] }} found
+                  </td>
+                  <td class="py-1.5 align-top">
+                    <Badge
+                      v-if="lr.skipped"
+                      variant="warn"
+                      class="px-1.5 text-[10px]"
+                      :title="`The agent explicitly skipped this lens in ${lr.skipped} of ${lr.parts} part(s)`"
+                    >
+                      {{ lr.skipped }} skipped
+                    </Badge>
+                    <Badge
+                      v-if="lr.missing"
+                      variant="destructive"
+                      class="ml-1 px-1.5 text-[10px]"
+                      :title="`No verdict returned at all in ${lr.missing} of ${lr.parts} part(s) — the agent did not answer for this lens, which is not the same as skipping it`"
+                    >
+                      {{ lr.missing }} no verdict
+                    </Badge>
                   </td>
                 </tr>
               </tbody>

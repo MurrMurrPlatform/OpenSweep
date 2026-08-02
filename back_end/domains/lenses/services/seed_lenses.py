@@ -239,6 +239,61 @@ _LENSES: dict[str, dict[str, Any]] = {
             "nothing found\" is a valid verdict."
         ),
     },
+    "duplication-and-dead-code": {
+        "title": "Duplication and dead code",
+        "tags": ["audit", "cleanup", "global"],
+        "wants": ["static_analysis"],
+        "global_agent_key": "duplication-and-dead-code",
+        "body": (
+            "Whole-repo sweep for code that exists twice, or exists for nobody.\n"
+            "\n"
+            "The sibling of the `simplification` lens, and global for a reason: an\n"
+            "area run sees only its own scope, so a helper duplicated across two\n"
+            "subsystems, or exported here and unused everywhere, is invisible to\n"
+            "every scoped audit by construction. Only this sweep sees both ends.\n"
+            "\n"
+            "First check open findings tagged escalate:duplication-and-dead-code.\n"
+            "\n"
+            "Then sweep for: the same logic implemented in two or more places (name\n"
+            "the sites and which should own it); exports, helpers and whole modules\n"
+            "nothing imports; dependencies nothing uses; parallel hierarchies that\n"
+            "must always be edited together.\n"
+            "\n"
+            "Analyzer candidates in your context are LEADS, not findings — vulture\n"
+            "and knip cannot see dynamic dispatch, entry points, or reflection.\n"
+            "Confirm each is genuinely unreachable and say how you confirmed it.\n"
+            "File kind=improvement listing every affected path. \"Checked, nothing\n"
+            "found\" is a valid verdict."
+        ),
+    },
+    "contract-drift": {
+        "title": "Contract drift",
+        "tags": ["audit", "architecture", "global"],
+        "wants": [],
+        "global_agent_key": "contract-drift",
+        "body": (
+            "Whole-repo sweep for interfaces whose two ends have drifted apart.\n"
+            "\n"
+            "A contract has ends in different subsystems, so a scoped run sees one\n"
+            "end and has to assume the other. This sweep checks both.\n"
+            "\n"
+            "First check open findings tagged escalate:contract-drift.\n"
+            "\n"
+            "Then compare, wherever this repo has them:\n"
+            "- Server routes against the clients that call them — paths, methods,\n"
+            "  payload shapes, status codes, nullability.\n"
+            "- Schema/migration state against the models and queries assuming it: a\n"
+            "  column dropped but still read, a field added and never backfilled.\n"
+            "- Config and environment keys that are READ against those documented,\n"
+            "  defaulted, or set in deployment.\n"
+            "- Event and queue payloads against every producer and consumer.\n"
+            "\n"
+            "Every finding cites BOTH ends — the definition and the use — and says\n"
+            "which one is wrong. Deliberate, documented drift (a versioned endpoint\n"
+            "kept for compatibility) is not a finding. \"Checked, nothing found\" is\n"
+            "a valid verdict."
+        ),
+    },
     "implementation-gaps": {
         "title": "Implementation gaps",
         "tags": ["audit", "product", "global"],

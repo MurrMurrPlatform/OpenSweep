@@ -8,6 +8,9 @@ def test_default_lens_keys_by_kind():
     assert "bugs" in lens_service.default_lens_keys("subsystem")
     # global defaults are exactly the lenses that have a global_agent_key
     assert set(lens_service.default_lens_keys("global")) == {
-        "architecture-review", "implementation-gaps",
+        "architecture-review",
+        "implementation-gaps",
+        "duplication-and-dead-code",
+        "contract-drift",
     }
     assert lens_service.default_lens_keys("nonsense") == []

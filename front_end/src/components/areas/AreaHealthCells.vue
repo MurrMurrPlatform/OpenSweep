@@ -103,7 +103,15 @@ function docsTitle(h: AreaHealthRowDTO): string {
           {{ props.health.outcome }} · {{ daysAgo(props.health.last_checked) }}
         </Badge>
         <Badge
-          v-if="props.health.coverage_source !== 'reported'"
+          v-if="props.health.coverage_source === 'observed'"
+          variant="outline"
+          class="px-1.5 text-[10px]"
+          title="Measured from the run's own file reads, not taken on trust"
+        >
+          measured
+        </Badge>
+        <Badge
+          v-else-if="props.health.coverage_source !== 'reported'"
           variant="outline"
           class="px-1.5 text-[10px]"
           title="That run was aimed at these paths but did not report what it examined — treat the coverage as unverified"

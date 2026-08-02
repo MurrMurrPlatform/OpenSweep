@@ -335,12 +335,16 @@ def areas_from_map(
     """Area-map subsystem leaves → (area dicts sized against the real tree,
     partition health).
 
-    Leaves are {area_key, title, scope_paths, doc_uids} from the enabled
-    Area map. Unlike normalize_areas, leaves are NEVER auto-split or
-    tiny-merged — semantic sizing is the mapping agent's job; an oversized
-    leaf is only FLAGGED (`oversized`) so the map can be refined. Each
-    output dict carries its `area_key` plus `dead_scope_paths` — its scope
-    entries matching zero tree files ([] when the tree is empty).
+    Leaves are {area_key, title, scope_paths, doc_uids, stale, has_spec}
+    from the enabled Area map. Unlike normalize_areas, leaves are NEVER
+    auto-split or tiny-merged — semantic sizing is the mapping agent's job;
+    an oversized leaf is only FLAGGED (`oversized`) so the map can be
+    refined. Each output dict carries its `area_key` plus `dead_scope_paths`
+    — its scope entries matching zero tree files ([] when the tree is
+    empty) — and the leaf's `stale`/`has_spec` selector flags, which
+    build_plan_by_kind filters on. Remainder areas have no Area row behind
+    them, so they carry neither flag: unowned code has no review axis to be
+    stale against (selection="unaudited" is what reaches it).
 
     Ignore scopes are subtracted from leaf counts and the remainder —
     non-auditable files get no run scoped to them, even when a leaf scope
@@ -388,6 +392,14 @@ def areas_from_map(
         area["area_key"] = str(leaf.get("area_key") or "")
         area["oversized"] = bool(count and count > target_max)
         area["dead_scope_paths"] = dead_scopes
+        # Selector inputs from the Area row, carried through verbatim.
+        # build_plan_by_kind filters subsystem parts on `stale`, so dropping
+        # these here silently planned ZERO parts for every selection="stale"
+        # campaign — the unit tests missed it because they hand-build area
+        # dicts that already carry the key.
+        area["stale"] = bool(leaf.get("stale"))
+        area["has_spec"] = bool(leaf.get("has_spec"))
+        area["code_changed_at"] = leaf.get("code_changed_at")
         out.append(area)
 
     health = {
@@ -473,6 +485,15 @@ def bundle_siblings(
             ),
             "file_count": sum(int(a["file_count"] or 0) for a in group),
             "oversized": False,
+            # One run covers every leaf in the bundle, so the bundle needs a
+            # look as soon as ANY of its leaves does.
+            "stale": any(bool(a.get("stale")) for a in group),
+            "has_spec": any(bool(a.get("has_spec")) for a in group),
+            # The bundle moved as recently as its most recently changed leaf.
+            "code_changed_at": max(
+                (a.get("code_changed_at") for a in group if a.get("code_changed_at")),
+                default=None,
+            ),
         }
 
     out: list[dict] = []
@@ -569,6 +590,28 @@ def _area_recency(
     return min(v for v in per_scope if v is not None)
 
 
+def _area_needs_reaudit(
+    area: dict, path_recency: dict[str, datetime | None], code_changed_at
+) -> bool:
+    """Has code moved under this area since its last completed audit? Pure.
+
+    The audit-recency counterpart to `freshness.is_stale`, and deliberately
+    the same asymmetric null handling:
+      - never audited, but code has changed → YES (nobody has ever looked).
+      - never audited and code never changed → no (a webhook has never
+        matched it; a repo with no push history must not enqueue everything).
+      - audited, code changed since → YES.
+
+    An area with an unaudited scope path counts as needing one: _area_recency
+    returns None when ANY scope path has no coverage, which is exactly the
+    "part of this area has never been looked at" case.
+    """
+    if code_changed_at is None:
+        return False
+    covered_at = _area_recency(area, path_recency)
+    return covered_at is None or code_changed_at > covered_at
+
+
 def _part(idx: int, kind: str, title: str, area: dict | None, lens_keys: list[str]) -> dict:
     a = area or {}
     # Bundles carry area_keys; feature areas a singular area_key;
@@ -605,30 +648,58 @@ def build_plan_by_kind(
     k: int = 3,
     path_recency: dict | None = None,
     feature_areas: list[dict] | None = None,
+    scope_hint: list[str] | None = None,
+    synthesis: bool = False,
+    lens_grouping: str = "single",
 ) -> list[dict]:
     """Kind-dispatched plan builder. Additive alongside the existing build_plan.
 
     kind="subsystem": one kind="area" part per area, lens_keys = all enabled
         lenses. selection filters: all=every area; stale=areas where
-        area.get("stale"); rotation=k least-recently-covered via _area_recency.
+        area.get("stale") (code moved since the MAP was reviewed);
+        unaudited=areas where code moved since the last COMPLETED AUDIT
+        (_area_needs_reaudit — the two are different questions); rotation=k
+        least-recently-covered via _area_recency.
+        lens_grouping="grouped" emits one part per (area, lens group) instead
+        of one part carrying all eight lenses — see lens_service.LENS_GROUPS
+        for why that is opt-in.
     kind="feature": one kind="feature" part per leaf in feature_areas, lens_keys
         = all enabled lenses. selection: all=every leaf; stale/rotation=stale
         leaves only.
     kind="global": one kind="global" part per enabled lens (each expected to
-        carry a global_agent_key).
+        carry a global_agent_key). `scope_hint` — the union of the covered
+        areas' scope paths — rides each part so part_dispatch can steer a
+        prefix-scoped sweep; the sweep stays whole-repo either way.
     kind="batch": returns [] (handled by batch.py).
     """
     enabled = [lens for lens in lenses if lens.get("enabled", True)]
     enabled_keys = [str(lens["key"]) for lens in enabled]
 
     def _global_part_bk(lens: dict) -> dict:
-        return _part(0, "global", f"Global sweep — {lens['key']}", None, [str(lens["key"])])
+        part = _part(
+            0, "global", f"Global sweep — {lens['key']}", None, [str(lens["key"])]
+        )
+        if scope_hint:
+            # part_dispatch turns this into "Concentrate on: …" for a
+            # prefix-scoped campaign. The sweep itself stays whole-repo.
+            part["scope_hint"] = list(scope_hint)
+        return part
 
     parts: list[dict]
 
     if kind == "subsystem":
         if selection == "stale":
             candidate_areas = [a for a in areas if a.get("stale")]
+        elif selection == "unaudited":
+            # Code moved under the area since its last COMPLETED audit —
+            # the audit-recency axis, not the map-review one. Areas never
+            # audited at all sort first (_area_recency returns None).
+            recency = path_recency or {}
+            candidate_areas = [
+                a
+                for a in areas
+                if _area_needs_reaudit(a, recency, a.get("code_changed_at"))
+            ]
         elif selection == "rotation":
             recency = path_recency or {}
             scored = [(i, _area_recency(a, recency)) for i, a in enumerate(areas)]
@@ -637,7 +708,25 @@ def build_plan_by_kind(
             candidate_areas = [areas[i] for i, _ in scored[: max(k, 0)]]
         else:  # all
             candidate_areas = list(areas)
-        parts = [_part(0, "area", a["title"], a, enabled_keys) for a in candidate_areas]
+        if lens_grouping == "grouped":
+            from domains.lenses.services.lens_service import group_lens_keys
+
+            groups = group_lens_keys(enabled_keys)
+            parts = [
+                _part(
+                    0,
+                    "area",
+                    f"{a['title']} — {'/'.join(group)}",
+                    a,
+                    group,
+                )
+                for a in candidate_areas
+                for group in groups
+            ]
+        else:
+            parts = [
+                _part(0, "area", a["title"], a, enabled_keys) for a in candidate_areas
+            ]
 
     elif kind == "feature":
         leaves = list(feature_areas or [])
@@ -650,6 +739,14 @@ def build_plan_by_kind(
 
     else:  # batch (and any unknown kind)
         return []
+
+    if synthesis and parts:
+        # Last, and only when there is something to synthesize. The campaign
+        # digest is a tally — counts by severity, coverage rows, holes — and
+        # nothing ever read the findings AS A SET and said what they mean.
+        # This part does, into an Analysis. Skipped for an empty plan: there
+        # is no honest report to write about zero work.
+        parts.append(_part(0, "synthesis", "Synthesis — campaign report", None, []))
 
     for idx, part in enumerate(parts):
         part["idx"] = idx

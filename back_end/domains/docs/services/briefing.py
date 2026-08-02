@@ -19,10 +19,14 @@ hundreds of memories from eating the prompt.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from domains.docs.models import Doc, doc_is_stale
 from domains.memory.schemas import MemoryDTO
 from domains.memory.services.memory_service import search_memory
 from domains.repositories.services.path_matching import watches_path
+
+_EPOCH = datetime.min.replace(tzinfo=UTC)
 
 
 def _index_line(d: Doc) -> str:
@@ -65,6 +69,11 @@ _TARGET_MEMORY_LIMIT = 6  # per target Doc — these are the most on-point
 _REPO_MEMORY_LIMIT = 10  # scope-ranked, repo-wide
 _MEMORY_CHAR_BUDGET = 6000
 _MEMORY_BODY_CHARS = 600
+
+#: Known-false-positive budget. Same reasoning as the memory caps: this rides
+#: every first-turn prompt on the repo, so it has to stay cheap.
+_DISMISSED_LIMIT = 15
+_DISMISSED_TITLE_CHARS = 120
 
 
 def _scope_query(target_paths: list[str], related_docs: list[Doc]) -> str:
@@ -144,6 +153,39 @@ async def _briefing_memories(
     return deduped
 
 
+async def _dismissed_finding_lines(repository_uid: str) -> list[str]:
+    """Recently dismissed findings, as one-line reminders. Best-effort.
+
+    The platform stored the human verdict on every triaged finding and fed it
+    into nothing an agent could see: `trust_score` sinks a dismissed finding
+    in the RANKING, and the dedupe key suppresses a byte-identical re-report,
+    but a rephrased title or a moved file produces a brand-new open finding at
+    full trust. Worse, `list_findings` defaults to status=open, so the very
+    findings an agent most needs to avoid re-filing were the ones it could not
+    see. This closes that loop where it is cheapest — in the briefing every
+    run already reads.
+    """
+    from domains.findings.models import Finding
+
+    try:
+        rows = [
+            f
+            for f in await Finding.nodes.filter(repository_uid=repository_uid)
+            if (f.status or "") == "dismissed"
+        ]
+    except Exception:  # noqa: BLE001 — the briefing is never turn-fatal
+        return []
+    rows.sort(key=lambda f: f.updated_at or f.created_at or _EPOCH, reverse=True)
+    out: list[str] = []
+    for f in rows[:_DISMISSED_LIMIT]:
+        title = (f.title or "").strip()[:_DISMISSED_TITLE_CHARS]
+        if not title:
+            continue
+        paths = ", ".join(list(f.affected_paths or [])[:2])
+        out.append(f"- {title}" + (f" ({paths})" if paths else ""))
+    return out
+
+
 async def build_briefing(
     *,
     repository_uid: str,
@@ -211,6 +253,16 @@ async def build_briefing(
             "Facts earlier runs recorded that the code does not state. Not "
             "exhaustive and not authoritative — search_memory for more, and "
             "trust the code where they disagree.\n\n" + "\n".join(lines)
+        )
+
+    dismissed = await _dismissed_finding_lines(repository_uid)
+    if dismissed:
+        sections.append(
+            "## Already judged NOT a problem here\n\n"
+            "A human reviewed each of these and dismissed it. Do not re-file "
+            "them. If you believe one is real after all, say so with the new "
+            "evidence that changes the picture rather than filing it again "
+            "as if it were fresh.\n\n" + "\n".join(dismissed)
         )
 
     return "\n\n".join(sections).strip()

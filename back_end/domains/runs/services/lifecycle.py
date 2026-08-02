@@ -815,6 +815,9 @@ async def _prepare_dispatch_and_finalize(
     context = await _maybe_run_static_analysis(
         run=run, repo=repo, local_path=local_path, context=context
     )
+    context = await _maybe_add_structural_candidates(
+        run=run, local_path=local_path, context=context
+    )
 
     req = DispatchRequest(
         run_uid=run_uid,
@@ -846,6 +849,90 @@ async def _prepare_dispatch_and_finalize(
 # distract from their structural contracts.
 _ANALYZED_PLAYBOOKS = {"review", "ask"}
 
+#: The `wants` token a lens uses to ask for the analyzer pre-pass.
+_WANTS_STATIC_ANALYSIS = "static_analysis"
+
+
+async def _run_wants_static_analysis(run: Run) -> bool:
+    """Does this run want the analyzer pre-pass?
+
+    `Lens.wants` existed for exactly this — it is seeded as
+    ["static_analysis"] on bugs/security/simplification/architecture-review,
+    checksummed, and exposed in the DTO — and nothing read it: the gate was
+    the playbook alone. A config field nobody reads is one somebody will
+    eventually trust, so it is wired here rather than deleted.
+
+    A run carrying an explicit lens list is governed by those lenses; a run
+    with none (a plain audit, a deep scan, a PR review) falls back to the
+    playbook rule, which is what it always was.
+    """
+    if (run.playbook or "") not in _ANALYZED_PLAYBOOKS:
+        return False
+    lens_keys = [str(k) for k in (dict(run.target or {}).get("lens_keys") or []) if k]
+    if not lens_keys:
+        return True
+    try:
+        from domains.lenses.services import lens_service
+
+        for key in lens_keys:
+            lens = await lens_service.get_by_key(key)
+            if lens is not None and _WANTS_STATIC_ANALYSIS in (lens.wants or []):
+                return True
+        return False
+    except Exception as exc:  # noqa: BLE001 — an unreadable lens must not
+        # silently DISABLE analysis; fall back to the old behaviour.
+        logger.warning(
+            f"lens wants lookup failed for run {run.uid}: "
+            f"{type(exc).__name__}: {exc}",
+            extra={"tag": "lifecycle"},
+        )
+        return True
+
+
+async def _maybe_add_structural_candidates(
+    *, run: Run, local_path: str | None, context: str
+) -> str:
+    """Append code-graph structural facts to a WHOLE-REPO run's context.
+
+    Scoped to whole-repo runs on purpose. Import cycles, coupling hotspots and
+    god modules are properties of the graph as a whole; handing them to an
+    area part would be handing it evidence about code it is contractually
+    forbidden from investigating. These are exactly the analyses a scoped run
+    cannot do, which is why they belong to the sweeps that can.
+
+    Best-effort like the analyzer pass — a missing binary or an unindexed
+    workspace yields nothing and never fails the run.
+    """
+    target = dict(run.target or {})
+    if (run.playbook or "") != "ask" or not local_path or target.get("paths"):
+        return context
+    try:
+        from infrastructure.code_graph_metrics import structural_candidates
+
+        section = await structural_candidates(local_path)
+        if not section:
+            return context
+        append_event(
+            run.uid,
+            "system",
+            kind="analysis",
+            text="structural candidates from the code graph",
+        )
+        usage = dict(run.usage or {})
+        # Quota redispatch rebuilds context from the briefing; re-append this
+        # instead of re-querying, exactly as static analysis does.
+        usage["structural_candidates"] = {"summary_md": section}
+        run.usage = usage
+        await run.save()
+        return f"{context}\n\n{section}" if context else section
+    except Exception as exc:  # noqa: BLE001 — candidates are a bonus, never a blocker
+        logger.warning(
+            f"structural candidates failed for run {run.uid}: "
+            f"{type(exc).__name__}: {exc}",
+            extra={"tag": "lifecycle"},
+        )
+        return context
+
 
 async def _maybe_run_static_analysis(
     *, run: Run, repo: Repository | None, local_path: str | None, context: str
@@ -853,7 +940,7 @@ async def _maybe_run_static_analysis(
     """Run the repo's configured analyzers over the fresh sandbox and append
     a capped candidate section to the context. Best-effort by construction:
     any failure returns the context unchanged and never fails the run."""
-    if (run.playbook or "") not in _ANALYZED_PLAYBOOKS or not local_path or repo is None:
+    if not local_path or repo is None or not await _run_wants_static_analysis(run):
         return context
     try:
         from domains.execution.services import static_analysis as sa

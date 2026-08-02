@@ -1785,8 +1785,13 @@ export interface CampaignPart {
 export interface CampaignCoveragePart {
   idx: number
   title: string
+  /** Paths the run CLAIMED to cover. */
   covered: number
   skipped: number
+  /** Paths the run was OBSERVED to open — the measured half. Only meaningful
+   *  when coverage_source is 'observed'. */
+  observed?: number
+  coverage_source?: CoverageSource
   state: CampaignPartState
 }
 
@@ -1812,6 +1817,20 @@ export interface FeatureRollup {
 }
 
 /** End-of-campaign digest; {} until finalization. */
+/** One lens's verdict tally across a campaign's parts.
+ *
+ *  `missing` is deliberately separate from `skipped`: an agent reporting "I
+ *  skipped performance" and an agent silently omitting it are different
+ *  failures, and only the first is the coverage contract working. */
+export interface LensRollup {
+  lens: string
+  'checked-clean': number
+  'checked-findings': number
+  skipped: number
+  missing: number
+  parts: number
+}
+
 export interface CampaignSummary {
   counts?: {
     by_severity: Record<string, number>
@@ -1824,6 +1843,10 @@ export interface CampaignSummary {
     holes: string[]
     /** Parent-feature health — feature-leaf parts aggregated by parent grouping. */
     feature_rollup?: FeatureRollup[]
+    /** Per-lens verdict tallies. This is what the coverage contract collects:
+     *  "performance skipped in 4 of 11 parts" says far more about a campaign
+     *  than its finding count does. */
+    lens_rollup?: LensRollup[]
   }
   failed_parts?: number[]
 }
@@ -1900,7 +1923,18 @@ export interface CampaignDTO {
   updated_at?: string | null
 }
 
-export type CampaignSelection = 'all' | 'stale' | 'rotation'
+/** `stale` and `unaudited` answer different questions and are not
+ *  interchangeable: `stale` is the area MAP's review axis (code moved since
+ *  anyone checked the partition is still right), `unaudited` is the audit
+ *  axis (code moved since anyone actually audited it). An area can be
+ *  perfectly mapped and years out of audit. */
+export type CampaignSelection = 'all' | 'stale' | 'unaudited' | 'rotation'
+
+/** `grouped` splits each area into one run per lens GROUP instead of one
+ *  run carrying all eight. Roughly triples the run count, so it is opt-in
+ *  — the campaign digest's per-lens rollup is how you tell whether it
+ *  bought anything. */
+export type CampaignLensGrouping = 'single' | 'grouped'
 
 export interface CreateCampaignRequest {
   /** Kind-based model (new): kind + coverage_keys + selection. */
@@ -1909,6 +1943,7 @@ export interface CreateCampaignRequest {
   coverage_keys?: string[]
   /** Which areas to include: all | stale | rotation-k. */
   selection?: CampaignSelection
+  lens_grouping?: CampaignLensGrouping
   /** Empty = every enabled lens. */
   lens_keys?: string[]
   effort?: AgentEffort | ''
@@ -1988,7 +2023,16 @@ export interface CampaignAreasPreview {
 // ── Analysis (whole-repo deep-scan reports) ─────────────────────────────────
 // Mirror back_end/domains/analysis/schemas.py.
 
-export type AnalysisStatus = 'in_progress' | 'complete' | 'superseded' | 'archived'
+/** `incomplete` = the run ended before authoring a verdict (a killed or
+ *  forgetful scan). The backend writes it and drops any partial grade so it
+ *  never surfaces as a current one — this type omitted it, so a status the
+ *  API really returns was unrepresentable. */
+export type AnalysisStatus =
+  | 'in_progress'
+  | 'complete'
+  | 'incomplete'
+  | 'superseded'
+  | 'archived'
 export type QuestionStatus = 'open' | 'answered' | 'dismissed'
 
 export interface ScorecardEntry {
@@ -2130,6 +2174,19 @@ export interface AreaDTO {
 
 export type AreaSpecState = 'present' | 'missing' | 'stale'
 
+/** How much a coverage stamp is actually worth, strongest evidence first.
+ *
+ *  - `observed`  measured from the run's own tool calls.
+ *  - `reported`  the agent said so and the paths check out.
+ *  - `inferred`  the agent said nothing, so this is the dispatched scope —
+ *                where the run was aimed, not what it read.
+ *  - `unknown`   predates the distinction; no better than `inferred`.
+ *
+ *  Note `observed` is only ever produced by Claude Code runs; the opencode
+ *  adapter emits no per-tool-call events, so its runs stay `reported`/
+ *  `inferred`. Absence of measurement is not evidence of poor coverage. */
+export type CoverageSource = 'observed' | 'reported' | 'inferred' | 'unknown'
+
 /** One row of the merged Areas board — the area plus every upkeep signal that
  *  used to live on the separate Health page. Three independent axes: review
  *  staleness, doc freshness, and audit coverage. */
@@ -2165,9 +2222,11 @@ export interface AreaHealthRowDTO {
   last_checked?: string | null
   outcome: string
   revision: string
-  /** Provenance of the stamp behind `last_checked`. Non-'reported' means a run
-   *  was aimed at these paths without reporting what it actually examined. */
-  coverage_source: 'reported' | 'inferred' | 'unknown'
+  /** Provenance of the stamp behind `last_checked`, strongest first.
+   *  'observed' is derived from the run's own tool calls; 'reported' is the
+   *  agent's claim; 'inferred'/'unknown' mean these are the run's dispatched
+   *  paths — where it was aimed, not what it read. */
+  coverage_source: CoverageSource
 }
 
 /** A doc page no area covers — surfaced so it doesn't vanish with the Health page. */
@@ -2289,9 +2348,13 @@ export interface AreaCoverageStamp {
   outcome: string
   checked_at: string | null
   lens_verdicts: { lens: string; verdict: string; note?: string }[]
-  /** 'reported' is the agent's own coverage contract; 'inferred'/'unknown' mean
-   *  these are the run's dispatched paths — where it was aimed, not what it read. */
-  coverage_source: 'reported' | 'inferred' | 'unknown'
+  /** 'observed' is measured from the run's tool calls, 'reported' is the
+   *  agent's own coverage contract; 'inferred'/'unknown' mean these are the
+   *  run's dispatched paths — where it was aimed, not what it read. */
+  coverage_source: CoverageSource
+  /** Paths the run was OBSERVED to open. Empty is only meaningful when
+   *  coverage_source is 'observed'; otherwise nothing was measured. */
+  covered_paths_observed?: string[]
 }
 
 /** GET /areas/{uid}/detail — everything the area detail page renders. */

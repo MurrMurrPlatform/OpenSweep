@@ -32,6 +32,7 @@ import type {
   AreaDTO,
   CampaignDTO,
   CampaignKind,
+  CampaignLensGrouping,
   CampaignSelection,
   CreateCampaignRequest,
   LensDTO,
@@ -56,6 +57,7 @@ const toast = useToast()
 
 const kind = ref<CampaignKind>('subsystem')
 const selection = ref<CampaignSelection>('all')
+const lensGrouping = ref<CampaignLensGrouping>('single')
 const k = ref(3)
 const effort = ref<AgentEffort | 'default'>('default')
 const maxParallel = ref(DEFAULT_MAX_PARALLEL)
@@ -198,7 +200,11 @@ function schedulePreview() {
 }
 
 // Trigger preview whenever any relevant field changes.
-watch([kind, coverageKeys, selection, selectedLensKeys, k], schedulePreview, { deep: true })
+watch(
+  [kind, coverageKeys, selection, selectedLensKeys, k, lensGrouping],
+  schedulePreview,
+  { deep: true },
+)
 
 onBeforeUnmount(() => window.clearTimeout(previewDebounce))
 
@@ -274,6 +280,7 @@ async function create() {
       kind: kind.value,
       coverage_keys: coverageKeys.value.size > 0 ? [...coverageKeys.value] : [],
       selection: selection.value,
+      lens_grouping: lensGrouping.value,
       lens_keys: kind.value !== 'batch' ? [...selectedLensKeys.value] : [],
       effort: effort.value === 'default' ? '' : effort.value,
       k: selection.value === 'rotation' ? k.value : undefined,
@@ -339,8 +346,22 @@ async function create() {
               <SelectTrigger class="w-full"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All — every area in scope</SelectItem>
-                <SelectItem value="stale">Stale — code changed since last review</SelectItem>
+                <SelectItem value="stale">Stale — map not reviewed since the code changed</SelectItem>
+                <SelectItem value="unaudited">Unaudited — code changed since the last audit</SelectItem>
                 <SelectItem value="rotation">Rotation — k areas per pass</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div v-if="kind === 'subsystem'" class="space-y-1.5">
+            <Label>Lens grouping</Label>
+            <Select
+              :model-value="lensGrouping"
+              @update:model-value="lensGrouping = $event as CampaignLensGrouping"
+            >
+              <SelectTrigger class="w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="single">One run per area — every lens together</SelectItem>
+                <SelectItem value="grouped">One run per lens group — ~3x runs, more attention each</SelectItem>
               </SelectContent>
             </Select>
           </div>
