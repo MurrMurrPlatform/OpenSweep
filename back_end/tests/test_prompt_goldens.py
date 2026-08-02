@@ -36,7 +36,13 @@ def _assert_matches_golden(name: str, rendered: str) -> None:
     if os.environ.get("UPDATE_GOLDENS"):
         GOLDENS_DIR.mkdir(parents=True, exist_ok=True)
         path.write_text(rendered)
-        return
+        # A regeneration run must never report green: it writes tracked source
+        # files and performs no verification. Failing here stops a
+        # rubber-stamped golden from being committed with a passing suite.
+        pytest.fail(
+            f"golden {name} regenerated — rerun without UPDATE_GOLDENS and "
+            "review the diff before committing"
+        )
     assert path.exists(), f"golden {name} missing — regenerate with UPDATE_GOLDENS=1"
     assert rendered == path.read_text(), (
         f"{name} drifted from its golden — if the change is intentional, "

@@ -36,6 +36,10 @@ class WriteGateResult:
     changed_paths: list[str] = field(default_factory=list)
     violations: list[str] = field(default_factory=list)
     commits: int = 0
+    # The branch actually inspected (rev-parse HEAD in the sandbox). Callers
+    # MUST push this, not their own intended name — the agent controls HEAD, so
+    # the validated branch and an externally-held variable can diverge.
+    work_branch: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -43,6 +47,7 @@ class WriteGateResult:
             "changed_paths": list(self.changed_paths),
             "violations": list(self.violations),
             "commits": self.commits,
+            "work_branch": self.work_branch,
         }
 
 
@@ -115,6 +120,12 @@ def evaluate_changes(
         violations.append(
             f"work branch {work_branch!r} is a protected branch — writes go to opensweep/* branches only"
         )
+    elif not (work_branch or "").strip().startswith("opensweep/"):
+        # The gate promises writes land only on opensweep/* branches; enforce
+        # it. Also catches a detached HEAD, whose rev-parse yields "HEAD".
+        violations.append(
+            f"work branch {work_branch!r} is not an opensweep/* branch — writes go there only"
+        )
     if commits <= 0:
         violations.append(NO_COMMITS_VIOLATION)
     violations.extend(denylist_violations(changed_paths, denylist))
@@ -123,6 +134,7 @@ def evaluate_changes(
         changed_paths=list(changed_paths),
         violations=violations,
         commits=commits,
+        work_branch=work_branch,
     )
 
 

@@ -1,6 +1,7 @@
 """Sandbox lifecycle — fresh `git clone` from GitHub based isolation."""
 
 import asyncio
+import re
 import shutil
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -17,6 +18,19 @@ from infrastructure.git_safety import GitSafetyMode, safety_mode
 from infrastructure.git_providers import get_git_credentials
 from infrastructure.git_auth import git_auth_extraheader
 from logging_config import logger
+
+
+#: A git ref must start with an alphanumeric and use only branch-safe chars.
+#: This blocks a name that would parse as a git option (leading '-', e.g.
+#: '--upload-pack=...') or escape a pathspec ('..') when it reaches
+#: `git fetch`/`git checkout` argv.
+_SAFE_GIT_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+
+
+def _assert_safe_git_ref(name: str, *, field: str) -> None:
+    n = (name or "").strip()
+    if not _SAFE_GIT_REF.match(n) or ".." in n:
+        raise HTTPException(status_code=400, detail=f"invalid {field}: {name!r}")
 
 
 def _to_user_host_path(container_path: str) -> str:
@@ -102,6 +116,9 @@ class SandboxService:
         sliding window for every purpose (V3 §7, default 7 days) — each turn
         pushes cleanup_after out via touch().
         """
+        # Both refs reach git argv (fetch/checkout); reject option-injection.
+        _assert_safe_git_ref(source_branch, field="source_branch")
+        _assert_safe_git_ref(sandbox_branch, field="sandbox_branch")
         owner = (repository.github_owner or "").strip()
         repo_name = (repository.github_repo or "").strip()
         if not owner or not repo_name:

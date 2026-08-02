@@ -73,6 +73,15 @@ async def _provision_new_user(
     the OpenSweep org) is joined for backward compatibility; otherwise the user
     gets a personal org and owns it."""
     inv = await find_pending_invitation(email)
+    # Auto-joining an org on an invitation trusts the email claim, so require
+    # the IdP to have verified it. Without this, on any issuer that permits
+    # self-registration an attacker registering the invited address lands
+    # inside that tenant with the invited role. Unverified → personal org.
+    if inv is not None and claims.get("email_verified") is not True:
+        logger.warning(
+            f"OIDC: ignoring invitation {inv.uid} for {email} — email unverified"
+        )
+        inv = None
     if inv is not None and await Organization.nodes.get_or_none(uid=inv.org_uid):
         user = await User(
             uid=sub,

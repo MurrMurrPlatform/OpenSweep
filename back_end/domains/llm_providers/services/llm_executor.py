@@ -8,8 +8,10 @@ triage decisions, etc. is the caller's job.
 Supported kinds:
     claude_subscription / codex_subscription
         → subprocess, using `cli_command_template`. Placeholders:
-            {{system_prompt}}, {{instruction}}, {{model}}      (raw)
+            {{model}}, {{working_dir}}                          (raw, platform-set)
             {{system_prompt_q}}, {{instruction_q}}, {{model_q}} (shlex-quoted)
+        system_prompt/instruction carry untrusted text, so ONLY their
+        shlex-quoted _q variants exist — use those.
     claude_api / openai_api / mlx / lmstudio / ollama
         → POST {base_url}/chat/completions with the OpenAI Chat shape.
     custom
@@ -352,6 +354,9 @@ def _prepare_claude_mcp_config(provider: "LLMProvider", *, run_uid: str) -> str:
     config_dir = f"/tmp/opensweep-claude-{run_uid}"
     try:
         os.makedirs(config_dir, exist_ok=True)
+        # The MCP config's mcp-remote args carry the per-run auth header; keep
+        # it off the world-readable /tmp umask. 0600 on the file after write.
+        os.chmod(config_dir, 0o700)
         config_path = os.path.join(config_dir, "mcp.json")
         payload = {
             "mcpServers": {
@@ -363,6 +368,7 @@ def _prepare_claude_mcp_config(provider: "LLMProvider", *, run_uid: str) -> str:
         }
         with open(config_path, "w") as fh:
             json.dump(payload, fh, indent=2)
+        os.chmod(config_path, 0o600)  # carries the per-run auth header
     except OSError:
         return ""
     return config_path
@@ -400,6 +406,10 @@ def _prepare_opencode_config(
     config_dir = os.path.join(base_dir, "opencode")
     try:
         os.makedirs(config_dir, exist_ok=True)
+        # This file holds the provider API key in cleartext; keep it off the
+        # default world-readable /tmp umask (0755/0644). The codex path already
+        # does this — mirror it. 0600 on the file is applied after the write.
+        os.chmod(base_dir, 0o700)
         config_path = os.path.join(config_dir, "opencode.json")
         proxied_base_url = base_url
         options: dict = {"baseURL": proxied_base_url}
@@ -462,6 +472,7 @@ def _prepare_opencode_config(
             payload["mcp"] = mcp
         with open(config_path, "w") as fh:
             json.dump(payload, fh, indent=2)
+        os.chmod(config_path, 0o600)  # holds the provider API key
     except OSError:
         return ""
     return base_dir
@@ -476,8 +487,11 @@ def _render_template(template: str, *, system_prompt: str, instruction: str,
         "{{model_q}}": shlex.quote(model),
         "{{working_dir_q}}": shlex.quote(working_dir),
         "{{mcp_config_path_q}}": shlex.quote(mcp_config_path),
-        "{{system_prompt}}": system_prompt,
-        "{{instruction}}": instruction,
+        # No raw {{system_prompt}} / {{instruction}} variants: those carry
+        # LLM- and repo-derived text into the argv that is shlex.split, so an
+        # unquoted form is argv injection. Only the shlex-quoted _q variants
+        # exist for them; a template using the raw form leaves the literal
+        # placeholder (an obvious failure) instead of injecting.
         "{{model}}": model,
         "{{working_dir}}": working_dir,
         "{{mcp_config_path}}": mcp_config_path,

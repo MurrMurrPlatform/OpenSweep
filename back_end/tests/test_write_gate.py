@@ -124,6 +124,32 @@ def test_evaluate_changes_denylisted_path_is_a_violation():
     assert len(result2.violations) == 3
 
 
+def test_evaluate_changes_non_opensweep_branch_is_a_violation():
+    # A non-protected branch that isn't opensweep/* must not be pushed to.
+    result = evaluate_changes(
+        work_branch="feature/sneaky", changed_paths=["src/x.py"], commits=1, denylist=[]
+    )
+    assert not result.ok
+    assert any("opensweep/*" in v for v in result.violations)
+
+
+def test_evaluate_changes_detached_head_is_a_violation():
+    # rev-parse --abbrev-ref on a detached HEAD yields the literal "HEAD".
+    result = evaluate_changes(
+        work_branch="HEAD", changed_paths=["src/x.py"], commits=1, denylist=[]
+    )
+    assert not result.ok
+
+
+def test_evaluate_changes_carries_the_validated_branch():
+    # Callers must push result.work_branch, so it has to round-trip.
+    result = evaluate_changes(
+        work_branch="opensweep/ab12cd34-x", changed_paths=["src/x.py"], commits=1, denylist=[]
+    )
+    assert result.ok
+    assert result.work_branch == "opensweep/ab12cd34-x"
+
+
 # ── Fix-round bound (§6: bounded auto-fix loop) ──────────────────────────────
 
 

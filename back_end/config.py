@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     OPENSWEEP_SECRETS_KEY: str = ""
     # Comma-separated previous keys kept decryptable during rotation.
     OPENSWEEP_SECRETS_KEY_FALLBACKS: str = ""
+    # SSRF escape hatch: extra hostnames (comma-separated) allowed as an LLM
+    # provider base_url even though they resolve to a private/loopback address.
+    # `host.docker.internal` (the standard local-model bridge) is always
+    # allowed; add LAN model-server hosts here. Every other private/link-local
+    # target (cloud metadata, platform services) is rejected at write time.
+    OPENSWEEP_LLM_ALLOW_LOCAL_HOSTS: str = ""
 
     # ── Zitadel OIDC (multi-user auth) ──────────────────────────────────────
     # Empty ZITADEL_ISSUER = OIDC disabled. When set, TokenAuthMiddleware also

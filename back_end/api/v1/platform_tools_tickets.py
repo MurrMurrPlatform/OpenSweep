@@ -119,6 +119,62 @@ async def platform_update_ticket(
     return ticket_to_dto(updated)
 
 
+class PlatformTransitionTicketRequest(BaseModel):
+    """Move a ticket through the status matrix. Only permitted when the repo
+    has opted into agent autonomy (Repository.agent_autonomy)."""
+
+    ticket_uid: str = Field(min_length=1)
+    to_status: str = Field(
+        min_length=1,
+        description=(
+            "Target status: backlog | todo | in-progress | in-review | done. "
+            "Only legal matrix transitions are accepted (illegal → 409). "
+            "backlog → todo is the Gate-1 approval."
+        ),
+    )
+
+
+@router.post(
+    "/transition",
+    response_model=TicketDTO,
+    operation_id="opensweep_platform_transition_ticket",
+)
+async def platform_transition_ticket(
+    req: PlatformTransitionTicketRequest,
+    request: Request,
+    user: UserDTO = Depends(get_current_user),
+):
+    """Agent-driven ticket status transition — gated on repo agent autonomy.
+
+    By default this is human-only (Gate 1): an agent must not promote its own
+    proposed work. When the operator has enabled `agent_autonomy` for the repo,
+    the agent transitions with maintainer authority, so the Gate-1 role check
+    passes; the status matrix and epic-member rules still apply.
+    """
+    from domains.repositories.services.agent_capabilities import (
+        agent_autonomy_enabled,
+    )
+
+    t = await Ticket.nodes.get_or_none(uid=req.ticket_uid)
+    if t is None:
+        raise HTTPException(status_code=404, detail="not found")
+    await require_tool_repo_access(request, user, t.repository_uid)
+    if not await agent_autonomy_enabled(t.repository_uid):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "agent autonomy is disabled for this repository — ticket status "
+                "moves through a human (Gate 1). Enable it in repository settings "
+                "to let agents transition tickets."
+            ),
+        )
+    actor = request.headers.get("X-OpenSweep-Run-Uid") or user.uid
+    updated = await TicketService().transition(
+        req.ticket_uid, req.to_status, actor_uid=actor, actor_role="maintainer"
+    )
+    return ticket_to_dto(updated)
+
+
 class PlatformProposeEpicRequest(BaseModel):
     """Agents suggest that ≥2 open tickets be grouped under one parent.
     Nothing changes until a human approves the proposal."""
@@ -199,6 +255,51 @@ async def platform_propose_ticket_group(
         origin="agent",
     )
     return {"proposal_uid": proposal.uid, "deduplicated": deduplicated}
+
+
+class PlatformApproveEpicRequest(BaseModel):
+    proposal_uid: str = Field(min_length=1)
+
+
+@router.post(
+    "/approve-group",
+    operation_id="opensweep_platform_approve_epic",
+)
+async def platform_approve_epic(
+    req: PlatformApproveEpicRequest,
+    request: Request,
+    user: UserDTO = Depends(get_current_user),
+) -> dict:
+    """Materialize an agent-proposed epic — gated on repo agent autonomy.
+
+    Like Gate 1, approving a grouping (which creates the parent ticket and
+    re-parents the members) is human-only by default. When the repo has opted
+    into `agent_autonomy`, the agent may approve its own proposal.
+    """
+    from domains.repositories.services.agent_capabilities import (
+        agent_autonomy_enabled,
+    )
+    from domains.tickets.services.epic_service import EpicService
+
+    svc = EpicService()
+    proposal = await svc.get_node(req.proposal_uid)  # 404s if missing
+    await require_tool_repo_access(request, user, proposal.repository_uid)
+    if not await agent_autonomy_enabled(proposal.repository_uid):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "agent autonomy is disabled for this repository — epic approval "
+                "is a human decision. Enable it in repository settings to let "
+                "agents approve their own proposals."
+            ),
+        )
+    actor = request.headers.get("X-OpenSweep-Run-Uid") or user.uid
+    dto = await svc.approve(req.proposal_uid, actor_uid=actor)
+    return {
+        "proposal_uid": req.proposal_uid,
+        "status": dto.status,
+        "created_ticket_uid": getattr(dto, "created_ticket_uid", ""),
+    }
 
 
 @router.get(

@@ -127,6 +127,7 @@ def test_opencode_generated_config_registers_code_graph(tmp_path):
     with (
         patch("infrastructure.code_graph.code_graph_binary", return_value="/usr/local/bin/codebase-memory-mcp"),
         patch("domains.llm_providers.services.llm_executor.os.makedirs"),
+        patch("domains.llm_providers.services.llm_executor.os.chmod"),
         patch("builtins.open"),
         patch("json.dump") as dumped,
     ):
@@ -138,6 +139,7 @@ def test_opencode_generated_config_registers_code_graph(tmp_path):
     # Without a workspace the opensweep server still registers, the graph doesn't.
     with (
         patch("domains.llm_providers.services.llm_executor.os.makedirs"),
+        patch("domains.llm_providers.services.llm_executor.os.chmod"),
         patch("builtins.open"),
         patch("json.dump") as dumped,
     ):

@@ -126,10 +126,26 @@ class _Repo:
 
 class _PR:
     uid = "pr-1"
-    number = 7
+    github_number = 7
     state = "open"
     pr_key = "acme/widgets#7"
     repository_uid = "repo-1"
+
+
+def test_pr_fake_matches_real_model():
+    """The fake must expose only attributes the real PullRequest model has.
+
+    publish_verdict_review read `pr.number` for four commits while the model
+    only defines `github_number`; the fake carried a matching `number = 7`, so
+    the tests were green while every real verdict raised AttributeError. This
+    guard fails if the fake and the model drift again.
+    """
+    from domains.delivery.models import PullRequest
+
+    real_attrs = set(dir(PullRequest))
+    fake_attrs = {a for a in vars(_PR) if not a.startswith("_")}
+    missing = fake_attrs - real_attrs
+    assert not missing, f"_PR has attributes absent from PullRequest: {missing}"
 
 
 class _Client:

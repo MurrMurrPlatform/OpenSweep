@@ -96,6 +96,7 @@ export interface RepositoryDTO {
   last_synced_at?: string | null
   metadata?: Record<string, unknown>
   kill_switch_active?: boolean
+  agent_autonomy?: boolean
   created_at?: string | null
   updated_at?: string | null
 }

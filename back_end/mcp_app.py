@@ -114,15 +114,20 @@ OPENSWEEP_PLATFORM_TOOL_OPERATIONS = [
     "opensweep_platform_get_merge_policy",
     "opensweep_platform_list_open_pull_requests",
     # Tickets (§15 Phase 2) — agents may PROPOSE work (origin forced to
-    # agent-proposal, status forced to backlog) and read tickets. There is
-    # deliberately NO transition tool: Gate 1 (backlog → todo) is human-only.
+    # agent-proposal, status forced to backlog) and read tickets. Status
+    # transitions (incl. Gate 1) are human-only by default; the transition tool
+    # enforces that at the handler and only proceeds when the repo has opted
+    # into agent_autonomy (Repository.agent_autonomy).
     "opensweep_platform_create_ticket",
     "opensweep_platform_update_ticket",
+    "opensweep_platform_transition_ticket",
     "opensweep_platform_get_ticket",
     "opensweep_platform_list_tickets",
     # Epics — agents may PROPOSE grouping related tickets under one parent;
-    # approval (which materializes the parent) is human-only, like Gate 1.
+    # approval (which materializes the parent) is human-only by default, and the
+    # approve tool enforces that unless the repo has opted into agent_autonomy.
     "opensweep_platform_propose_epic",
+    "opensweep_platform_approve_epic",
     # Threads (unified dev flow) — the session agent persists its plan
     # (drafts only; approval is human-only), signals ready-for-review, and
     # asks the user structured questions the thread UI renders as answer

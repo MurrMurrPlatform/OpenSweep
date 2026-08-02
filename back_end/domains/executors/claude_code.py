@@ -190,8 +190,9 @@ class ClaudeCodeAdapter(ExecutorAdapter):
         # counts, total_cost_usd) — feeds post-run ceiling warnings (never a
         # hard stop). `num_turns` is per-pass; we accumulate it into
         # `turns_used` across passes.
-        # Token counts and cost are likewise per-pass in cli_usage (each pass
-        # overwrites it); we accumulate totals in tokens_used / dollars_used.
+        # Token counts and cost are per-pass in cli_usage (reset at the top of
+        # each _run_pass, then populated from that pass's turn_end event); we
+        # accumulate the running totals in tokens_used / dollars_used.
         cli_usage: dict[str, Any] = {}
         turns_used = 0
         tokens_used = 0
@@ -219,6 +220,12 @@ class ClaudeCodeAdapter(ExecutorAdapter):
             pass_stderr) — both slices are per-pass so quota detection sees only
             this pass's stderr, not the cumulative stream across passes."""
             nonlocal cli_usage
+            # Reset per-pass usage BEFORE the pass runs: a pass killed (soft-wall
+            # timeout, crash, quota) emits no turn_end usage event, so without
+            # this the stale previous-pass values would be added a second time
+            # by the accumulate step — inflating turns/tokens/dollars and able to
+            # trip a ceiling at a fraction of the real spend.
+            cli_usage.clear()
             pass_offset = len(stdout_parts)
             pass_stderr_offset = len(stderr_parts)
             pass_timed_out = False

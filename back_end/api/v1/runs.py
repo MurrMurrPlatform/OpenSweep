@@ -59,6 +59,34 @@ router = APIRouter(prefix="/api/v1/runs", tags=["runs"])
 _DONE_STATUSES = {"awaiting_input", "ended", "failed", "cancelled", "limit_exceeded"}
 
 
+async def _require_linked_entities_in_org(req: CreateRunRequest, org_uid: str) -> None:
+    """404 if any linked PR/ticket/finding belongs to another org.
+
+    Only entities that exist are checked: a non-existent linked uid is ignored
+    downstream (run_context does get_or_none), so there is nothing to leak — but
+    an *existing* one in a foreign org would otherwise be rendered into the
+    agent context. Covers both the explicit linked_* fields and the target dict
+    that lifecycle promotes from (pull_request_uid / ticket_uid / finding_uid).
+    """
+    from domains.delivery.models import PullRequest
+    from domains.findings.models import Finding
+    from domains.tickets.models import Ticket
+
+    target = req.target or {}
+    pairs = [
+        (req.linked_pr_uid or target.get("pull_request_uid"), PullRequest),
+        (req.linked_ticket_uid or target.get("ticket_uid"), Ticket),
+        (req.linked_finding_uid or target.get("finding_uid"), Finding),
+    ]
+    for uid, model in pairs:
+        if not uid:
+            continue
+        node = await model.nodes.get_or_none(uid=str(uid))
+        if node is None:
+            continue
+        await require_repo_in_org(getattr(node, "repository_uid", None), org_uid)
+
+
 @router.post("", response_model=RunDTO, operation_id="opensweep_run_create")
 async def create_run(req: CreateRunRequest, user: UserDTO = Depends(require_role("maintainer"))):
     """Create a one-off run.
@@ -83,6 +111,10 @@ async def create_run(req: CreateRunRequest, user: UserDTO = Depends(require_role
     # Tenancy: the target repository must be the caller's — 404 otherwise
     # (both playbook paths; chat re-checks inside _create_chat_run).
     await require_repo_in_org(req.repository_uid, user.org_uid)
+    # ...and so must any linked PR/ticket/finding: run_context renders the
+    # linked entity into the agent's system prompt and the transcript the
+    # caller reads, so an unchecked foreign uid here is a cross-tenant read.
+    await _require_linked_entities_in_org(req, user.org_uid)
     if req.playbook == Playbook.ASK:
         # Org-agent-overlays composition: the user's prompt (custom_intent)
         # or the platform ask instructions, with the org overlay applied.

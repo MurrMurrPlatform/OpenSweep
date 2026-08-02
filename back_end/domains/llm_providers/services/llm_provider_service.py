@@ -39,6 +39,55 @@ def _scope(n) -> str:
     return getattr(n, "org_uid", "") or ""
 
 
+def _local_base_url_hosts() -> set[str]:
+    """Hostnames allowed to resolve to a private address for an LLM base_url.
+
+    `host.docker.internal` is the documented bridge to a local model server;
+    self-hosters add LAN hosts via OPENSWEEP_LLM_ALLOW_LOCAL_HOSTS.
+    """
+    from config import settings
+
+    hosts = {"host.docker.internal"}
+    extra = (getattr(settings, "OPENSWEEP_LLM_ALLOW_LOCAL_HOSTS", "") or "").strip()
+    if extra:
+        hosts |= {h.strip().lower() for h in extra.split(",") if h.strip()}
+    return hosts
+
+
+async def _validate_provider_base_url(base_url: str | None) -> None:
+    """SSRF guard for a tenant-settable base_url: the server fetches it and the
+    response can reach the run transcript, so an unchecked URL is an exfil path
+    to cloud metadata / platform-internal services. Reject anything resolving
+    to a private/loopback/link-local address EXCEPT the local-model bridge
+    hosts (host.docker.internal + env allowlist), so local providers still work.
+    """
+    from urllib.parse import urlsplit
+
+    from domains.platform_tools.web_tools import _assert_public_http_url
+
+    url = (base_url or "").strip()
+    if not url:
+        return
+    host = (urlsplit(url).hostname or "").lower()
+    if host in _local_base_url_hosts():
+        return
+    await _assert_public_http_url(url)
+
+
+def _guard_custom_command_template(template: str | None, user: UserDTO) -> None:
+    """A custom cli_command_template is rendered and exec'd verbatim (argv[0]
+    unrestricted), so it is remote code execution on the shared worker. Only
+    the instance operator may set one — NOT a tenant `role="admin"`, which is
+    self-granted at org creation. An empty template is the safe default path
+    (default_cli_template(kind)) and is always allowed.
+    """
+    if (template or "").strip() and not user.is_platform_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="a custom CLI command template requires the instance-operator role",
+        )
+
+
 async def repository_org_uid(repository_uid: str) -> str:
     """The org that owns a repository — how run dispatch resolves which
     providers it may use."""
@@ -113,6 +162,8 @@ class LLMProviderService:
         # dialog sends as little as {kind, credential_secret} and the row
         # still comes out fully dispatchable.
         meta = kind_meta(req.kind)
+        _guard_custom_command_template(req.cli_command_template, user)
+        await _validate_provider_base_url(req.base_url)
         n = LLMProvider(
             uid=uuid4().hex,
             org_uid=scope,
@@ -151,6 +202,9 @@ class LLMProviderService:
         _require_manageable(n, user)
         scope = _scope(n)
         data = req.model_dump(exclude_unset=True)
+        _guard_custom_command_template(data.get("cli_command_template"), user)
+        if "base_url" in data:
+            await _validate_provider_base_url(data.get("base_url"))
         make_active = bool(data.get("active"))
         for field, value in data.items():
             if hasattr(value, "value"):

@@ -50,6 +50,12 @@ app.conf.update(
     task_soft_time_limit=600,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    # With task_acks_late, the Redis broker redelivers any task still
+    # in-flight after visibility_timeout (default 3600s) — which would spawn a
+    # duplicate of every run longer than an hour. Per-run tasks set their own
+    # Celery limit up to MAX_DISPATCH_SECONDS + grace (86400 + 300 = 86700s;
+    # domains/runs/tasks/task_limits.py), so the timeout must sit above that.
+    broker_transport_options={"visibility_timeout": 90000},
     broker_connection_retry_on_startup=True,
     broker_use_ssl=broker_use_ssl,
     redis_backend_use_ssl=redis_backend_use_ssl,

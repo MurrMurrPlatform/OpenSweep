@@ -192,10 +192,12 @@ async def finalize_write_run(
         )
         return
 
-    # Never force-push; the branch is the agent's only write surface.
+    # Never force-push; the branch is the agent's only write surface. Push the
+    # branch the gate actually validated (rev-parse HEAD), NOT the caller's
+    # intended name — the agent controls HEAD, so they can diverge.
     await write_gate.push_work_branch(
         sandbox.container_path,
-        work_branch=work_branch,
+        work_branch=result.work_branch or work_branch,
         token=await get_git_credentials(repo),
         default_branch=default_branch,
     )

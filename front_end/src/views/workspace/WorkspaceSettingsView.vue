@@ -12,6 +12,7 @@ import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
 import MergePolicyCard from '@/components/delivery/MergePolicyCard.vue'
 import WorkflowCard from '@/components/repositories/WorkflowCard.vue'
 import AnalyzersCard from '@/components/repositories/AnalyzersCard.vue'
@@ -36,6 +37,28 @@ const repos = useRepositoryStore()
 const toast = useToast()
 const deleteOpen = ref(false)
 const deleting = ref(false)
+
+const autonomySaving = ref(false)
+
+async function onToggleAutonomy(enabled: boolean) {
+  const target = repo.value
+  if (!target || autonomySaving.value) return
+  autonomySaving.value = true
+  try {
+    await repos.setAgentAutonomy(target.uid, enabled)
+    toast.success(
+      enabled ? 'Agent autonomy enabled' : 'Agent autonomy disabled',
+      enabled
+        ? 'Agents may now transition tickets and approve epics for this repo.'
+        : 'Ticket transitions and epic approval are human-only again.',
+    )
+  } catch (e) {
+    const msg = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
+    toast.error('Couldn’t change agent autonomy', msg)
+  } finally {
+    autonomySaving.value = false
+  }
+}
 
 async function confirmDelete() {
   const target = repo.value
@@ -100,6 +123,26 @@ async function confirmDelete() {
 
     <!-- Write-path guardrails: path denylist, clean-round gate, fix-round bound. -->
     <MergePolicyCard v-if="repoUid" :repository-uid="repoUid" />
+
+    <!-- Agent autonomy: let agents perform otherwise human-only operations. -->
+    <Card v-if="repo">
+      <CardHeader class="p-4 pb-0">
+        <CardTitle class="text-base">Agent autonomy</CardTitle>
+      </CardHeader>
+      <CardContent class="flex flex-wrap items-center justify-between gap-3 p-4">
+        <p class="max-w-prose text-sm text-muted-foreground">
+          When on, agents may perform operations that are otherwise human-only for this
+          repository through the platform tools — moving tickets through the status board
+          (including the backlog → todo approval gate) and approving epic proposals. Off by
+          default: an agent should not approve its own proposed work unless you allow it.
+        </p>
+        <Switch
+          :model-value="!!repo.agent_autonomy"
+          :disabled="autonomySaving"
+          @update:model-value="onToggleAutonomy"
+        />
+      </CardContent>
+    </Card>
 
     <!-- Danger zone -->
     <Card class="border-destructive/40">

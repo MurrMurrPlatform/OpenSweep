@@ -160,8 +160,11 @@ async def _check_aggregate_budgets(
     if policy.daily_repo_dollars:
         # Run.usage is a JSONProperty (a JSON string in the store), so the
         # dollar figures cannot be summed in Cypher — one query fetches the
-        # window's usage blobs and Python sums usage["dollars"] (executor-
-        # reported; 0.0 for unmetered/subscription runs).
+        # window's usage blobs and Python sums the executor-reported dollar
+        # cost (0.0 for unmetered/subscription runs). The CLI executors report
+        # it as "dollars_used" and the internal LLM executor as "dollars"; a
+        # run carries exactly one, so read whichever is present. (Reading only
+        # "dollars" left this cap inert for every CLI run — the common path.)
         rows, _ = await adb.cypher_query(
             "MATCH (r:Run) "
             "WHERE r.repository_uid = $u AND r.created_at >= $since "
@@ -179,7 +182,7 @@ async def _check_aggregate_budgets(
             if not isinstance(raw, dict):
                 continue
             try:
-                total += float(raw.get("dollars") or 0.0)
+                total += float(raw.get("dollars") or raw.get("dollars_used") or 0.0)
             except (TypeError, ValueError):
                 continue
         if total >= policy.daily_repo_dollars:

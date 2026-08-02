@@ -37,9 +37,11 @@ class LLMProvider(AsyncStructuredNode):
     model = StringProperty(default="")             # model id (eg. claude-opus-4-7 or llama-3.1-70b-instruct)
     api_key_env = StringProperty(default="")       # env var the worker reads the key from
     cli_command_template = StringProperty(default="")
-    # cli_command_template — for CLI-backed providers. Available placeholders:
-    #   {{system_prompt}}, {{instruction}}, {{model}}.
-    # Eg: 'claude -p "{{instruction}}" --append-system-prompt "{{system_prompt}}"'
+    # cli_command_template — for CLI-backed providers. Use the shlex-quoted
+    # placeholders for untrusted text: {{instruction_q}}, {{system_prompt_q}},
+    # {{model_q}}. Eg: 'claude -p {{instruction_q}} --append-system-prompt
+    # {{system_prompt_q}}'. (Raw {{instruction}}/{{system_prompt}} are gone —
+    # they were argv injection; {{model}}/{{working_dir}} stay for platform paths.)
 
     extra_args = StringProperty(default="")        # appended verbatim to CLI
     enabled = BooleanProperty(default=True)

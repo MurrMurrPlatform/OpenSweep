@@ -73,6 +73,13 @@ class Repository(AsyncStructuredNode):
     # pending Run dispatches. Human-triggered runs still see a 409.
     kill_switch_active = BooleanProperty(default=False)
 
+    # Agent autonomy: when true, agents (via the platform-tool MCP surface) may
+    # perform operations that are otherwise human-only for this repo — notably
+    # moving tickets through the status matrix, including the Gate-1 approval
+    # (backlog → todo). Off by default: an agent must never approve its own
+    # proposed work unless the operator has opted this repo into autonomy.
+    agent_autonomy = BooleanProperty(default=False)
+
     created_at = DateTimeProperty(default_now=True)
     updated_at = DateTimeProperty(default_now=True)
 

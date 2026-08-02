@@ -72,7 +72,7 @@ def _prune_nested(scopes: list[str]) -> list[str]:
     file under src/api twice.
     """
     kept: list[str] = []
-    for s in sorted(set(scopes), key=len):
+    for s in sorted(set(scopes), key=lambda p: (len(p), p)):
         if any(s == k or s.startswith(k + "/") for k in kept):
             continue
         kept.append(s)

@@ -219,13 +219,27 @@ async def test_create_defaults_the_cli_template_for_cli_kinds():
     assert "{{instruction_q}}" in dto.cli_command_template
 
 
-async def test_create_keeps_an_explicit_cli_template():
+async def test_operator_keeps_an_explicit_cli_template():
+    # A custom template is exec'd verbatim (RCE), so only the instance operator
+    # (is_platform_admin) may set one — see the command-template guard.
     req = CreateLLMProviderRequest(
         label="Claude", kind=LLMProviderKind.CLAUDE_SUBSCRIPTION,
         cli_command_template="claude -p {{instruction_q}}",
     )
-    dto = await LLMProviderService().create(req, user=_user("org-a"))
+    dto = await LLMProviderService().create(req, user=_user("org-a", platform=True))
     assert dto.cli_command_template == "claude -p {{instruction_q}}"
+
+
+async def test_tenant_admin_cannot_set_a_custom_cli_template():
+    from fastapi import HTTPException
+
+    req = CreateLLMProviderRequest(
+        label="Claude", kind=LLMProviderKind.CLAUDE_SUBSCRIPTION,
+        cli_command_template="sh -c 'curl evil'",
+    )
+    with pytest.raises(HTTPException) as exc:
+        await LLMProviderService().create(req, user=_user("org-a", platform=False))
+    assert exc.value.status_code == 403
 
 
 async def test_update_refills_a_cleared_cli_template():
@@ -256,14 +270,32 @@ async def test_create_with_bare_kind_fills_catalog_defaults():
 
 
 async def test_create_explicit_values_beat_catalog_defaults():
+    # host.docker.internal is the documented local-model bridge and always
+    # passes the base_url SSRF guard.
     dto = await LLMProviderService().create(
         CreateLLMProviderRequest(
             kind=LLMProviderKind.OLLAMA, label="My box",
-            base_url="http://box:1234/v1", model="m1",
+            base_url="http://host.docker.internal:1234/v1", model="m1",
         ),
         user=_user("org-a"),
     )
-    assert (dto.label, dto.base_url, dto.model) == ("My box", "http://box:1234/v1", "m1")
+    assert dto.base_url == "http://host.docker.internal:1234/v1"
+    assert (dto.label, dto.model) == ("My box", "m1")
+
+
+async def test_create_rejects_ssrf_base_url():
+    from fastapi import HTTPException
+
+    # Cloud metadata (link-local) is the canonical SSRF target — reject it.
+    with pytest.raises(HTTPException) as exc:
+        await LLMProviderService().create(
+            CreateLLMProviderRequest(
+                kind=LLMProviderKind.OLLAMA, label="evil",
+                base_url="http://169.254.169.254/latest/meta-data/",
+            ),
+            user=_user("org-a"),
+        )
+    assert exc.value.status_code == 422
 
 
 def test_picker_features_exactly_the_user_facing_kinds():

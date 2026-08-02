@@ -36,6 +36,7 @@ import DocEditReviewCard from '@/components/docs/DocEditReviewCard.vue'
 import { MarkdownView } from '@/components/ui/markdown'
 import { PageHeader } from '@/components/ui/page-header'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -88,6 +89,8 @@ const { uid: repoUid, slug: repoSlug } = useCurrentRepo()
 
 const loading = ref(true)
 const error = ref<string | null>(null)
+
+const activeTab = ref<'docs' | 'memories'>('docs')
 
 const selectedUid = ref('')
 
@@ -710,6 +713,16 @@ onBeforeUnmount(() => {
   if (memorySearchTimer) window.clearTimeout(memorySearchTimer)
 })
 
+// Collapsed by default: the list shows titles only; a row expands on click.
+const expandedMemories = ref<Set<string>>(new Set())
+
+function toggleMemory(uid: string) {
+  const next = new Set(expandedMemories.value)
+  if (next.has(uid)) next.delete(uid)
+  else next.add(uid)
+  expandedMemories.value = next
+}
+
 const deleteMemoryOpen = ref(false)
 const pendingDeleteMemory = ref<MemoryDTO | null>(null)
 
@@ -780,7 +793,21 @@ async function confirmDeleteMemory() {
       <Button variant="outline" size="sm" @click="reload">Retry</Button>
     </ErrorState>
 
-    <template v-else>
+    <Tabs
+      v-else
+      :model-value="activeTab"
+      @update:model-value="activeTab = $event as 'docs' | 'memories'"
+    >
+      <TabsList>
+        <TabsTrigger value="docs">
+          <span class="flex items-center gap-1.5"><BookOpen class="h-4 w-4" /> Documentation</span>
+        </TabsTrigger>
+        <TabsTrigger value="memories">
+          <span class="flex items-center gap-1.5"><Brain class="h-4 w-4" /> Memories ({{ memories.list.length }})</span>
+        </TabsTrigger>
+      </TabsList>
+
+      <TabsContent value="docs" class="mt-4 space-y-4">
       <!-- Docs gate: generation hangs pages on the area map — map first. -->
       <div
         v-if="docsGated"
@@ -1236,55 +1263,72 @@ async function confirmDeleteMemory() {
         </CardContent>
       </Card>
 
+      </TabsContent>
+
       <!-- ── Memories ─────────────────────────────────────────────────────── -->
-      <Card>
-        <CardHeader class="flex-row flex-wrap items-center justify-between gap-2 space-y-0">
-          <CardTitle class="flex items-center gap-2 text-sm">
-            <Brain class="h-4 w-4 text-muted-foreground" /> Memories
-            <span class="text-xs font-normal text-muted-foreground">· {{ memories.list.length }}</span>
-          </CardTitle>
-          <div class="relative w-full sm:w-64">
-            <Search class="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground z-10" />
-            <Input v-model="memoryQuery" placeholder="Search memories" class="pl-9" />
-          </div>
-        </CardHeader>
-        <CardContent class="p-0">
-          <div v-if="memoriesLoading && !memories.list.length" class="space-y-2 p-4">
-            <Skeleton v-for="i in 3" :key="i" class="h-12" />
-          </div>
-          <div v-else-if="!memories.list.length" class="p-4">
-            <EmptyState
-              :icon="Brain"
-              title="No memories"
-              description="Agents record small learned facts here during runs. Curation is a delete button."
-              class="border-0"
-            />
-          </div>
-          <ul v-else class="divide-y divide-border">
-            <li v-for="m in memories.list" :key="m.uid" class="flex items-start gap-3 px-4 py-3">
-              <div class="min-w-0 flex-1">
-                <div class="flex flex-wrap items-center gap-2">
-                  <span class="text-sm font-medium">{{ m.title }}</span>
+      <TabsContent value="memories" class="mt-4">
+        <Card>
+          <CardHeader class="flex-row flex-wrap items-center justify-between gap-2 space-y-0">
+            <CardTitle class="flex items-center gap-2 text-sm">
+              <Brain class="h-4 w-4 text-muted-foreground" /> Memories
+              <span class="text-xs font-normal text-muted-foreground">· {{ memories.list.length }}</span>
+            </CardTitle>
+            <div class="relative w-full sm:w-64">
+              <Search class="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground z-10" />
+              <Input v-model="memoryQuery" placeholder="Search memories" class="pl-9" />
+            </div>
+          </CardHeader>
+          <CardContent class="p-0">
+            <div v-if="memoriesLoading && !memories.list.length" class="space-y-2 p-4">
+              <Skeleton v-for="i in 3" :key="i" class="h-12" />
+            </div>
+            <div v-else-if="!memories.list.length" class="p-4">
+              <EmptyState
+                :icon="Brain"
+                title="No memories"
+                description="Agents record small learned facts here during runs. Curation is a delete button."
+                class="border-0"
+              />
+            </div>
+            <ul v-else class="divide-y divide-border">
+              <li v-for="m in memories.list" :key="m.uid">
+                <div
+                  class="flex cursor-pointer items-center gap-2 px-4 py-2.5 transition-colors hover:bg-accent"
+                  @click="toggleMemory(m.uid)"
+                >
+                  <component
+                    :is="expandedMemories.has(m.uid) ? ChevronDown : ChevronRight"
+                    class="h-4 w-4 shrink-0 text-muted-foreground"
+                  />
+                  <span class="min-w-0 flex-1 truncate text-sm font-medium">{{ m.title }}</span>
                   <Badge v-if="m.possibly_stale" variant="warn" class="px-1.5 text-[10px]">code changed since</Badge>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    class="text-destructive"
+                    title="Delete memory"
+                    @click.stop="deleteMemory(m)"
+                  >
+                    <Trash2 />
+                  </Button>
                 </div>
-                <p class="mt-0.5 whitespace-pre-line text-sm text-muted-foreground">{{ m.body }}</p>
-                <div class="mt-1 text-xs text-muted-foreground">
-                  <RouterLink
-                    v-if="m.source_run_uid"
-                    :to="{ name: 'run-detail', params: { uid: m.source_run_uid } }"
-                    class="font-mono text-primary hover:underline"
-                  >run {{ m.source_run_uid.slice(0, 8) }}</RouterLink>
-                  <span v-if="m.updated_at"> · {{ m.updated_at.slice(0, 10) }}</span>
+                <div v-if="expandedMemories.has(m.uid)" class="px-4 pb-3 pl-10">
+                  <p class="whitespace-pre-line text-sm text-muted-foreground">{{ m.body }}</p>
+                  <div class="mt-1 text-xs text-muted-foreground">
+                    <RouterLink
+                      v-if="m.source_run_uid"
+                      :to="{ name: 'run-detail', params: { uid: m.source_run_uid } }"
+                      class="font-mono text-primary hover:underline"
+                    >run {{ m.source_run_uid.slice(0, 8) }}</RouterLink>
+                    <span v-if="m.updated_at"> · {{ m.updated_at.slice(0, 10) }}</span>
+                  </div>
                 </div>
-              </div>
-              <Button variant="ghost" size="icon-sm" class="text-destructive" title="Delete memory" @click="deleteMemory(m)">
-                <Trash2 />
-              </Button>
-            </li>
-          </ul>
-        </CardContent>
-      </Card>
-    </template>
+              </li>
+            </ul>
+          </CardContent>
+        </Card>
+      </TabsContent>
+    </Tabs>
 
     <!-- ── Update docs dialog ──────────────────────────────────────────────── -->
     <Dialog :open="updateDocsOpen" @update:open="updateDocsOpen = $event">

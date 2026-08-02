@@ -60,6 +60,17 @@ export const useRepositoryStore = defineStore('repositories', () => {
     }
   }
 
+  /**
+   * Opt this repo into (or out of) agent autonomy. When enabled, agents may
+   * perform otherwise human-only operations (e.g. ticket status transitions,
+   * epic approval) through the platform-tool MCP surface. Maintainer+ only.
+   */
+  async function setAgentAutonomy(uid: string, enabled: boolean): Promise<RepositoryDTO> {
+    const r = await apiPost<RepositoryDTO>(`/repositories/${uid}/agent-autonomy`, { enabled })
+    list.value = list.value.map((x) => (x.uid === uid ? r : x))
+    return r
+  }
+
   /** Delivery-credential health + the connections this repo could link to. */
   async function getConnection(uid: string): Promise<RepoConnectionDTO> {
     return apiGet<RepoConnectionDTO>(`/repositories/${uid}/connection`)
@@ -87,6 +98,7 @@ export const useRepositoryStore = defineStore('repositories', () => {
     create,
     update,
     remove,
+    setAgentAutonomy,
     getConnection,
     linkConnection,
   }

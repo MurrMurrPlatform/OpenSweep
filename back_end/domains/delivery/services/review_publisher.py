@@ -170,7 +170,7 @@ async def publish_verdict_review(
     from domains.delivery.services.resolution_service import ensure_merge_policy
     from infrastructure.git_providers import get_provider_client
 
-    if not pr.number or pr.state != "open":
+    if not pr.github_number or pr.state != "open":
         return False
     client = get_provider_client(repo)
     if not client.is_active or not (repo.github_owner and repo.github_repo):
@@ -179,7 +179,7 @@ async def publish_verdict_review(
     changed_paths: set[str] = set()
     try:
         files = await client.list_pull_request_files(
-            repo.github_owner, repo.github_repo, pr.number
+            repo.github_owner, repo.github_repo, pr.github_number
         )
         changed_paths = {str(f.get("filename") or "") for f in files}
     except Exception as exc:  # noqa: BLE001 — degrade to a body-only review
@@ -204,7 +204,7 @@ async def publish_verdict_review(
         await client.create_review(
             repo.github_owner,
             repo.github_repo,
-            pr.number,
+            pr.github_number,
             body=body,
             event="COMMENT",
             commit_id=str(verdict.get("sha") or ""),
@@ -224,7 +224,7 @@ async def publish_verdict_review(
         await client.create_review(
             repo.github_owner,
             repo.github_repo,
-            pr.number,
+            pr.github_number,
             body=body,
             event="COMMENT",
             commit_id=str(verdict.get("sha") or ""),

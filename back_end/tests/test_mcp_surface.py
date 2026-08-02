@@ -186,15 +186,20 @@ def test_platform_tools_are_tracking_safe():
         "opensweep_platform_get_merge_policy",
         "opensweep_platform_list_open_pull_requests",
         # Tickets (§15 Phase 2) — propose (backlog-only, agent-proposal), refine
-        # CONTENT in place (never status — see the transition guard below), + read.
+        # CONTENT in place (never status — see the transition guard below), read,
+        # and move status. The transition tool writes OpenSweep ticket STATE
+        # only (never the source repo) and is refused at the handler unless the
+        # repo opted into agent_autonomy, so Gate 1 stays human-only by default.
         "opensweep_platform_create_ticket",
         "opensweep_platform_update_ticket",
+        "opensweep_platform_transition_ticket",
         "opensweep_platform_get_ticket",
         "opensweep_platform_list_tickets",
-        # Epics — writes an EpicProposal (OpenSweep state only); the parent
-        # ticket is only materialized by a human approving the proposal, so
-        # agents can never apply their own groupings.
+        # Epics — writes an EpicProposal (OpenSweep state only). Materializing the
+        # parent (approve) is human-only by default and refused at the handler
+        # unless the repo opted into agent_autonomy.
         "opensweep_platform_propose_epic",
+        "opensweep_platform_approve_epic",
         # Comments — the human↔agent conversation on any data item. Reading
         # shows human instructions; add_comment writes OpenSweep STATE only (a
         # thread reply attributed to the run), never the source repository.
@@ -271,37 +276,40 @@ def test_agent_waive_and_override_stay_off_the_tool_surface():
     assert not (forbidden & actual)
 
 
-def test_ticket_transitions_stay_off_the_tool_surface():
-    """Gate 1 (backlog → todo) is human-only (§2, §15 Phase 2): agents may
-    propose tickets and refine their CONTENT, but must never MOVE a ticket's
-    status. opensweep_platform_create_ticket forces status=backlog/agent-proposal;
-    opensweep_platform_update_ticket refines fields but cannot touch status."""
+def test_ticket_transitions_are_autonomy_gated_not_free():
+    """Gate 1 (backlog → todo) is human-only BY DEFAULT (§2, §15 Phase 2). A
+    dedicated transition tool exists, but it is refused at the handler unless the
+    repo opted into agent_autonomy — so agents can never move their own tickets
+    unless an operator explicitly allowed it. Delete is never exposed, and the
+    content-refine tool still cannot touch status."""
     actual = set(OPENSWEEP_PLATFORM_TOOL_OPERATIONS)
+
+    # Deletion is never an agent verb, on any surface.
     forbidden = {
-        "opensweep_platform_transition_ticket",
-        "opensweep_platform_ticket_transition",
-        "opensweep_platform_approve_ticket",
         "opensweep_platform_delete_ticket",
-        "opensweep_ticket_transition",
         "opensweep_ticket_delete",
     }
-    assert not (forbidden & actual)
-    # Catch-all: any mounted ticket tool that can move status/approve/delete is
-    # a Gate-1 leak. Content refinement ("update") is allowed — see below.
-    movers = {
-        name
-        for name in actual
-        if "ticket" in name
-        and any(verb in name for verb in ("transition", "status", "approve", "delete"))
-    }
-    assert not movers, f"ticket status-moving tools leaked onto the executor mount: {movers}"
+    assert not (forbidden & actual), f"forbidden ticket tools leaked: {forbidden & actual}"
 
-    # The refine tool is only safe because it CANNOT patch status: the
-    # executor-facing request model has no `status` field, so Gate 1 stays
-    # human-only even though the tool is exposed. Guard that invariant here.
+    # The transition tool IS exposed (autonomy-gated), but the refine tool still
+    # must not be able to patch status — status moves ONLY through the gated
+    # transition tool, never as a silent side effect of a content refine.
     from api.v1.platform_tools_tickets import PlatformUpdateTicketRequest
 
     assert "status" not in PlatformUpdateTicketRequest.model_fields, (
         "opensweep_platform_update_ticket must not let agents move ticket status "
-        "(Gate 1 is human-only)"
+        "(status moves only through the autonomy-gated transition tool)"
     )
+
+    # The transition + epic-approve handlers must consult the per-repo autonomy
+    # gate — a transition tool that skipped it would make Gate 1 free-for-all.
+    import inspect
+
+    from api.v1 import platform_tools_tickets as ptt
+
+    for fn in (ptt.platform_transition_ticket, ptt.platform_approve_epic):
+        src = inspect.getsource(fn)
+        assert "agent_autonomy_enabled" in src, (
+            f"{fn.__name__} must gate on agent_autonomy_enabled (Gate 1 stays "
+            "human-only unless the repo opted in)"
+        )

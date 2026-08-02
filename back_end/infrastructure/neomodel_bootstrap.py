@@ -63,6 +63,23 @@ _CONSTRAINTS = [
     "CREATE CONSTRAINT notification_read_key IF NOT EXISTS FOR (n:NotificationRead) REQUIRE n.key IS UNIQUE",
     # Schema migration ledger (infrastructure/migration_runner.py)
     "CREATE CONSTRAINT schema_migration_version IF NOT EXISTS FOR (n:SchemaMigration) REQUIRE n.version IS UNIQUE",
+    # Labels whose model-level `index=True` / `unique_index=True` never
+    # materialised: nothing calls neomodel's install_labels, so only the
+    # statements in THIS file take effect, and these labels had none — every
+    # `uid` lookup (incl. write_audit's subject fetch) was a full label scan.
+    "CREATE CONSTRAINT area_uid IF NOT EXISTS FOR (n:Area) REQUIRE n.uid IS UNIQUE",
+    "CREATE CONSTRAINT doc_uid IF NOT EXISTS FOR (n:Doc) REQUIRE n.uid IS UNIQUE",
+    "CREATE CONSTRAINT thread_uid IF NOT EXISTS FOR (n:Thread) REQUIRE n.uid IS UNIQUE",
+    "CREATE CONSTRAINT checked_uid IF NOT EXISTS FOR (n:Checked) REQUIRE n.uid IS UNIQUE",
+    "CREATE CONSTRAINT memory_uid IF NOT EXISTS FOR (n:Memory) REQUIRE n.uid IS UNIQUE",
+    "CREATE CONSTRAINT lens_uid IF NOT EXISTS FOR (n:Lens) REQUIRE n.uid IS UNIQUE",
+    "CREATE CONSTRAINT epic_proposal_uid IF NOT EXISTS FOR (n:EpicProposal) REQUIRE n.uid IS UNIQUE",
+    "CREATE CONSTRAINT area_edit_uid IF NOT EXISTS FOR (n:AreaEdit) REQUIRE n.uid IS UNIQUE",
+    "CREATE CONSTRAINT doc_edit_uid IF NOT EXISTS FOR (n:DocEdit) REQUIRE n.uid IS UNIQUE",
+    "CREATE CONSTRAINT campaign_uid IF NOT EXISTS FOR (n:Campaign) REQUIRE n.uid IS UNIQUE",
+    "CREATE CONSTRAINT oauth_token_uid IF NOT EXISTS FOR (n:OAuthToken) REQUIRE n.uid IS UNIQUE",
+    "CREATE CONSTRAINT oauth_code_uid IF NOT EXISTS FOR (n:OAuthCode) REQUIRE n.uid IS UNIQUE",
+    "CREATE CONSTRAINT oauth_client_uid IF NOT EXISTS FOR (n:OAuthClient) REQUIRE n.uid IS UNIQUE",
 ]
 
 _INDEXES = [
@@ -139,6 +156,37 @@ _INDEXES = [
     "CREATE INDEX news_category IF NOT EXISTS FOR (n:NewsItem) ON (n.category)",
     "CREATE INDEX news_source_run IF NOT EXISTS FOR (n:NewsItem) ON (n.source_run_uid)",
     "CREATE INDEX interest_repo IF NOT EXISTS FOR (n:Interest) ON (n.repository_uid)",
+    # Knowledge/audit-partition labels — filtered by repository_uid on nearly
+    # every page and swept in hot loops; none had a single index before.
+    "CREATE INDEX area_repo IF NOT EXISTS FOR (n:Area) ON (n.repository_uid)",
+    "CREATE INDEX area_key IF NOT EXISTS FOR (n:Area) ON (n.key)",
+    "CREATE INDEX doc_repo IF NOT EXISTS FOR (n:Doc) ON (n.repository_uid)",
+    "CREATE INDEX doc_slug IF NOT EXISTS FOR (n:Doc) ON (n.slug)",
+    "CREATE INDEX thread_repo IF NOT EXISTS FOR (n:Thread) ON (n.repository_uid)",
+    "CREATE INDEX thread_pr IF NOT EXISTS FOR (n:Thread) ON (n.pr_uid)",
+    "CREATE INDEX thread_subject_ticket IF NOT EXISTS FOR (n:Thread) ON (n.subject_ticket_uid)",
+    "CREATE INDEX checked_repo IF NOT EXISTS FOR (n:Checked) ON (n.repository_uid)",
+    "CREATE INDEX checked_run IF NOT EXISTS FOR (n:Checked) ON (n.run_uid)",
+    "CREATE INDEX memory_repo IF NOT EXISTS FOR (n:Memory) ON (n.repository_uid)",
+    "CREATE INDEX memory_source_run IF NOT EXISTS FOR (n:Memory) ON (n.source_run_uid)",
+    "CREATE INDEX lens_key IF NOT EXISTS FOR (n:Lens) ON (n.key)",
+    "CREATE INDEX epic_proposal_repo IF NOT EXISTS FOR (n:EpicProposal) ON (n.repository_uid)",
+    "CREATE INDEX epic_proposal_status IF NOT EXISTS FOR (n:EpicProposal) ON (n.status)",
+    "CREATE INDEX area_edit_repo IF NOT EXISTS FOR (n:AreaEdit) ON (n.repository_uid)",
+    "CREATE INDEX area_edit_area IF NOT EXISTS FOR (n:AreaEdit) ON (n.area_uid)",
+    "CREATE INDEX area_edit_status IF NOT EXISTS FOR (n:AreaEdit) ON (n.status)",
+    "CREATE INDEX doc_edit_repo IF NOT EXISTS FOR (n:DocEdit) ON (n.repository_uid)",
+    "CREATE INDEX doc_edit_doc IF NOT EXISTS FOR (n:DocEdit) ON (n.doc_uid)",
+    "CREATE INDEX doc_edit_status IF NOT EXISTS FOR (n:DocEdit) ON (n.status)",
+    "CREATE INDEX campaign_repo IF NOT EXISTS FOR (n:Campaign) ON (n.repository_uid)",
+    "CREATE INDEX campaign_status IF NOT EXISTS FOR (n:Campaign) ON (n.status)",
+    "CREATE INDEX campaign_parent IF NOT EXISTS FOR (n:Campaign) ON (n.parent_uid)",
+    # OAuth (`opensweep connect`) — access_hash is looked up on EVERY
+    # authenticated MCP request; the rest gate token refresh/exchange.
+    "CREATE INDEX oauth_token_access_hash IF NOT EXISTS FOR (n:OAuthToken) ON (n.access_hash)",
+    "CREATE INDEX oauth_token_refresh_hash IF NOT EXISTS FOR (n:OAuthToken) ON (n.refresh_hash)",
+    "CREATE INDEX oauth_token_user IF NOT EXISTS FOR (n:OAuthToken) ON (n.user_uid)",
+    "CREATE INDEX oauth_code_hash IF NOT EXISTS FOR (n:OAuthCode) ON (n.code_hash)",
 ]
 
 

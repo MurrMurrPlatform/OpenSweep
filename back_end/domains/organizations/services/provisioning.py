@@ -18,7 +18,7 @@ already reference an installation. First and repeat deploys converge to the
 same state.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from neomodel import adb
 
@@ -55,15 +55,24 @@ async def create_personal_org(*, creator_uid: str, display_name: str, email: str
     ).save()
 
 
+#: An invitation is a standing grant to join an org on a matching email. Left
+#: immortal, a stale invitation lets someone who later controls that address
+#: join a tenant they were never meant to. created_at is stored as a numeric
+#: epoch (neomodel DateTimeProperty), so the window is a plain epoch compare.
+INVITATION_TTL = timedelta(days=7)
+
+
 async def find_pending_invitation(email: str) -> OrgInvitation | None:
-    """Oldest pending invitation for this email (case-insensitive)."""
+    """Oldest unexpired pending invitation for this email (case-insensitive)."""
     normalized = (email or "").strip().lower()
     if not normalized:
         return None
+    min_epoch = (datetime.now(UTC) - INVITATION_TTL).timestamp()
     rows, _ = await adb.cypher_query(
         "MATCH (i:OrgInvitation {email: $email, status: 'pending'}) "
+        "WHERE i.created_at >= $min_epoch "
         "RETURN i ORDER BY i.created_at LIMIT 1",
-        {"email": normalized},
+        {"email": normalized, "min_epoch": min_epoch},
     )
     return OrgInvitation.inflate(rows[0][0]) if rows else None
 

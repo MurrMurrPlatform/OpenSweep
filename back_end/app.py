@@ -155,6 +155,15 @@ class TokenAuthMiddleware:
         "/api/v1/threads",
         "/api/v1/delivery",
         "/api/v1/comments",
+        # Platform-tool surface, reachable by authenticated interactive
+        # connect clients (not just run-scoped executors). The platform
+        # mount's tools re-enter here internally; without these prefixes the
+        # osmcp_ token is rejected on that internal call and every tool 401s.
+        # Writes stay gated: these are POST routes, so the on_api write-scope
+        # check below still requires mcp:write, and require_tool_repo_access
+        # still scopes every call to the caller's own org.
+        "/api/v1/platform-read",
+        "/api/v1/platform-tools",
     )
 
     @classmethod
@@ -396,11 +405,23 @@ async def lifespan(app: FastAPI):
         if secretbox.configured():
             from domains.llm_providers.services.credentials import (
                 encrypt_plaintext_provider_secrets,
+                reseal_sealed_field,
             )
+            from domains.organizations.models import GitConnection
+            from domains.slack.models import SlackConnection
 
             sealed = await encrypt_plaintext_provider_secrets()
             if sealed:
                 logger.info(f"Sealed {sealed} plaintext LLM provider credential(s)")
+            # Same posture for the other two credential stores — a PAT or Slack
+            # bot token written while the key was unset stays plaintext forever
+            # otherwise (unseal passes non-enc: values straight through).
+            git_sealed = await reseal_sealed_field(GitConnection, "token_sealed")
+            if git_sealed:
+                logger.info(f"Sealed {git_sealed} plaintext git connection token(s)")
+            slack_sealed = await reseal_sealed_field(SlackConnection, "bot_token_sealed")
+            if slack_sealed:
+                logger.info(f"Sealed {slack_sealed} plaintext Slack bot token(s)")
     except Exception as exc:
         logger.warning(f"Provider credential sealing skipped: {exc}")
 

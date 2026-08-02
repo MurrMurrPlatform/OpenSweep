@@ -27,6 +27,42 @@ def sealed_secret(plaintext: str) -> str:
     return secretbox.seal(plaintext or "")
 
 
+async def reseal_sealed_field(model, field: str) -> int:
+    """Idempotent pass over one node label: seal plaintext values in `field`
+    and re-seal rows still under a fallback key. Returns the number changed.
+
+    Generic twin of encrypt_plaintext_provider_secrets — used at startup for
+    GitConnection.token_sealed and SlackConnection.bot_token_sealed, which the
+    provider-only pass left plaintext forever if they were written while
+    OPENSWEEP_SECRETS_KEY was unset.
+    """
+    if not secretbox.configured():
+        return 0
+    changed = 0
+    for node in await model.nodes.all():
+        current = (getattr(node, field, "") or "").strip()
+        if not current:
+            continue
+        try:
+            updated = (
+                secretbox.rotate(current)
+                if secretbox.is_sealed(current)
+                else secretbox.seal(current)
+            )
+        except secretbox.SecretBoxError as exc:
+            logger.warning(
+                f"credential sealing skipped for {model.__name__} "
+                f"{getattr(node, 'uid', '?')}: {exc}",
+                extra={"tag": "secrets"},
+            )
+            continue
+        if updated != current:
+            setattr(node, field, updated)
+            await node.save()
+            changed += 1
+    return changed
+
+
 async def encrypt_plaintext_provider_secrets() -> int:
     """One idempotent pass over all LLMProviders: seal plaintext credentials,
     re-seal rows still under a fallback key. Returns the number changed."""

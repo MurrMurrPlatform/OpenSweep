@@ -156,6 +156,9 @@ def _opencode_payload(model: str, *, secret: str = "", extra_args: str = "") -> 
     )
     with (
         patch("domains.llm_providers.services.llm_executor.os.makedirs"),
+        # The config carries the API key, so the code chmods it 0600; the dir
+        # is mocked away here, so the chmod is too — this test asserts payload.
+        patch("domains.llm_providers.services.llm_executor.os.chmod"),
         patch("builtins.open"),
         patch("json.dump") as dumped,
     ):

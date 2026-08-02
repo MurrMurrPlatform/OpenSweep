@@ -19,7 +19,7 @@ defineProps<{ class?: string }>()
 }
 .opensweep-logo-mark {
   height: 100%;
-  color: hsl(var(--logo-wordmark));
+  color: hsl(var(white));
 }
 .opensweep-logo-wordmark {
   font-size: 1.0625rem;

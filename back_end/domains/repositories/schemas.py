@@ -44,6 +44,11 @@ class RepositoryDTO(BaseModel):
     # this repo are halted at the API layer (409).
     kill_switch_active: bool = False
 
+    # Agent autonomy — when true, agents may perform otherwise human-only
+    # operations for this repo via the platform-tool MCP surface (e.g. ticket
+    # status transitions, including Gate-1 approval).
+    agent_autonomy: bool = False
+
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -55,6 +60,10 @@ class PlatformConfigDTO(BaseModel):
 
 class SetKillSwitchRequest(BaseModel):
     active: bool
+
+
+class SetAgentAutonomyRequest(BaseModel):
+    enabled: bool
 
 
 class CreateRepositoryRequest(BaseModel):
@@ -84,6 +93,7 @@ class UpdateRepositoryRequest(BaseModel):
     is_active: bool | None = None
     github_owner: str | None = None
     github_repo: str | None = None
+    agent_autonomy: bool | None = None
 
 
 # ── GitHub mock DTOs ────────────────────────────────────────────────────────

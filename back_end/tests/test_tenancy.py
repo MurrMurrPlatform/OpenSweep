@@ -172,7 +172,7 @@ async def test_new_oidc_user_joins_org_via_invitation(oidc_module, monkeypatch):
 
     monkeypatch.setattr(oidc_module, "find_pending_invitation", pending)
     dto = await oidc_module.resolve_oidc_user(
-        {"sub": "u2", "email": "a@b.c", "name": "A"}, "token"
+        {"sub": "u2", "email": "a@b.c", "name": "A", "email_verified": True}, "token"
     )
     assert dto.org_uid == "org-acme"
     assert dto.org_role == "member"
@@ -180,6 +180,24 @@ async def test_new_oidc_user_joins_org_via_invitation(oidc_module, monkeypatch):
     assert dto.onboarded is True  # joined an existing org — no welcome flow
     assert oidc_module._test_accepted == [(inv, "u2")]
     assert oidc_module._test_created_orgs == []  # no personal org
+
+
+async def test_unverified_email_does_not_auto_join_via_invitation(oidc_module, monkeypatch):
+    """An invitation trusts the email address; auto-joining on an UNVERIFIED
+    email would let an attacker who registers the invited address into the org.
+    Unverified → personal org, invitation left un-accepted."""
+    inv = _FakeNode(uid="inv-2", org_uid="org-acme", role="admin", email="a@b.c")
+    oidc_module._test_orgs.store["org-acme"] = _FakeNode(uid="org-acme", name="Acme")
+
+    async def pending(email):
+        return inv if email == "a@b.c" else None
+
+    monkeypatch.setattr(oidc_module, "find_pending_invitation", pending)
+    dto = await oidc_module.resolve_oidc_user(
+        {"sub": "u9", "email": "a@b.c", "name": "A", "email_verified": False}, "token"
+    )
+    assert dto.org_uid != "org-acme"  # got a personal org, not the invited one
+    assert oidc_module._test_accepted == []  # invitation NOT consumed
 
 
 async def test_existing_user_keeps_opensweep_managed_role(oidc_module):

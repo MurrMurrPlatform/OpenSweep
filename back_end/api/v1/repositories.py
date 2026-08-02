@@ -14,6 +14,7 @@ from domains.repositories.schemas import (
     LinkConnectionRequest,
     RepoConnectionDTO,
     RepositoryDTO,
+    SetAgentAutonomyRequest,
     SetKillSwitchRequest,
     UpdateRepositoryRequest,
 )
@@ -182,6 +183,34 @@ async def toggle_repo_kill_switch(
         subject_type="Repository",
         actor_uid=user.uid,
         payload={"active": req.active},
+    )
+    return await svc.get_repository(uid, user.org_uid)
+
+
+@router.post(
+    "/{uid}/agent-autonomy",
+    response_model=RepositoryDTO,
+    operation_id="opensweep_set_repo_agent_autonomy",
+)
+async def toggle_repo_agent_autonomy(
+    uid: str,
+    req: SetAgentAutonomyRequest,
+    svc: RepositoryService = Depends(get_repository_service),
+    user: UserDTO = Depends(require_role("maintainer")),
+):
+    """Opt this repo into (or out of) agent autonomy: when enabled, agents may
+    perform otherwise human-only operations for it via the platform-tool MCP
+    surface (currently ticket status transitions, including Gate-1 approval).
+    Maintainer+ only — granting an agent approval authority is a human act."""
+    r = await svc.get_repository_node(uid, user.org_uid)  # org-scoped; 404s otherwise
+    r.agent_autonomy = bool(req.enabled)
+    await r.save()
+    await write_audit(
+        kind="repository.agent_autonomy_changed",
+        subject_uid=uid,
+        subject_type="Repository",
+        actor_uid=user.uid,
+        payload={"enabled": bool(req.enabled)},
     )
     return await svc.get_repository(uid, user.org_uid)
 
