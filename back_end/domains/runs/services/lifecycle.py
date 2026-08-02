@@ -57,6 +57,7 @@ from domains.run_policies.services.policy_resolver import (
     resolve as resolve_policy,
 )
 from infrastructure.audit import write_audit
+from infrastructure.dist_lock import dist_lock
 from infrastructure.kill_switch import KillSwitchActiveError, assert_runnable
 from infrastructure.process_role import WORKER, get_role
 from logging_config import logger
@@ -460,47 +461,74 @@ async def execute_queued_run(run_uid: str) -> dict:
     or already dispatched) is skipped. Only CLI/discovery runs reach here
     (worker dispatches never carry a prepared sandbox), so prepared_sandbox /
     sandbox_factory are always None — the CLI clone path recreates the
-    workspace."""
+    workspace.
+
+    Cross-process idempotent under `acks_late`: the row stays QUEUED across the
+    whole sandbox clone (RUNNING is only stamped in `_prepare_dispatch_and_finalize`
+    once the clone lands), so a redelivered `dispatch_run` task — worker crash or
+    visibility-timeout re-queue — would pass the QUEUED check and clone + dispatch
+    a SECOND agent onto the same run. A per-run `dist_lock` lets exactly one task
+    proceed; the redelivered one is skipped."""
     run = await Run.nodes.get_or_none(uid=run_uid)
     if run is None:
         return {"outcome": "missing"}
     if run.status != RunStatus.QUEUED.value:
         return {"outcome": "skipped", "status": run.status or ""}
-    usage = dict(run.usage or {})
-    input_blob = dict(usage.get("input") or {})
-    overrides = dict(usage.get("workflow_overrides") or {})
-    target = dict(input_blob.get("target") or run.target or {})
-    repo = await Repository.nodes.get_or_none(uid=run.repository_uid)
-    policy = None
-    if run.run_policy_uid:
-        from domains.run_policies.models import RunPolicy
 
-        policy = await RunPolicy.nodes.get_or_none(uid=run.run_policy_uid)
-    context = await _load_briefing(repository_uid=run.repository_uid, target=target)
-    chosen_executor = Executor(run.executor)
-    await _prepare_dispatch_and_finalize(
-        run_uid=run.uid,
-        repository_uid=run.repository_uid,
-        intent=str(input_blob.get("intent") or ""),
-        target=target,
-        repo=repo,
-        adapter=AdapterRegistry.get(chosen_executor),
-        chosen_executor=chosen_executor,
-        chosen_mode=ExecutionMode(run.execution_mode or ExecutionMode.ANALYZE_ONLY.value),
-        trigger=RunTrigger(run.trigger or RunTrigger.MANUAL.value),
-        triggered_by=run.triggered_by or "",
-        policy=policy,
-        warnings=list(usage.get("warnings") or []),
-        provider_uid=str(usage.get("provider_uid") or run.provider_uid or ""),
-        model_override=str(overrides.get("model") or ""),
-        max_wall_seconds_override=int(overrides.get("max_wall_seconds") or 0),
-        effort=run.effort or "",
-        reasoning=run.reasoning or "",
-        context=context,
-        prepared_sandbox=None,
-        sandbox_factory=None,
-    )
-    return {"outcome": "dispatched", "run_uid": run.uid}
+    from domains.runs.tasks.task_limits import limits_for_run
+
+    # Hold the run for the whole dispatch (clone + agent). TTL covers the wall
+    # ceiling + slack so a crashed holder's claim expires and reconciliation can
+    # re-drive the run rather than it being stranded QUEUED.
+    _soft, hard = await limits_for_run(run)
+    async with dist_lock(
+        f"run:{run_uid}", ttl_seconds=hard + 300, blocking=False
+    ) as claimed:
+        if not claimed:
+            # A redelivered dispatch_run task is already executing this run.
+            return {"outcome": "skipped", "reason": "in-flight"}
+        # Re-read under the claim: the in-flight task may have advanced it past
+        # QUEUED between the pre-claim check and here.
+        run = await Run.nodes.get_or_none(uid=run_uid)
+        if run is None:
+            return {"outcome": "missing"}
+        if run.status != RunStatus.QUEUED.value:
+            return {"outcome": "skipped", "status": run.status or ""}
+        usage = dict(run.usage or {})
+        input_blob = dict(usage.get("input") or {})
+        overrides = dict(usage.get("workflow_overrides") or {})
+        target = dict(input_blob.get("target") or run.target or {})
+        repo = await Repository.nodes.get_or_none(uid=run.repository_uid)
+        policy = None
+        if run.run_policy_uid:
+            from domains.run_policies.models import RunPolicy
+
+            policy = await RunPolicy.nodes.get_or_none(uid=run.run_policy_uid)
+        context = await _load_briefing(repository_uid=run.repository_uid, target=target)
+        chosen_executor = Executor(run.executor)
+        await _prepare_dispatch_and_finalize(
+            run_uid=run.uid,
+            repository_uid=run.repository_uid,
+            intent=str(input_blob.get("intent") or ""),
+            target=target,
+            repo=repo,
+            adapter=AdapterRegistry.get(chosen_executor),
+            chosen_executor=chosen_executor,
+            chosen_mode=ExecutionMode(run.execution_mode or ExecutionMode.ANALYZE_ONLY.value),
+            trigger=RunTrigger(run.trigger or RunTrigger.MANUAL.value),
+            triggered_by=run.triggered_by or "",
+            policy=policy,
+            warnings=list(usage.get("warnings") or []),
+            provider_uid=str(usage.get("provider_uid") or run.provider_uid or ""),
+            model_override=str(overrides.get("model") or ""),
+            max_wall_seconds_override=int(overrides.get("max_wall_seconds") or 0),
+            effort=run.effort or "",
+            reasoning=run.reasoning or "",
+            context=context,
+            prepared_sandbox=None,
+            sandbox_factory=None,
+        )
+        return {"outcome": "dispatched", "run_uid": run.uid}
 
 
 async def _prepare_dispatch_and_finalize(

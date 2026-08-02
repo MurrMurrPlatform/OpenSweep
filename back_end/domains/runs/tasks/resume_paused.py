@@ -85,20 +85,41 @@ def resume_run(run_uid: str) -> dict:
 
 async def _resume_by_uid(run_uid: str) -> dict:
     from domains.runs.models import Run
+    from infrastructure.dist_lock import dist_lock
 
     run = await Run.nodes.get_or_none(uid=run_uid)
     if run is None or run.status != "paused_quota":
         # Resolved/failed/resumed between scan and execution — nothing to do.
         return {"outcome": "skipped"}
-    try:
-        outcome = await _resume_one(run, now=datetime.now(UTC))
-    except Exception as exc:  # noqa: BLE001 — recorded, next tick retries
-        logger.warning(
-            f"quota resume failed for run {run.uid}: {type(exc).__name__}: {exc}",
-            extra={"tag": "quota"},
-        )
-        return {"outcome": "error", "error": f"{type(exc).__name__}: {exc}"[:300]}
-    return {"outcome": outcome}
+
+    # Lease the run for the whole resume. `redispatch_run` only flips the row
+    # off `paused_quota` AFTER re-cloning the workspace, so without a lease the
+    # next 10-min beat tick would find it still paused and enqueue a SECOND
+    # resume_run — a double dispatch (two agents, two clones) on one run. The
+    # lease is cross-process (backend + every worker replica). TTL covers the
+    # run's wall ceiling + slack so a crashed holder's lease expires and a later
+    # tick retries rather than the run being stranded.
+    _soft, hard = await limits_for_run(run)
+    async with dist_lock(
+        f"resume:{run_uid}", ttl_seconds=hard + 300, blocking=False
+    ) as leased:
+        if not leased:
+            # Another resume for this run is already in flight.
+            return {"outcome": "skipped"}
+        # Re-read under the lease: the in-flight resume may have flipped it since
+        # the pre-lease check above.
+        run = await Run.nodes.get_or_none(uid=run_uid)
+        if run is None or run.status != "paused_quota":
+            return {"outcome": "skipped"}
+        try:
+            outcome = await _resume_one(run, now=datetime.now(UTC))
+        except Exception as exc:  # noqa: BLE001 — recorded, next tick retries
+            logger.warning(
+                f"quota resume failed for run {run.uid}: {type(exc).__name__}: {exc}",
+                extra={"tag": "quota"},
+            )
+            return {"outcome": "error", "error": f"{type(exc).__name__}: {exc}"[:300]}
+        return {"outcome": outcome}
 
 
 async def _resume_one(run, *, now: datetime) -> str:
