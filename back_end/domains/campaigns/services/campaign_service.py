@@ -38,6 +38,7 @@ def to_dto(c: Campaign) -> CampaignDTO:
         template=c.template or "rotation",
         kind=str(getattr(c, "kind", "subsystem") or "subsystem"),
         selection=str(getattr(c, "selection", "all") or "all"),
+        lens_grouping=str(getattr(c, "lens_grouping", "single") or "single"),
         coverage_keys=list(getattr(c, "coverage_keys", []) or []),
         parent_uid=str(getattr(c, "parent_uid", "") or ""),
         child_uids=list(getattr(c, "child_uids", []) or []),
@@ -376,6 +377,7 @@ async def _plan_parts(
     selection: str,
     lens_keys: list[str],
     k: int,
+    lens_grouping: str = "single",
 ) -> tuple[list[dict], str, str, dict]:
     """(part list, degraded_reason, source, plan_summary) for a kind-aware
     plan.
@@ -481,6 +483,7 @@ async def _plan_parts(
                 k=k,
                 path_recency=path_recency,
                 synthesis=True,
+                lens_grouping=lens_grouping,
             )
 
     # The plan's own explanation — how the map's rows became this part list.
@@ -509,6 +512,7 @@ async def _plan_parts(
         "degraded": degraded_reason,
         "coverage_keys": list(coverage_keys),
         "selection": selection,
+        "lens_grouping": lens_grouping,
     }
     return parts, degraded_reason, source, plan_summary
 
@@ -630,6 +634,7 @@ async def create(
     # Clamp k up front so the stored value and the plan (and any launch-time
     # replan) are built from the same number.
     k = max(int(req.k or 3), 1)
+    lens_grouping = (req.lens_grouping or "").strip() or "single"
     parts, degraded_reason, source, plan_summary = await _plan_parts(
         repository_uid,
         kind=kind,
@@ -637,6 +642,7 @@ async def create(
         selection=selection,
         lens_keys=lens_keys,
         k=k,
+        lens_grouping=lens_grouping,
     )
 
     c = Campaign(
@@ -647,6 +653,7 @@ async def create(
         template=(req.template or "rotation").strip(),
         kind=kind,
         selection=selection,
+        lens_grouping=lens_grouping,
         coverage_keys=coverage_keys,
         effort=(req.effort or "").strip(),
         lens_keys=lens_keys,
@@ -697,6 +704,7 @@ async def _replan(c: Campaign) -> None:
             kind=str(getattr(c, "kind", "subsystem") or "subsystem"),
             coverage_keys=list(getattr(c, "coverage_keys", []) or []),
             selection=str(getattr(c, "selection", "all") or "all"),
+            lens_grouping=str(getattr(c, "lens_grouping", "single") or "single"),
             lens_keys=list(c.lens_keys or []),
             k=int(getattr(c, "k", 3) or 3),
         )
@@ -786,6 +794,7 @@ async def preview_plan(repository_uid: str, req: CreateCampaignRequest) -> dict:
         }
 
     k = max(int(req.k or 3), 1)
+    lens_grouping = (req.lens_grouping or "").strip() or "single"
     parts, degraded_reason, source, plan_summary = await _plan_parts(
         repository_uid,
         kind=kind,
@@ -793,6 +802,7 @@ async def preview_plan(repository_uid: str, req: CreateCampaignRequest) -> dict:
         selection=selection,
         lens_keys=lens_keys,
         k=k,
+        lens_grouping=lens_grouping,
     )
     areas = [
         {

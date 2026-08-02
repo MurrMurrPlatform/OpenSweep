@@ -17,6 +17,8 @@ class CampaignDTO(BaseModel):
     kind: str = "subsystem"
     # all | stale | unaudited | rotation
     selection: str = "all"
+    # single | grouped — one part per area, or one per (area, lens group).
+    lens_grouping: str = "single"
     # Area keys this campaign covers (empty = whole map)
     coverage_keys: list[str] = Field(default_factory=list)
     # Batch wiring
@@ -56,6 +58,9 @@ class CreateCampaignRequest(BaseModel):
     # Which areas/files to target: "" = default;
     # "all"|"stale"|"unaudited"|"rotation".
     selection: str = ""
+    # "" = default ("single"); "grouped" splits each area into one part per
+    # lens group instead of one part carrying all of them.
+    lens_grouping: str = ""
     # Area keys to restrict to (empty = whole map).
     coverage_keys: list[str] = Field(default_factory=list)
     template: str = "rotation"

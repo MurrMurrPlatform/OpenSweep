@@ -49,6 +49,13 @@ class Campaign(AsyncStructuredNode):
     # The area keys this campaign covers (empty = whole map).
     coverage_keys = JSONProperty(default=[])
 
+    # single | grouped — whether one area part carries every lens, or one
+    # part per lens GROUP (lens_service.LENS_GROUPS). Defaults to today's
+    # behaviour; grouping triples the run count and there is no data yet
+    # saying it pays for itself. The digest's per-lens rollup is the
+    # instrument for settling that.
+    lens_grouping = StringProperty(default="single")
+
     # Batch wiring: parent campaign uid (empty for non-batch).
     parent_uid = StringProperty(default="")
 

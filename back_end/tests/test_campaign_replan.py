@@ -73,7 +73,7 @@ def seams(monkeypatch):
 
 def _plan_stub(monkeypatch, result=None, *, error=None, captured=None):
     async def fake_plan_parts(
-        repository_uid, *, kind, coverage_keys, selection, lens_keys, k
+        repository_uid, *, kind, coverage_keys, selection, lens_keys, k, **_extra
     ):
         if captured is not None:
             captured.update(

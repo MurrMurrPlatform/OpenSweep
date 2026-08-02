@@ -93,6 +93,49 @@ def default_lens_keys(kind: str) -> list[str]:
     return list(DEFAULT_LENSES_BY_KIND.get(kind, ()))
 
 
+#: Subsystem lenses, grouped by the kind of attention they need. Used only
+#: when a campaign opts into `lens_grouping="grouped"`.
+#:
+#: A default subsystem part carries ALL EIGHT lenses over up to 150 files at
+#: `normal` effort — 200 tool turns for eight disciplines, roughly 25 turns
+#: each. That is the quietest quality ceiling in the system, and splitting it
+#: is the obvious fix. It is also a 3x run-count increase, and there is no
+#: data yet saying the split pays for itself: a single agent reading a file
+#: once for eight concerns may well beat three agents reading it three times.
+#:
+#: So this ships OPT-IN, and the instrument to settle it ships with it — the
+#: per-lens rollup in the campaign digest reports skipped/missing verdicts per
+#: lens, which is exactly the signal that says whether eight lenses in one run
+#: are getting real attention. Run one campaign each way and compare before
+#: changing any default.
+LENS_GROUPS: tuple[tuple[str, ...], ...] = (
+    ("bugs", "security"),
+    ("performance", "error-handling"),
+    ("simplification", "refactor-opportunities", "legacy-patterns", "test-gaps"),
+)
+
+
+def group_lens_keys(keys: list[str]) -> list[list[str]]:
+    """Split lens keys into attention groups. Pure.
+
+    Keys not in any group are appended as their own final group, so a custom
+    or newly-seeded lens is never silently dropped from a grouped campaign.
+    Groups with no selected keys disappear.
+    """
+    wanted = [k for k in keys if k]
+    grouped: list[list[str]] = []
+    seen: set[str] = set()
+    for group in LENS_GROUPS:
+        picked = [k for k in wanted if k in group]
+        if picked:
+            grouped.append(picked)
+            seen.update(picked)
+    leftover = [k for k in wanted if k not in seen]
+    if leftover:
+        grouped.append(leftover)
+    return grouped
+
+
 # Closing instruction of every checklist: local runs stay in their lane and
 # route cross-cutting observations to the global sweeps via finding tags.
 _ESCALATE_INSTRUCTION = (

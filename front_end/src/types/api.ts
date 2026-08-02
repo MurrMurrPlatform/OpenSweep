@@ -1920,6 +1920,12 @@ export interface CampaignDTO {
  *  perfectly mapped and years out of audit. */
 export type CampaignSelection = 'all' | 'stale' | 'unaudited' | 'rotation'
 
+/** `grouped` splits each area into one run per lens GROUP instead of one
+ *  run carrying all eight. Roughly triples the run count, so it is opt-in
+ *  — the campaign digest's per-lens rollup is how you tell whether it
+ *  bought anything. */
+export type CampaignLensGrouping = 'single' | 'grouped'
+
 export interface CreateCampaignRequest {
   /** Kind-based model (new): kind + coverage_keys + selection. */
   kind?: CampaignKind
@@ -1927,6 +1933,7 @@ export interface CreateCampaignRequest {
   coverage_keys?: string[]
   /** Which areas to include: all | stale | rotation-k. */
   selection?: CampaignSelection
+  lens_grouping?: CampaignLensGrouping
   /** Empty = every enabled lens. */
   lens_keys?: string[]
   effort?: AgentEffort | ''

@@ -523,6 +523,7 @@ async def test_plan_summary_narrates_an_area_map_plan(plan_seams):
         "degraded": "",
         "coverage_keys": [],
         "selection": "all",
+        "lens_grouping": "single",
     }
 
 
@@ -558,4 +559,5 @@ async def test_plan_summary_keeps_its_shape_for_docs_plans(plan_seams):
         "degraded": "",
         "coverage_keys": [],
         "selection": "all",
+        "lens_grouping": "single",
     }

@@ -650,6 +650,7 @@ def build_plan_by_kind(
     feature_areas: list[dict] | None = None,
     scope_hint: list[str] | None = None,
     synthesis: bool = False,
+    lens_grouping: str = "single",
 ) -> list[dict]:
     """Kind-dispatched plan builder. Additive alongside the existing build_plan.
 
@@ -659,6 +660,9 @@ def build_plan_by_kind(
         unaudited=areas where code moved since the last COMPLETED AUDIT
         (_area_needs_reaudit — the two are different questions); rotation=k
         least-recently-covered via _area_recency.
+        lens_grouping="grouped" emits one part per (area, lens group) instead
+        of one part carrying all eight lenses — see lens_service.LENS_GROUPS
+        for why that is opt-in.
     kind="feature": one kind="feature" part per leaf in feature_areas, lens_keys
         = all enabled lenses. selection: all=every leaf; stale/rotation=stale
         leaves only.
@@ -704,7 +708,25 @@ def build_plan_by_kind(
             candidate_areas = [areas[i] for i, _ in scored[: max(k, 0)]]
         else:  # all
             candidate_areas = list(areas)
-        parts = [_part(0, "area", a["title"], a, enabled_keys) for a in candidate_areas]
+        if lens_grouping == "grouped":
+            from domains.lenses.services.lens_service import group_lens_keys
+
+            groups = group_lens_keys(enabled_keys)
+            parts = [
+                _part(
+                    0,
+                    "area",
+                    f"{a['title']} — {'/'.join(group)}",
+                    a,
+                    group,
+                )
+                for a in candidate_areas
+                for group in groups
+            ]
+        else:
+            parts = [
+                _part(0, "area", a["title"], a, enabled_keys) for a in candidate_areas
+            ]
 
     elif kind == "feature":
         leaves = list(feature_areas or [])

@@ -107,7 +107,7 @@ async def test_plan_preview_total_runs_matches_global_create_part_count(monkeypa
         "selection": "all",
     }
 
-    async def fake_plan_parts(repository_uid, *, kind, coverage_keys, selection, lens_keys, k):
+    async def fake_plan_parts(repository_uid, *, kind, coverage_keys, selection, lens_keys, k, **_extra):
         return global_parts, "", "global", plan_summary
 
     monkeypatch.setattr(campaign_service, "_plan_parts", fake_plan_parts)
