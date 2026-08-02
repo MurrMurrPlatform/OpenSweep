@@ -98,12 +98,19 @@ class FindingVerification(AsyncStructuredNode):
 
     The run's job is to REFUTE: `refuted` requires affirmative evidence the
     claimed failure cannot occur at the pinned sha. Findings the run never
-    reports on are treated as confirmed (fail closed for merge safety)."""
+    reports on are treated as confirmed (fail closed for merge safety).
+
+    `pull_request_uid` and `verdict_uid` are EMPTY for an audit-campaign
+    verification: there is no PR and no verdict to adjust, only findings to
+    judge. The uniqueness key was already run-scoped
+    ("{run_uid}:{finding_uid}"), so nothing else had to change — the PR
+    coupling lived entirely in these two required fields and in the HTTP
+    route that resolved them."""
 
     uid = StringProperty(unique_index=True, required=True)
-    pull_request_uid = StringProperty(required=True, index=True)
+    pull_request_uid = StringProperty(default="", index=True)
     repository_uid = StringProperty(required=True, index=True)
-    verdict_uid = StringProperty(required=True, index=True)
+    verdict_uid = StringProperty(default="", index=True)
     finding_uid = StringProperty(required=True, index=True)
     run_uid = StringProperty(required=True, index=True)
     # One judgment per finding per run.

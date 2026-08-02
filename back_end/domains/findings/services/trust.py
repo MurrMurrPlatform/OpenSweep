@@ -122,16 +122,27 @@ def trust_score(
 def trust_score_for(finding, verification_status: str = "") -> float:
     """`trust_score` for a Finding node or any object with the same fields.
 
-    Reads `status` off the finding rather than taking it as an argument so the
-    outcome feedback reaches every existing caller — the DTO boundary computes
-    trust for the whole list, and there is nowhere else the verdict would be
-    threaded through.
+    Reads `status` AND the skeptic pass's verdict off the finding rather than
+    taking them as arguments, so both reach every existing caller — the DTO
+    boundary computes trust for the whole list, and there is nowhere else they
+    would be threaded through.
+
+    The verification half used to be unreachable: this parameter existed,
+    defaulted to "", and the sole production caller passed nothing. The
+    outcome lived on the PR Verdict, which an audit finding does not have.
+    `Finding.verification_result` is the denormalised copy that makes
+    `_VERIFICATION_DELTA` — documented as the strongest signal either way —
+    actually apply. An explicit argument still wins, for callers that have a
+    fresher judgment in hand than the one on the node.
     """
     return trust_score(
         confidence=getattr(finding, "confidence", 0.7),
         source_run_uids=getattr(finding, "source_run_uids", None),
         source_run_uid=getattr(finding, "source_run_uid", "") or "",
         detected_by_tool=getattr(finding, "detected_by_tool", "") or "",
-        verification_status=verification_status,
+        verification_status=(
+            verification_status
+            or str(getattr(finding, "verification_result", "") or "")
+        ),
         status=str(getattr(finding, "status", "") or ""),
     )

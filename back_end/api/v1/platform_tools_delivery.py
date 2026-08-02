@@ -250,29 +250,52 @@ async def submit_finding_verification(
 ):
     """Verification runs report one judgment per finding (§A). Idempotent per
     (run, finding) — re-calls update. No recompute here; the playbook
-    finalizer folds the batch into the ledger and adjusts the verdict."""
+    finalizer folds the batch into the ledger and adjusts the verdict.
+
+    A campaign verification has no PR and no verdict — only findings to judge
+    — so both are optional when the calling run carries a `campaign_uid`.
+    They stay REQUIRED on the PR path: a report that cannot be attached to the
+    verdict it adjusts is worse than no report, because the fold treats a
+    missing report as `confirmed`."""
     from domains.delivery.services.verification_run_service import (
         submit_finding_verification as record,
     )
     from domains.runs.models import Run
 
-    pr = await _pr_by_ref(req.pull_request_uid, req.repository_uid, req.github_number)
-    await require_tool_repo_access(request, user, pr.repository_uid)
     run_uid = request.headers.get("X-OpenSweep-Run-Uid") or ""
-    verdict_uid = req.verdict_uid
-    if not verdict_uid and run_uid:
-        run = await Run.nodes.get_or_none(uid=run_uid)
-        verdict_uid = str(((run.target if run else None) or {}).get("verdict_uid") or "")
-    if not run_uid or not verdict_uid:
-        raise HTTPException(
-            status_code=422,
-            detail="verification reports need a run context (X-OpenSweep-Run-Uid) and a verdict_uid",
-        )
+    run = await Run.nodes.get_or_none(uid=run_uid) if run_uid else None
+    target = dict((run.target if run else None) or {})
+    campaign_uid = str(target.get("campaign_uid") or "")
+
+    if campaign_uid:
+        if not run_uid:
+            raise HTTPException(
+                status_code=422,
+                detail="verification reports need a run context (X-OpenSweep-Run-Uid)",
+            )
+        repository_uid = req.repository_uid or (run.repository_uid if run else "")
+        await require_tool_repo_access(request, user, repository_uid)
+        pull_request_uid, verdict_uid = "", ""
+    else:
+        pr = await _pr_by_ref(req.pull_request_uid, req.repository_uid, req.github_number)
+        await require_tool_repo_access(request, user, pr.repository_uid)
+        repository_uid = pr.repository_uid
+        pull_request_uid = pr.uid
+        verdict_uid = req.verdict_uid or str(target.get("verdict_uid") or "")
+        if not run_uid or not verdict_uid:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "verification reports need a run context "
+                    "(X-OpenSweep-Run-Uid) and a verdict_uid"
+                ),
+            )
+
     row = await record(
         run_uid=run_uid,
         verdict_uid=verdict_uid,
-        pull_request_uid=pr.uid,
-        repository_uid=pr.repository_uid,
+        pull_request_uid=pull_request_uid,
+        repository_uid=repository_uid,
         finding_uid=req.finding_uid,
         sha=req.sha,
         result=req.result.value,

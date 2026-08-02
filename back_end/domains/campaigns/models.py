@@ -52,6 +52,13 @@ class Campaign(AsyncStructuredNode):
     # Batch wiring: parent campaign uid (empty for non-batch).
     parent_uid = StringProperty(default="")
 
+    # The skeptic run dispatched over this campaign's findings — dispatch
+    # idempotence, the same single-shot marker pattern as
+    # Verdict.verification_run_uid. finalize_campaign re-runs for rows
+    # stranded in `finalizing` by a crash, so it needs a durable "already
+    # done" that survives the retry.
+    verification_run_uid = StringProperty(default="")
+
     # Batch wiring: child campaign uids (empty for non-batch).
     child_uids = JSONProperty(default=[])
 

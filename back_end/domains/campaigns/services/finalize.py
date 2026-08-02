@@ -182,6 +182,9 @@ async def finalize_campaign(campaign) -> None:
 
     findings = list(await Finding.nodes.filter(repository_uid=campaign.repository_uid))
     findings_by_part: dict[int, list[dict]] = {}
+    # The Finding objects themselves, deduped — the digest only needs a
+    # projection, but the verification pass needs the rows.
+    campaign_findings: dict[str, object] = {}
     for idx, run_uid in run_by_idx.items():
         if not run_uid:
             continue
@@ -195,6 +198,8 @@ async def finalize_campaign(campaign) -> None:
                 {"severity": f.severity or "medium", "tags": list(f.tags or []), "title": f.title}
                 for f in matched
             ]
+            for f in matched:
+                campaign_findings[f.uid] = f
 
     # Coverage from the runs' Checked stamps (complete_run contract). The
     # lens verdicts ride along: they are what the contract was collecting all
@@ -264,3 +269,47 @@ async def finalize_campaign(campaign) -> None:
     ]
     fresh.updated_at = now
     await fresh.save()
+
+    # AFTER the status save, deliberately: everything above this line
+    # re-executes when a crashed finalize is retried from `finalizing`
+    # (tick.py's recovery loop), and dispatching a duplicate verification run
+    # per crash would be the obvious way to get that wrong. Past this point
+    # the row is terminal, so finalize_campaign returns at the legality gate
+    # on any re-entry.
+    await _verify_findings(fresh, list(campaign_findings.values()))
+
+
+async def _verify_findings(campaign, findings: list) -> None:
+    """Dispatch the skeptic pass over this campaign's findings. Best-effort.
+
+    Never raises: a campaign that has already reported its results must not be
+    dragged back out of `done` because a follow-up dispatch failed. The
+    single-shot marker means a failure here is not retried — deliberate, since
+    the alternative is a campaign that re-dispatches a verify run on every
+    beat of the tick.
+    """
+    from domains.campaigns.models import Campaign
+
+    if not findings or (campaign.verification_run_uid or ""):
+        return
+    try:
+        from domains.delivery.services.verification_run_service import (
+            trigger_campaign_verification_run,
+        )
+
+        run = await trigger_campaign_verification_run(campaign, findings)
+        if run is None:
+            return
+        fresh = await Campaign.nodes.get_or_none(uid=campaign.uid) or campaign
+        fresh.verification_run_uid = run.uid
+        await fresh.save()
+        logger.info(
+            f"campaign {campaign.uid}: verification run {run.uid} dispatched",
+            extra={"tag": "campaigns"},
+        )
+    except Exception as exc:  # noqa: BLE001 — the campaign is already done
+        logger.warning(
+            f"campaign {campaign.uid}: verification dispatch failed: "
+            f"{type(exc).__name__}: {exc}",
+            extra={"tag": "campaigns"},
+        )
