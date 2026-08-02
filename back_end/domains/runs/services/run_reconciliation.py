@@ -91,6 +91,7 @@ def is_orphan(
     last_seen: datetime | None,
     now: datetime,
     recent_activity_grace_seconds: int,
+    single_replica: bool = True,
 ) -> bool:
     """Whether a queued/running run belongs to the role that just restarted.
 
@@ -98,11 +99,18 @@ def is_orphan(
     only when their transcript has also gone quiet, so a live run owned by
     the OTHER role is never killed during the deploy window that introduces
     the stamp.
+
+    ``single_replica`` (default) means one process per role: a run stamped with
+    THIS role is dead the instant this process restarts, so it is failed
+    immediately. With 2+ replicas of a role, a same-role run may be a LIVE
+    sibling's — so fall back to the same liveness gate as unstamped runs and
+    reap it only once its transcript has gone quiet.
     """
-    if owner == role:
+    if owner == role and single_replica:
         return True
-    if owner:
+    if owner and owner != role:
         return False
+    # owner unknown, OR owner == role under multi-replica: liveness decides.
     if last_seen is None:
         return True
     return now - last_seen >= timedelta(seconds=recent_activity_grace_seconds)
@@ -176,11 +184,14 @@ async def reconcile_orphaned_runs(
 ) -> int:
     """Startup sweep: fail the queued/running runs this process role owned.
 
-    Dispatch tasks die with their process, so when a role starts up, every
-    run still stamped with that role is dead by definition. Assumes one
-    backend process and one worker container — true for this deployment; a
-    second instance of the same role would sweep its sibling's live runs.
+    Dispatch tasks die with their process, so when a role starts up, every run
+    still stamped with that role is dead by definition — UNDER a single-replica
+    deployment. With OPENSWEEP_SINGLE_REPLICA=False (2+ replicas of a role), a
+    same-role run may belong to a live sibling, so the sweep gates on transcript
+    liveness instead of reaping same-role runs on sight — a replica never kills
+    a sibling's in-flight run.
     """
+    single_replica = bool(getattr(settings, "OPENSWEEP_SINGLE_REPLICA", True))
     now = datetime.now(timezone.utc)
     changed = 0
     # intentional: cross-tenant reconciliation must sweep every repo's runs.
@@ -194,6 +205,7 @@ async def reconcile_orphaned_runs(
             last_seen=last_activity(run),
             now=now,
             recent_activity_grace_seconds=recent_activity_grace_seconds,
+            single_replica=single_replica,
         ):
             continue
         await _fail_run(

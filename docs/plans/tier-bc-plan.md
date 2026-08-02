@@ -189,6 +189,42 @@ deploy kills in-flight runs.
 P7 needs its own test matrix (two-replica simulation) and careful staging. **Do
 not rush it into the same PR as B/C** — recommend landing Phases 0–4, then P7.
 
+### P7 — landed vs. residual (this pass)
+
+**Landed — P7c (lease-/liveness-safe reconciliation), the actual multi-replica
+crux.** `reconcile_orphaned_runs` used to fail EVERY run stamped with the
+restarting role on the single-process assumption — with 2+ replicas that reaps a
+live sibling's in-flight run (data loss). Now gated by `OPENSWEEP_SINGLE_REPLICA`
+(default `True` = unchanged fast-fail). Set it `False` for 2+ replicas and the
+startup sweep reaps a same-role run ONLY once its transcript has gone quiet past
+the grace window, so a restarting replica never kills a live sibling's run.
+Tests in `test_run_reconciliation.py`. This is the one P7 sub-part that is
+catastrophic if wrong and safe to land now behind a default-off flag.
+
+**Residual (documented, NOT landed — each needs a two-replica test bench):**
+
+- **P7a — pipelines off the API loop.** `lifecycle.py` still runs non-worker
+  dispatches as `asyncio.create_task` in the API process (killed on deploy). The
+  worker-execute path already exists (`get_role() == WORKER` enqueues
+  `dispatch_run`); the change is to make the API ALWAYS enqueue. Deferred: it
+  shifts every Ask/Sweep latency profile and needs a live drive to confirm no
+  regression in the dev flow.
+- **P7b — run resumption/checkpointing.** On restart, re-enqueue resumable runs
+  (persisted sandbox + `cli_session_id`) instead of failing them. Needs a
+  defined "resumable" predicate and reuse of the paused/resume machinery.
+- **P7d — OAuth pending-state off the filesystem.** `github_app.py` keeps the
+  OAuth pending-state in a process-local JSON file; move it to Redis (short-TTL
+  keys) so any replica can complete the callback. Self-contained but touches the
+  login round-trip — verify with a live OAuth flow, not just unit tests.
+- **P7e — scale the process count.** `Dockerfile.prod --workers 1` → `>1`, then
+  hunt remaining single-process assumptions (module-level caches, per-loop
+  singletons). Only meaningful once P7a/b/d land; gated by
+  `OPENSWEEP_SINGLE_REPLICA=False`.
+
+With P7c's flag in place, flipping `OPENSWEEP_SINGLE_REPLICA=False` is safe from
+the reconciliation-reaping standpoint; P7a/b/d/e remain before true horizontal
+scale.
+
 ---
 
 ## Testing & verification (every phase)

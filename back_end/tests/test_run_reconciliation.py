@@ -97,6 +97,52 @@ def test_other_role_runs_are_never_orphaned():
     )
 
 
+def test_multi_replica_keeps_live_same_role_sibling_run():
+    # P7c: with 2+ backend replicas, a same-role run that is still writing its
+    # transcript belongs to a live sibling — a restarting replica must NOT reap it.
+    assert not is_orphan(
+        owner="backend",
+        role="backend",
+        last_seen=_ago(5),
+        now=NOW,
+        recent_activity_grace_seconds=120,
+        single_replica=False,
+    )
+
+
+def test_multi_replica_reaps_quiet_same_role_run():
+    # A same-role run whose transcript has gone quiet past the grace window is
+    # dead (its owning replica crashed) — reaped even in multi-replica mode.
+    assert is_orphan(
+        owner="backend",
+        role="backend",
+        last_seen=_ago(121),
+        now=NOW,
+        recent_activity_grace_seconds=120,
+        single_replica=False,
+    )
+    # A same-role run with no liveness signal at all is reaped.
+    assert is_orphan(
+        owner="backend",
+        role="backend",
+        last_seen=None,
+        now=NOW,
+        recent_activity_grace_seconds=120,
+        single_replica=False,
+    )
+
+
+def test_other_role_runs_are_never_orphaned_in_multi_replica():
+    assert not is_orphan(
+        owner="worker",
+        role="backend",
+        last_seen=None,
+        now=NOW,
+        recent_activity_grace_seconds=120,
+        single_replica=False,
+    )
+
+
 def test_unstamped_run_with_recent_activity_is_kept():
     # Deploy window: a pre-stamp run may be owned by the OTHER role and still
     # be alive — only its transcript going quiet proves it dead.
