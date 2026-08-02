@@ -11,10 +11,15 @@ which audit kinds are user-facing and which inbox group each lands in:
   - `mentions`  — comment.mention events, shown only to the mentioned user.
   - `activity`  — everything else user-facing.
 
-Tenancy mirrors api/v1/audit.py `_visible`: callers see events for
-repositories in their org; platform-level events (no repository) are
-instance-operator-only. Per-user read/dismiss state lives in NotificationRead
-nodes; everything else is computed.
+Tenancy comes from domains/events/visibility.py, shared with the raw audit
+route: callers see events for repositories in their org; platform-level events
+(no repository) are instance-operator-only. Per-user read/dismiss state lives
+in NotificationRead nodes; everything else is computed.
+
+FEED_WINDOW bounds how far back a request looks, and the window is taken
+inside the caller's scope rather than around it. Taking the newest 300 events
+instance-wide and dropping other tenants' rows afterwards meant a busy
+neighbour could push a small org's own events out of its inbox entirely.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from datetime import UTC, datetime
 from neomodel import adb
 
 from domains.events.models import Event
+from domains.events.visibility import newest_first, visibility_scope, visible_clause
 from domains.notifications.catalog import (
     BY_TYPE,
     CATEGORY_ATTENTION,
@@ -31,6 +37,7 @@ from domains.notifications.catalog import (
     RELEVANT_AUDIT_KINDS,
     category_for,
     event_types_for,
+    kinds_for_category,
 )
 from domains.notifications.models import NotificationRead, read_state_key
 from domains.notifications.schemas import NotificationCountsDTO, NotificationDTO
@@ -40,16 +47,6 @@ from domains.users.schemas import UserDTO
 # Newest catalog-relevant events considered per request — the inbox shows the
 # recent past, not the full audit history (that stays on /audit).
 FEED_WINDOW = 300
-
-
-def _visible(event: Event, allowed_repos: set[str], is_admin: bool) -> bool:
-    """Same semantics as api/v1/audit.py `_visible` (F3): repo-scoped events
-    need the repo in the caller's org; platform-level events are
-    instance-operator-only."""
-    repo = event.repository_uid or ""
-    if repo:
-        return repo in allowed_repos
-    return is_admin
 
 
 def to_item(event: Event, user_uid: str) -> NotificationDTO | None:
@@ -76,11 +73,27 @@ def to_item(event: Event, user_uid: str) -> NotificationDTO | None:
     )
 
 
-async def _recent_events(limit: int = FEED_WINDOW) -> list[Event]:
+async def _recent_events(
+    *,
+    repos: list[str],
+    platform_events: bool,
+    kinds: frozenset[str],
+    limit: int = FEED_WINDOW,
+) -> list[Event]:
+    """The newest `limit` catalog-relevant events the caller may see.
+
+    Visibility is in the query, so the window counts only the caller's own
+    events. Reading it the other way round — newest N instance-wide, then
+    drop the other tenants — meant a busy neighbour could crowd a small org
+    out of its own inbox entirely.
+    """
+    if not repos and not platform_events:
+        return []
     rows, _ = await adb.cypher_query(
-        "MATCH (e:Event) WHERE e.kind IN $kinds "
-        "RETURN e ORDER BY e.occurred_at DESC LIMIT $limit",
-        {"kinds": sorted(RELEVANT_AUDIT_KINDS), "limit": limit},
+        f"MATCH (e:Event) WHERE e.kind IN $kinds "
+        f"AND {visible_clause(platform_events=platform_events)} "
+        f"RETURN e {newest_first()} LIMIT $limit",
+        {"kinds": sorted(kinds), "repos": repos, "limit": limit},
     )
     return [Event.inflate(row[0]) for row in rows]
 
@@ -101,17 +114,25 @@ async def list_feed(
     limit: int = 100,
 ) -> list[NotificationDTO]:
     """The caller's inbox, newest first. Dismissed items never return."""
-    allowed = await org_repo_uids(user.org_uid)
+    repos, platform_events = visibility_scope(
+        allowed_repos=await org_repo_uids(user.org_uid),
+        is_platform_admin=user.is_platform_admin,
+        repository_uid=repository_uid,
+    )
+    # kinds_for_category is a superset — category_for still decides below.
+    kinds = (
+        RELEVANT_AUDIT_KINDS & kinds_for_category(category)
+        if category
+        else RELEVANT_AUDIT_KINDS
+    )
     items: list[NotificationDTO] = []
-    for event in await _recent_events():
-        if not _visible(event, allowed, user.is_platform_admin):
-            continue
+    for event in await _recent_events(
+        repos=repos, platform_events=platform_events, kinds=kinds
+    ):
         item = to_item(event, user.uid)
         if item is None:
             continue
         if category and item.category != category:
-            continue
-        if repository_uid and item.repository_uid != repository_uid:
             continue
         items.append(item)
     states = await _read_states(user.uid, [i.uid for i in items])

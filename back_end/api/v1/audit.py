@@ -17,6 +17,12 @@ from neomodel import adb
 from api.dependencies import get_current_user
 from domains.events.models import Event
 from domains.events.schemas import EventDTO
+from domains.events.visibility import (
+    event_is_visible,
+    newest_first,
+    visibility_scope,
+    visible_clause,
+)
 from domains.tenancy import org_repo_uids
 from domains.users.schemas import UserDTO
 
@@ -33,36 +39,6 @@ def _to_dto(e: Event) -> EventDTO:
         payload=dict(e.payload or {}),
         occurred_at=e.occurred_at or datetime.now(timezone.utc),
     )
-
-
-def _visible(e: Event, allowed_repos: set[str], is_admin: bool) -> bool:
-    repo = e.repository_uid or ""
-    if repo:
-        return repo in allowed_repos
-    return is_admin  # platform-level event
-
-
-def visibility_scope(
-    *, allowed_repos: set[str], is_platform_admin: bool, repository_uid: str | None
-) -> tuple[list[str], bool]:
-    """What `list_events` may read: (repository uids, include platform events).
-
-    The same rule `_visible` applies per node, hoisted so it can go into the
-    query instead of filtering a full label scan afterwards.
-
-    Platform-level events (no repository) are instance-operator-only. That
-    MUST key off is_platform_admin, not the in-ORG capability role (F3):
-    every personal-org owner is role="admin", so an org role would expose
-    instance-wide events to any tenant.
-    """
-    # Truthiness, not `is not None`, and for the same reason repo_scope uses
-    # it: `?repository_uid=` binds "" and has always meant "no repo filter".
-    if repository_uid:
-        # An explicit repo the caller cannot see returns nothing rather than
-        # falling back to the whole org. It also never widens to platform
-        # events — those belong to no repository.
-        return ([repository_uid] if repository_uid in allowed_repos else [], False)
-    return sorted(allowed_repos), is_platform_admin
 
 
 @router.get("", response_model=list[EventDTO], operation_id="opensweep_list_audit_events")
@@ -100,10 +76,7 @@ async def list_events(
     if not repos and not platform_events:
         return []
 
-    visible = "e.repository_uid IN $repos"
-    if platform_events:
-        visible += " OR coalesce(e.repository_uid, '') = ''"
-    where = [f"({visible})"]
+    where = [visible_clause(platform_events=platform_events)]
     params: dict = {"repos": repos, "limit": limit, "offset": offset}
     for field, value in (
         ("subject_type", subject_type),
@@ -116,11 +89,7 @@ async def list_events(
             params[field] = value
     rows, _ = await adb.cypher_query(
         f"MATCH (e:Event) WHERE {' AND '.join(where)} "
-        # `IS NULL` first: Cypher sorts nulls to the top on DESC, which would
-        # pin undated legacy rows above every real event forever. The Python
-        # sort this replaced treated a missing date as the oldest possible.
-        "RETURN e ORDER BY e.occurred_at IS NULL, e.occurred_at DESC "
-        "SKIP $offset LIMIT $limit",
+        f"RETURN e {newest_first()} SKIP $offset LIMIT $limit",
         params,
     )
     return [_to_dto(Event.inflate(row[0])) for row in rows]
@@ -132,6 +101,6 @@ async def get_event(uid: str, user: UserDTO = Depends(get_current_user)):
     if e is None:
         raise HTTPException(status_code=404, detail=f"Event {uid} not found")
     allowed = await org_repo_uids(user.org_uid)
-    if not _visible(e, allowed, user.is_platform_admin):  # is_platform_admin, not org role (F3)
+    if not event_is_visible(e, allowed, user.is_platform_admin):  # not the org role (F3)
         raise HTTPException(status_code=404, detail="not found")
     return _to_dto(e)

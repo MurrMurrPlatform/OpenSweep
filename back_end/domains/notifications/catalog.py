@@ -202,6 +202,14 @@ _KIND_MAP: dict[str, tuple[str, ...]] = {
 
 RELEVANT_AUDIT_KINDS: frozenset[str] = frozenset(_KIND_MAP)
 
+# Extra event types a kind can pick up depending on its payload — the same
+# promotions `event_types_for` applies below. Declared separately so
+# `kinds_for_category` can widen for them without re-encoding the conditions;
+# test_notification_catalog keeps the two in step.
+_PAYLOAD_CONDITIONAL: dict[str, tuple[str, ...]] = {
+    "verdict.submitted": ("attention.required",),
+}
+
 
 def event_types_for(kind: str, payload: dict | None = None) -> list[str]:
     """The notification event types an audit event maps onto (possibly none)."""
@@ -212,6 +220,25 @@ def event_types_for(kind: str, payload: dict | None = None) -> list[str]:
     if kind == "verdict.submitted" and payload.get("result") == "needs_human":
         types.append("attention.required")
     return types
+
+
+def kinds_for_category(category: str) -> frozenset[str]:
+    """Audit kinds that can land in `category` — deliberately a SUPERSET.
+
+    For narrowing a query only. One kind's category can depend on its payload
+    (a needs-human verdict is attention, every other verdict is activity), and
+    `category_for` collapses several mapped types down to the highest-priority
+    one, so membership here means "could resolve to this category", not
+    "does". Callers must still run `category_for` on each event.
+    """
+    return frozenset(
+        kind
+        for kind, types in _KIND_MAP.items()
+        if any(
+            t in BY_TYPE and BY_TYPE[t].category == category
+            for t in (*types, *_PAYLOAD_CONDITIONAL.get(kind, ()))
+        )
+    )
 
 
 def category_for(event_types: Iterable[str]) -> str:
