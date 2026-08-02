@@ -41,6 +41,7 @@ from domains.platform_tools import (
     web_search,
     write_memory,
 )
+from domains.platform_tools.text_repair import repair_args
 
 _ToolFn = Callable[..., Awaitable[Any]]
 
@@ -173,6 +174,9 @@ def tool_descriptions() -> dict[str, str]:
 
 
 async def dispatch(tool: str, **kwargs: Any) -> Any:
-    """Invoke a tool by name with kwargs. Raises KeyError on unknown tool."""
+    """Invoke a tool by name with kwargs. Raises KeyError on unknown tool.
+
+    Arguments are model-emitted text, so they pass through `repair_args`
+    first — see `text_repair` for the escaped-body failure mode it undoes."""
     fn, _desc = _TOOLS[tool]
-    return await fn(**kwargs)
+    return await fn(**repair_args(kwargs))

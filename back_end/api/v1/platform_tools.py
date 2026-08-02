@@ -32,6 +32,7 @@ from domains.platform_tools.news_tools import create_news_item
 from domains.platform_tools.set_analysis_section import set_analysis_section
 from domains.platform_tools.submit_for_review import submit_for_review
 from domains.platform_tools.submit_thread_plan import submit_thread_plan
+from domains.platform_tools.text_repair import repair_args
 from domains.platform_tools.update_finding import update_finding
 from domains.platform_tools.upsert_analysis import upsert_analysis
 from domains.platform_tools.web_tools import fetch_url, web_search
@@ -349,8 +350,10 @@ async def _artifact_target_repository_uid(target_uid: str, target_type: str) -> 
 
 
 async def _invoke_platform_tool(tool_name: str, func, **kwargs):
+    """Every write tool on this surface funnels through here, so this is where
+    model-emitted text is repaired (`text_repair` — escaped markdown bodies)."""
     try:
-        return await func(**kwargs)
+        return await func(**repair_args(kwargs))
     except HTTPException:
         raise
     except Exception:
