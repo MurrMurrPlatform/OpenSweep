@@ -191,6 +191,7 @@ async def _tick_one(c) -> tuple[int, int]:
     from domains.campaigns.models import Campaign, is_legal_status_transition
     from domains.campaigns.services.part_dispatch import dispatch_part
     from domains.runs.models import Run
+    from domains.runs.services.lifecycle import CapacityExceededError
 
     dispatched = 0
     parts = [dict(p) for p in (c.parts or [])]
@@ -234,6 +235,27 @@ async def _tick_one(c) -> tuple[int, int]:
         part = by_idx[idx]
         try:
             run_uid = await dispatch_part(c, part)
+        except CapacityExceededError as exc:
+            # Provider ceiling, not a bad part. `plan_tick` clamped to the
+            # headroom it read at the top of this tick; a refusal here means
+            # something else (a manual dispatch, another campaign) took the
+            # slot in between. Marking the part `failed` would be PERMANENT —
+            # failed parts never revert — so transient load would silently
+            # destroy campaign work. Leave it `pending`, stop dispatching this
+            # tick, and let the next beat re-plan against fresh headroom.
+            events.append(
+                {
+                    "ts": now.isoformat(),
+                    "type": "part_deferred",
+                    "part": idx,
+                    "reason": str(exc),
+                }
+            )
+            logger.info(
+                f"campaign {c.uid}: part {idx} deferred — provider at ceiling",
+                extra={"tag": "campaigns"},
+            )
+            break
         except Exception as exc:  # noqa: BLE001 — one bad part never stops the tick
             part["state"] = "failed"
             events.append(

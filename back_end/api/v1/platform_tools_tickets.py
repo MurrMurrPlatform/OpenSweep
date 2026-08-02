@@ -241,6 +241,19 @@ async def platform_propose_ticket_group(
     await require_tool_repo_access(request, user, req.repository_uid)
     run_uid = request.headers.get("X-OpenSweep-Run-Uid") or ""
     actor = run_uid or user.uid
+    # Plan grouping and seeded prior art come off the RUN, never off the
+    # request: the agent must not be able to claim (or forget) which plan its
+    # proposals belong to, and a re-proposal check the agent supplies its own
+    # input for is not a check.
+    plan_uid = ""
+    seeded: list[list[str]] = []
+    if run_uid:
+        from domains.runs.models import Run
+
+        run = await Run.nodes.get_or_none(uid=run_uid)
+        target = dict(getattr(run, "target", None) or {}) if run else {}
+        plan_uid = str(target.get("plan_uid") or "")
+        seeded = [list(m) for m in (target.get("seeded_cluster_members") or [])]
     proposal, deduplicated = await EpicService().propose(
         repository_uid=req.repository_uid,
         title=req.title,
@@ -252,6 +265,8 @@ async def platform_propose_ticket_group(
         actor_uid=actor,
         axis=req.axis,
         evidence=req.evidence,
+        plan_uid=plan_uid,
+        seeded_cluster_members=seeded,
         origin="agent",
     )
     return {"proposal_uid": proposal.uid, "deduplicated": deduplicated}

@@ -96,6 +96,55 @@ def normalize_effort(value: str | None) -> Effort:
         return Effort.NORMAL
 
 
+class Autonomy(StrEnum):
+    """How much judgment an agent may spend on the user's behalf.
+
+    Peer of `Effort`, deliberately separate: effort is the COMPUTE dial (how
+    long to work, how deep to look); autonomy is the ATTENTION dial (how much
+    to ask). m0010 renamed `ScheduledAgent.compute_dial` → `autonomy` to keep
+    exactly this kind of thing apart, so conflating the two here would undo it.
+
+    The name is overloaded elsewhere and these are NOT the same vocabulary:
+    `ScheduledAgent.autonomy` is a run-PERMISSION dial (disabled …
+    auto-run-any), and `Repository.agent_autonomy` is a bool meaning "agents
+    may transition ticket status".
+
+    Only meaningful on runs that can reach a human — the `thread` playbook and
+    batch triage. Every other playbook is already told there is no human
+    (`prompt_kit.MCP_STARTUP_NOTE`).
+    """
+
+    INTERROGATE = "interrogate"  # today's behaviour: ask everything
+    ASSUME = "assume"  # ask at most K; decide and record the rest
+    STRICT = "strict"  # ask nothing; refuse rather than guess
+
+
+def normalize_autonomy(value: str | None) -> Autonomy:
+    """Tolerant parse for autonomy values from old rows or old clients.
+
+    Falls back to INTERROGATE — the SAFEST tier, and today's behaviour — where
+    `normalize_effort` falls back to the middle. The asymmetry is deliberate:
+    an unreadable effort value costs compute, an unreadable autonomy value
+    could cost a silently wrong product decision. `""` (every row predating the
+    dial) therefore reads as "ask, like we always did".
+    """
+    try:
+        return Autonomy((value or "").strip().lower())
+    except ValueError:
+        return Autonomy.INTERROGATE
+
+
+#: Hard cap on clarifying questions per subject. None = uncapped.
+#: ONE source, consumed by BOTH the prompt renderer (`autonomy_block`) and the
+#: server-side enforcement in `ask_user` — the drift REASONING_TIER_DEFAULTS
+#: exists to prevent.
+AUTONOMY_QUESTION_CAPS: dict[Autonomy, int | None] = {
+    Autonomy.INTERROGATE: None,
+    Autonomy.ASSUME: 3,
+    Autonomy.STRICT: 0,
+}
+
+
 # Default reasoning level per effort tier — used when the agent doesn't pin
 # its own (Agent.reasoning == "").
 REASONING_TIER_DEFAULTS = {

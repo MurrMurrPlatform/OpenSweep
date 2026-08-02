@@ -576,15 +576,16 @@ class TicketService:
     async def _complete_parent_if_all_children_done(self, child: Ticket) -> None:
         """Close a group parent once every member is done.
 
-        `single-pr` epics close top-down: the parent's PR merges and the
-        loop above closes the members. `parallel-runs` epics have no parent
-        PR at all — each member merges its own — so nothing ever closed the
-        parent and it sat in `todo` forever, making a fully-delivered epic
-        look permanently in-flight on the board.
+        The normal path is top-down: the epic's single PR merges and
+        `mark_done_via_merge` closes every member. This is the bottom-up
+        complement, for epics finished any other way — a member closed by its
+        own PR, by a manual transition, or an epic dissolved by hand. Without
+        it such an epic sits in `todo` forever, making fully-delivered work
+        look permanently in flight on the board.
 
-        Event-driven here rather than in the epic tick so it holds however a
-        member got closed (its own PR, a manual transition, an epic that was
-        dissolved), not only for epics the tick is still watching.
+        Event-driven rather than swept, so it holds however a member got
+        closed. (m0019 removed the epic-dispatch tick that once fanned an epic
+        into one run per member; nothing polls epics any more.)
 
         Recursion-safe: closing the parent re-enters `mark_done_via_merge`,
         whose `status == "done"` guard short-circuits on the second pass.

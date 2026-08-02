@@ -52,7 +52,6 @@ const labels = computed(() => props.proposal.suggested_labels || [])
 /** Keys that only restate what the card header already shows. */
 const EVIDENCE_NOISE = new Set([
   'axis',
-  'shape',
   'plan_uid',
   'member_count',
   'member_uids',

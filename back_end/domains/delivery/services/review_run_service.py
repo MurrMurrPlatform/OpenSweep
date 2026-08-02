@@ -56,6 +56,7 @@ def build_review_intent(
     run_policy=None,
     wall_ceiling_seconds: int | None = None,
     epic_checklist: str = "",
+    assumption_block: str = "",
 ) -> str:
     ref = f"repository_uid={pr.repository_uid} github_number={pr.github_number}"
     if prior_verdict_sha:
@@ -107,6 +108,7 @@ def build_review_intent(
         "   Count how many of YOUR new findings are blocking under this policy.\n"
         "\n"
         + (f"{epic_checklist.strip()}\n\n" if epic_checklist.strip() else "")
+        + (f"{assumption_block.strip()}\n\n" if assumption_block.strip() else "")
         + "## Verdict (mandatory last step)\n"
         f"7. Call `opensweep_platform_submit_verdict` ({ref}) with sha=`{pr.head_sha}` and:\n"
         "   - `approve` — zero new blocking findings AND no unverified fixed claims remain.\n"
@@ -220,15 +222,29 @@ async def trigger_review_run(
         # gate that can catch a member the implement run skipped — the
         # implementer's per-subticket summary is self-reported. Fetched here,
         # not in build_review_intent, to keep the builder pure.
-        from domains.threads.services.intents import build_epic_review_checklist
+        from domains.threads.services.intents import (
+            build_assumption_review_block,
+            build_epic_review_checklist,
+        )
         from domains.tickets.models import Ticket
 
         epic_checklist = ""
+        assumption_block = ""
         if pr.ticket_uid:
             children = list(
                 await Ticket.nodes.filter(parent_ticket_uid=pr.ticket_uid)
             )
             epic_checklist = build_epic_review_checklist(children)
+            # Assumptions the implementer made INSTEAD of asking. A SEPARATE
+            # parameter, not appended to the epic checklist: that block is
+            # about member coverage, and conflating the two makes both harder
+            # to change. Covers the non-epic case too — the subject ticket
+            # itself is included, so a single ticket with assumptions and no
+            # children still gets adjudicated.
+            subject = await Ticket.nodes.get_or_none(uid=pr.ticket_uid)
+            assumption_block = build_assumption_review_block(
+                ([subject] if subject else []) + children
+            )
 
         # Org-agent-overlays composition: framing header + platform review
         # instructions (org overlay applied) + repo review guidance stack
@@ -251,6 +267,7 @@ async def trigger_review_run(
                 run_policy=run_policy,
                 wall_ceiling_seconds=wall,
                 epic_checklist=epic_checklist,
+                assumption_block=assumption_block,
             ),
         )
         run = await trigger_run(

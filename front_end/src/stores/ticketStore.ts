@@ -6,6 +6,7 @@ import type {
   PlanEpicsPreview,
   PlanEpicsResult,
   BulkApproveResult,
+  BulkTicketResult,
   CreateTicketRequest,
   EpicProposalStatus,
   GroupTicketsRequest,
@@ -99,6 +100,27 @@ export const useTicketStore = defineStore('tickets', () => {
    *  an open PR already implements the ticket, or no provider is available. */
   async function implementTicket(uid: string): Promise<ImplementRunDispatch> {
     return apiPost<ImplementRunDispatch>(`/tickets/${uid}/implement`)
+  }
+
+  /** Move N tickets at once — Gate 1 for a whole selection.
+   *  Partial success is REPORTED, never thrown: one archived ticket must not
+   *  decide the fate of the other twenty-nine. */
+  async function bulkSetStatus(
+    uids: string[],
+    status: TicketStatus,
+  ): Promise<BulkTicketResult> {
+    return apiPost<BulkTicketResult>('/tickets/bulk-status', { uids, status })
+  }
+
+  /** Dispatch implement runs for N approved tickets. A selection larger than
+   *  the provider's concurrency headroom lands the first few and reports the
+   *  rest in `errors` — it does not stampede the provider. */
+  async function bulkImplement(uids: string[]): Promise<BulkTicketResult> {
+    return apiPost<BulkTicketResult>('/tickets/bulk-implement', { uids })
+  }
+
+  async function bulkArchive(uids: string[]): Promise<BulkTicketResult> {
+    return apiPost<BulkTicketResult>('/tickets/bulk-archive', { uids })
   }
 
   /** Read-only refine-run: sharpen the ticket's title/description/acceptance
@@ -227,6 +249,9 @@ export const useTicketStore = defineStore('tickets', () => {
     linkFinding,
     linkPullRequest,
     implementTicket,
+    bulkSetStatus,
+    bulkImplement,
+    bulkArchive,
     refineTicket,
     deleteTicket,
     archiveTicket,

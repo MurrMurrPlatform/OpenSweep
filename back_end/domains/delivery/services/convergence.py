@@ -121,11 +121,19 @@ def compute_convergence(
     pr_state: str = "open",
     draft: bool = False,
     base_is_default: bool = True,
+    base_advanced_at: object = None,
 ) -> ConvergenceState:
     """The predicate.
 
     resolutions: [{state, severity, tags, override}]
-    latest_verdict: {sha, result, new_blocking_findings} or None
+    latest_verdict: {sha, result, new_blocking_findings, created_at} or None
+
+    `base_advanced_at` is when a sibling PR last merged onto this PR's base.
+    It is the SECOND freshness axis: the head-derived checks below cannot see a
+    base move, because merging a sibling leaves this PR's head_sha untouched —
+    so without this, N sibling PRs all report converged and merge in sequence,
+    each untested against the previous. None (the default, and every row
+    predating the field) means "never advanced" and changes nothing.
     """
     reasons: list[str] = []
     counts = ConvergenceCounts()
@@ -181,6 +189,15 @@ def compute_convergence(
     )
     if require_clean_round and verdict_fresh and verdict_result == VerdictResult.APPROVE and not clean_round:
         reasons.append("last review round raised new blocking findings (clean round required)")
+
+    # Verdict vs BASE. Placed after the head-staleness reasons so the message
+    # order reads head-then-base, and only meaningful when a verdict exists —
+    # a verdict-less PR already has its own reason above.
+    verdict_at = (latest_verdict or {}).get("created_at")
+    if base_advanced_at is not None and verdict_at is not None and base_advanced_at > verdict_at:
+        reasons.append(
+            "base branch advanced since the last review — re-review against the new base"
+        )
 
     if counts.blocking:
         reasons.append(f"{counts.blocking} blocking finding(s) unresolved")

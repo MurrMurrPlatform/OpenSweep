@@ -142,8 +142,14 @@ async def trigger_implement_run(
     triggered_by: str = "",
     trigger: RunTrigger = RunTrigger.MANUAL,
     intent_addendum: str = "",
+    force_path_conflict: bool = False,
 ) -> Run:
-    """Create the write sandbox and dispatch the implement run."""
+    """Create the write sandbox and dispatch the implement run.
+
+    `force_path_conflict` overrides the predicted-path guard only (never the
+    in-flight guard). The prediction is a heuristic — see
+    `predicted_paths_for_ticket` — so a human must always be able to say "I
+    know, do it anyway"."""
     # An epic member's work ships inside its PARENT's single run and PR, so
     # dispatching against the member directly would open a second branch over
     # the same files and race the epic's PR to merge — whichever merged first
@@ -245,6 +251,10 @@ async def trigger_implement_run(
                 intent_addendum=intent_addendum,
                 trigger=trigger,
                 triggered_by=triggered_by,
+                # Closure over `predicted`, assigned below before this runs —
+                # the run stamps the same claim the guard just checked, so a
+                # later dispatch sees exactly what was cleared.
+                predicted_paths=predicted,
             )
         except Exception:
             if advanced_from_todo:
@@ -264,12 +274,27 @@ async def trigger_implement_run(
     # would fight the first over the same work branch. Read-only runs (chat,
     # review) never block an implement dispatch. Serialized per ticket so two
     # concurrent dispatches can't both pass the guard.
+    # Predicted-path guard: two DIFFERENT epics whose fixes land in the same
+    # files would otherwise dispatch two runs on two branches with nothing
+    # comparing them, and collide at merge. The per-ticket lock above cannot
+    # see that, so this runs under a repository-scoped lock nested inside it.
+    predicted = frozenset() if force_path_conflict else await predicted_paths_for_ticket(ticket)
+
+    async def _guard() -> None:
+        await assert_no_path_conflict(
+            repository_uid=ticket.repository_uid,
+            ticket_uid=ticket.uid,
+            paths=predicted,
+        )
+
     return await dispatch_serialized(
         target_uid=ticket.uid,
         playbook="implement",
         conflict_message="a write run is already in progress for this ticket",
         active_filter={"ticket_uid": ticket.uid},
         dispatch=_dispatch,
+        scope_lock_key=f"implement-paths:{ticket.repository_uid}",
+        scope_guard=_guard if predicted else None,
     )
 
 
@@ -283,6 +308,7 @@ async def _dispatch_implement(
     intent_addendum: str,
     trigger: RunTrigger,
     triggered_by: str,
+    predicted_paths: frozenset[str] = frozenset(),
 ):
     policy = await ensure_merge_policy(repo.uid)
     denylist = write_gate.effective_denylist(policy)
@@ -349,6 +375,10 @@ async def _dispatch_implement(
             "base_branch": base_branch,
             "continuation": checkout_existing,
             "doc_uids": target_doc_uids,
+            # This run's claim on the tree. Sorted so the stored value is
+            # reproducible; read back by `assert_no_path_conflict` when a LATER
+            # dispatch asks whether it would collide with this one.
+            "predicted_paths": sorted(predicted_paths),
         },
         linked_ticket_uid=ticket.uid,
         # executor=None: resolve the write-capable executor from the repo's
@@ -363,21 +393,129 @@ async def _dispatch_implement(
     )
 
 
+async def assert_no_path_conflict(
+    *, repository_uid: str, ticket_uid: str, paths: frozenset[str]
+) -> None:
+    """409 when an in-flight write run has already claimed any of `paths`.
+
+    Claims are read off `Run.target["predicted_paths"]`, stamped at dispatch.
+    Runs that predate the stamp carry no claim and simply never block — the
+    guard degrades to today's behaviour rather than to a false positive.
+
+    Must be called under the repository scope lock (see `dispatch_serialized`),
+    or two dispatches can both read "no conflict" before either stamps its own
+    claim.
+    """
+    from domains.runs.services.active_runs import active_runs_for, conflict_detail
+    from domains.runs.services.playbooks import WRITE_PLAYBOOKS
+    from domains.tickets.services.epics.conflicts import (
+        PathClaim,
+        conflicting_claim,
+        overlap,
+    )
+
+    if not paths:
+        return
+    claims: list[PathClaim] = []
+    runs_by_uid = {}
+    for run in await active_runs_for(repository_uid=repository_uid):
+        if (run.playbook or "") not in WRITE_PLAYBOOKS:
+            continue
+        if (run.linked_ticket_uid or "") == ticket_uid:
+            continue  # same ticket — the in-flight guard already ruled on it
+        claimed = frozenset(dict(run.target or {}).get("predicted_paths") or [])
+        if not claimed:
+            continue
+        runs_by_uid[run.uid] = run
+        claims.append(
+            PathClaim(
+                run_uid=run.uid,
+                ticket_uid=run.linked_ticket_uid or "",
+                started_at=(run.started_at.isoformat() if run.started_at else ""),
+                paths=claimed,
+            )
+        )
+
+    hit = conflicting_claim(claims, paths=paths)
+    if hit is None:
+        return
+    shared = overlap(hit.paths, paths)
+    raise HTTPException(
+        status_code=409,
+        detail=conflict_detail(
+            "another write run is already changing files this ticket needs: "
+            + ", ".join(shared),
+            runs_by_uid[hit.run_uid],
+        )
+        | {"overlapping_paths": list(shared), "ticket_uid": hit.ticket_uid},
+    )
+
+
+async def _raw_paths_for_ticket(ticket: Ticket) -> list[str]:
+    """Un-normalized affected paths for this ticket AND its subtickets.
+
+    A ticket carries no paths itself; its findings (origin + linked) do. The
+    children union is not optional: an epic parent usually carries no findings
+    of its own — its work IS the subtickets, which is why `build_epic_addendum`
+    exists — so a parent-only read returns nothing at all. That made doc
+    pre-load silently empty for every epic, and would make the path-conflict
+    guard blind to exactly the dispatches it exists to catch.
+    """
+    from domains.tickets.models import Ticket as _Ticket
+
+    subjects = [ticket, *await _Ticket.nodes.filter(parent_ticket_uid=ticket.uid)]
+    finding_uids: list[str] = []
+    for subject in subjects:
+        finding_uids.extend(subject.linked_finding_uids or [])
+        if subject.origin_finding_uid:
+            finding_uids.append(subject.origin_finding_uid)
+
+    paths: list[str] = []
+    for fu in dict.fromkeys(finding_uids):
+        f = await Finding.nodes.get_or_none(uid=fu)
+        if f:
+            paths.extend(f.affected_paths or [])
+    return paths
+
+
+async def predicted_paths_for_ticket(ticket: Ticket) -> frozenset[str]:
+    """Files this ticket's implement run is expected to touch.
+
+    Normalized through `epics.loader.normalize_path`, so `foo.py:12-34` and
+    `foo.py` compare as ONE file — the same normalization the `files` epic axis
+    depends on. A heuristic by construction: line anchors are stripped
+    deliberately, so two tickets touching unrelated regions of one large file
+    do collide. Callers must offer an override.
+
+    Best-effort: on failure returns the empty set, which every caller treats as
+    "no prediction" and therefore never blocks.
+    """
+    from domains.tickets.services.epics.loader import normalize_path
+
+    try:
+        raw = await _raw_paths_for_ticket(ticket)
+    except Exception as exc:  # noqa: BLE001
+        from logging_config import logger
+
+        logger.warning(
+            f"path prediction for ticket {ticket.uid} failed: {exc}",
+            extra={"tag": "delivery"},
+        )
+        return frozenset()
+    return frozenset(p for p in (normalize_path(x) for x in raw) if p)
+
+
 async def _docs_for_ticket(ticket: Ticket) -> list[str]:
     """Doc uids watching the paths this ticket's findings touch — for briefing
-    pre-load. A ticket carries no paths itself, but its findings (origin +
-    linked) do. Best-effort: any failure yields no pre-load (the briefing
-    index + read_doc still cover every page)."""
+    pre-load. Best-effort: any failure yields no pre-load (the briefing
+    index + read_doc still cover every page).
+
+    Shares `_raw_paths_for_ticket` with the conflict guard so the two path
+    walks cannot drift — and so epics stop pre-loading nothing."""
     try:
-        finding_uids = list(ticket.linked_finding_uids or [])
-        if ticket.origin_finding_uid:
-            finding_uids.append(ticket.origin_finding_uid)
-        paths: list[str] = []
-        for fu in dict.fromkeys(finding_uids):
-            f = await Finding.nodes.get_or_none(uid=fu)
-            if f:
-                paths.extend(f.affected_paths or [])
-        return await docs_watching_paths(ticket.repository_uid, paths)
+        return await docs_watching_paths(
+            ticket.repository_uid, await _raw_paths_for_ticket(ticket)
+        )
     except Exception as exc:  # noqa: BLE001
         from logging_config import logger
 
@@ -478,6 +616,11 @@ async def open_draft_pr_for_ticket(
 
     criteria = [str(c) for c in (ticket.acceptance_criteria or []) if str(c).strip()]
     ac_block = "\n".join(f"- [ ] {c}" for c in criteria) or "- [ ] (no acceptance criteria recorded)"
+    # Rendered ONLY when non-empty, so a PR from an `interrogate` run is
+    # byte-identical to what this produced before the dial existed.
+    from domains.threads.services.intents import render_assumptions_md
+
+    assumption_block = render_assumptions_md(ticket.assumptions or [])
     body = (
         f"OpenSweep-Ticket: {ticket.uid}\n"
         "\n"
@@ -485,6 +628,7 @@ async def open_draft_pr_for_ticket(
         "\n"
         "## Acceptance criteria\n"
         f"{ac_block}\n"
+        f"{assumption_block}"
         "\n"
         f"_Opened by a OpenSweep implement-run{f' (run `{run_uid}`)' if run_uid else ''}. "
         "The agent committed in a sandbox; the platform validated and pushed._\n"

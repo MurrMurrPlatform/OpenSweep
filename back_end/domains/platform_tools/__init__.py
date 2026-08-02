@@ -11,7 +11,9 @@ from domains.platform_tools.areas_tools import (
     propose_area_edit,
 )
 from domains.platform_tools.ask_question import ask_question
+from domains.platform_tools.ask_policy_question import ask_policy_question
 from domains.platform_tools.ask_user import ask_user
+from domains.platform_tools.assumptions import record_assumption
 from domains.platform_tools.attach_artifact import attach_artifact
 from domains.platform_tools.complete_run import complete_run
 from domains.platform_tools.create_finding import create_finding
@@ -49,7 +51,9 @@ __all__ = [
     "complete_run",
     "submit_thread_plan",
     "submit_for_review",
+    "ask_policy_question",
     "ask_user",
+    "record_assumption",
     # Deep-scan Analysis authoring
     "upsert_analysis",
     "set_analysis_section",

@@ -71,6 +71,8 @@ async def dispatch_serialized(
     conflict_message: str,
     active_filter: dict[str, str],
     dispatch: Callable[[], Awaitable[Run]],
+    scope_lock_key: str = "",
+    scope_guard: Callable[[], Awaitable[None]] | None = None,
 ) -> Run:
     """Run the in-flight guard and ``dispatch()`` atomically per target.
 
@@ -84,6 +86,16 @@ async def dispatch_serialized(
     from BOTH the backend (webhooks, HTTP) and the worker (auto-fix chains), so a
     per-process lock let the two both pass the in-flight check and double-dispatch
     — two runs on the same PR, racing pushes on the same branch.
+
+    ``scope_guard`` is a SECOND, wider check for conflicts the per-target lock
+    cannot see — two different epics whose predicted file paths overlap. It
+    needs its own repository-scoped lock (``scope_lock_key``), because two
+    dispatches for different targets never contend on ``dispatch:{target_uid}``.
+
+    LOCK ORDER IS PART OF THE CONTRACT: the scope lock is acquired INSIDE the
+    target lock, never the other way round. That gives a single total order
+    (``dispatch:{uid}`` → scope) with no reverse path, so the nesting cannot
+    deadlock. Do not add a caller that takes them the other way.
     """
     async with dist_lock(
         f"dispatch:{target_uid}", ttl_seconds=120, blocking_timeout=30
@@ -96,13 +108,28 @@ async def dispatch_serialized(
                 status_code=409,
                 detail="another dispatch for this target is in progress; retry shortly",
             )
+        # Same-target conflicts first: that answer is sharper and more certain
+        # than a path-overlap heuristic, so it should be the one the user sees.
         conflict = blocking_run(await active_runs_for(**active_filter), playbook=playbook)
         if conflict is not None:
             raise HTTPException(
                 status_code=409,
                 detail=conflict_detail(conflict_message, conflict),
             )
-        return await dispatch()
+        if scope_guard is None:
+            return await dispatch()
+        async with dist_lock(
+            scope_lock_key or f"scope:{target_uid}",
+            ttl_seconds=120,
+            blocking_timeout=30,
+        ) as scoped:
+            if not scoped:
+                raise HTTPException(
+                    status_code=409,
+                    detail="another dispatch in this repository is in progress; retry shortly",
+                )
+            await scope_guard()
+            return await dispatch()
 
 
 async def require_repository(repository_uid: str, *, require_github: bool = False) -> Repository:

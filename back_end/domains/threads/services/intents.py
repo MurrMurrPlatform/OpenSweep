@@ -9,9 +9,18 @@ _build_ticket_refine_intent).
 
 from __future__ import annotations
 
+from domains.executors.prompt_kit import autonomy_block
+
 # Appended to platform-delivered answers while the thread is refining — the
-# staged contract must ride with every turn (frontend keeps an identical copy
-# for user-typed messages).
+# staged contract must ride with every turn. Appended SERVER-side only
+# (`TurnService.run_turn`), so it covers every transport; the UI deliberately
+# keeps no copy.
+#
+# Match on this prefix, never on the whole string: the reminder's body varies
+# (see `autonomy_block`), so an equality check would fail to notice a reminder
+# that is already present in a different wording and staple a second one on.
+REMINDER_SENTINEL = "[Thread protocol reminder"
+
 PLANNING_TURN_REMINDER = (
     "[Thread protocol reminder — PLANNING stage: do not edit files or commit; "
     "the platform will send an explicit GO message when implementation is "
@@ -21,8 +30,57 @@ PLANNING_TURN_REMINDER = (
 )
 
 
-def build_thread_session_intent(ticket, thread_uid: str) -> str:
+def planning_turn_reminder(autonomy: str = "interrogate") -> str:
+    """The per-turn reminder, matched to the thread's question policy.
+
+    Under `assume`/`strict` the default wording ("ask the next question via
+    ask_user") actively contradicts the stage instruction, so the reminder that
+    rides on EVERY turn would spend the whole conversation undoing the dial.
+    """
+    from domains.runs.schemas import Autonomy, normalize_autonomy
+
+    tier = normalize_autonomy(autonomy)
+    if tier is Autonomy.INTERROGATE:
+        return PLANNING_TURN_REMINDER
+    nudge = (
+        "record what you assumed via opensweep_platform_record_assumption"
+        if tier is Autonomy.ASSUME
+        else "decide from the code and record it via "
+        "opensweep_platform_record_assumption"
+    )
+    return (
+        f"{REMINDER_SENTINEL} — PLANNING stage: do not edit files or commit; "
+        "the platform will send an explicit GO message when implementation is "
+        f"approved. For now: {nudge}, update the ticket, and submit the plan "
+        "via opensweep_platform_submit_thread_plan, then stop and wait.]"
+    )
+
+
+def needs_planning_reminder(text: str) -> bool:
+    """Whether the planning-stage reminder still has to be appended to `text`.
+
+    Pure so the idempotence rule is testable without a run or a DB. Detects any
+    reminder wording, not just the one this module would append — the caller
+    may be re-sending a message that already carries a reminder built under a
+    different autonomy tier, and appending a second, contradictory one is the
+    failure this guard exists to prevent.
+    """
+    return REMINDER_SENTINEL not in (text or "")
+
+
+def build_thread_session_intent(
+    ticket, thread_uid: str, autonomy: str = "interrogate"
+) -> str:
     ac = "\n".join(f"- {c}" for c in (ticket.acceptance_criteria or [])) or "- (none yet)"
+    # The question policy is a parameterized layer, not a literal: `interrogate`
+    # reproduces the pre-dial wording byte-for-byte (pinned by
+    # tests/test_autonomy_block.py), so an un-configured thread is unchanged.
+    question_policy = autonomy_block(
+        autonomy,
+        ask_tool="opensweep_platform_ask_user",
+        subject_ref=f"thread_uid `{thread_uid}`",
+        assumption_target=ticket.uid,
+    )
     return (
         "You are the agent for a Thread: ONE continuous conversation that "
         "carries the Ticket below from refinement through planning to "
@@ -66,17 +124,7 @@ def build_thread_session_intent(ticket, thread_uid: str) -> str:
         "Task:\n"
         "1. Study the code the ticket touches. Quote concrete file:line "
         "references.\n"
-        "2. Interrogate the user: ask ALL currently independent clarifying "
-        "questions in ONE turn — one `opensweep_platform_ask_user` call per "
-        f"question (thread_uid `{thread_uid}`, question, optional `options` "
-        "list of 2-6 short choices) — then end your turn and wait. The "
-        "platform holds the conversation until EVERY question is answered "
-        "(or the user forces continue) and delivers all answers together; "
-        "ask follow-ups that depend on earlier answers in a later round. "
-        "Questions are also mirrored to the ticket's discussion, where the "
-        "user can answer by replying. Surface trade-offs and your "
-        "recommendation inside each question. Do NOT silently assume "
-        "answers to open product questions.\n"
+        f"2. {question_policy}\n"
         f"3. Call `opensweep_platform_update_ticket` (ticket_uid `{ticket.uid}`) "
         "to sharpen title/description and set 2-6 independently testable "
         "acceptance criteria, reflecting what you learned.\n"
@@ -164,3 +212,62 @@ def build_implement_addendum(plan_text: str, decision_log: str) -> str:
     if log:
         parts.append("\n\n" + log)
     return "".join(parts)
+
+
+def render_assumptions_md(assumptions: list[dict]) -> str:
+    """Assumption ledger as a markdown block for the PR body. Pure.
+
+    Returns "" for an empty ledger so an `interrogate` run's PR body is
+    byte-identical to the pre-dial output.
+    """
+    rows = [a for a in (assumptions or []) if (a.get("assumption") or "").strip()]
+    if not rows:
+        return ""
+    lines = ["\n## Assumptions made\n"]
+    lines.append(
+        "_The implementer answered these itself rather than asking. "
+        "Check them against the diff._\n"
+    )
+    for a in rows:
+        because = (a.get("because") or "").strip()
+        why = f" — {because}" if because else ""
+        lines.append(
+            f"- {a['assumption'].strip()}{why} "
+            f"(confidence: {a.get('confidence') or 'medium'})"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def build_assumption_review_block(tickets: list) -> str:
+    """Ask the reviewer to adjudicate assumptions the implementer recorded.
+
+    Passed to `build_review_intent` as its OWN parameter rather than appended
+    to the epic checklist: that block is about epic member coverage, and
+    conflating the two makes both harder to change. Covers the non-epic case —
+    a single ticket with assumptions and no children still gets this.
+    """
+    rows: list[tuple[str, dict]] = []
+    for t in tickets or []:
+        for a in getattr(t, "assumptions", None) or []:
+            if (a.get("assumption") or "").strip():
+                rows.append((t.uid, a))
+    if not rows:
+        return ""
+
+    out = [
+        "\n\n## Assumptions to adjudicate\n"
+        "The implementer answered these questions ITSELF rather than asking a\n"
+        "human (autonomy=assume). For each, judge whether the code actually\n"
+        "supports it. Report your verdict as `assumption_results`:\n"
+        "`[{assumption, result: confirmed|refuted|unverifiable, note}]`.\n"
+        "A refuted assumption that changes behaviour is a blocking finding —\n"
+        "count it in `new_blocking_findings`.\n"
+    ]
+    for ticket_uid, a in rows:
+        because = (a.get("because") or "").strip() or "(no rationale recorded)"
+        out.append(
+            f"- `{ticket_uid}` {a['assumption'].strip()}\n"
+            f"  because: {because}\n"
+            f"  confidence: {a.get('confidence') or 'medium'}"
+        )
+    return "\n".join(out)

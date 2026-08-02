@@ -188,15 +188,22 @@ class TurnService:
         # thread UI).
         if (run.playbook or "") == "thread" and (getattr(run, "thread_uid", "") or ""):
             from domains.threads.models import Thread
-            from domains.threads.services.intents import PLANNING_TURN_REMINDER
+            from domains.threads.services.intents import (
+                needs_planning_reminder,
+                planning_turn_reminder,
+            )
 
             thread = await Thread.nodes.get_or_none(uid=run.thread_uid)
             if (
                 thread is not None
                 and thread.phase == "refining"
-                and PLANNING_TURN_REMINDER not in text
+                and needs_planning_reminder(text)
             ):
-                text = f"{text}\n\n{PLANNING_TURN_REMINDER}"
+                # Thread.autonomy, not Run.autonomy: the thread is authoritative
+                # (the run's copy is a dispatch snapshot), and a reminder that
+                # contradicts the stage instruction would undo the dial on
+                # every turn.
+                text = f"{text}\n\n{planning_turn_reminder(thread.autonomy)}"
 
         # First-message queueing: a chat run stays `queued` while its
         # workspace clones in the background — hold the reserved turn slot

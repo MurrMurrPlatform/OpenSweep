@@ -50,6 +50,10 @@ class Run(AsyncStructuredNode):
     # Resolved snapshots at dispatch; "" = unknown/legacy.
     effort = StringProperty(default="", index=True)  # short|normal|deep|unlimited
     reasoning = StringProperty(default="")  # low|medium|high
+    # interrogate|assume|strict. "" = predates the dial; reads as `interrogate`
+    # through normalize_autonomy. Provenance only — `Thread.autonomy` is
+    # authoritative for thread runs (see runs/services/autonomy.py).
+    autonomy = StringProperty(default="", index=True)
 
     # Agent provenance — which Agent supplied this run's instructions layer,
     # and the org override revision active at dispatch (0 = platform body
@@ -71,6 +75,12 @@ class Run(AsyncStructuredNode):
     thread_uid = StringProperty(default="", index=True)
     # Playbook-specific blob (head_sha, node uids, paths, fix_round, …).
     target = JSONProperty(default={})
+
+    # Run-scoped POLICY questions (batch triage): questions that apply to
+    # several tickets at once and so have no single thread to live on. Same
+    # event shape as a thread question event plus `applies_to_ticket_uids`, so
+    # the pure helpers in domains/questions work on both sinks.
+    questions = JSONProperty(default=[])
 
     # Workspace: the current live sandbox ("" when destroyed) plus everything
     # needed to recreate it (V3 §7): {purpose, source_branch, work_branch,

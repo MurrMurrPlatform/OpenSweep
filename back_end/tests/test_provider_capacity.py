@@ -99,3 +99,54 @@ async def test_active_count_uses_the_shared_in_flight_definition():
 @pytest.mark.asyncio
 async def test_blank_provider_uid_never_queries():
     assert await capacity.active_run_count("") == 0
+
+
+# ── Admission gate ──────────────────────────────────────────────────────────
+# The boundary the write path enforces. Pure, so it is stated once here and
+# nowhere else.
+
+
+def test_a_slot_below_the_ceiling_admits():
+    assert capacity.admission_refusal(active=4, ceiling=5, provider_label="Claude") is None
+
+
+def test_at_the_ceiling_refuses():
+    """`active == ceiling` is FULL, not "one more allowed". Off-by-one here is
+    the difference between honouring max_concurrent_runs and exceeding it by
+    exactly one on every provider."""
+    refusal = capacity.admission_refusal(active=5, ceiling=5, provider_label="Claude")
+    assert refusal is not None
+    assert "5/5" in refusal
+
+
+def test_over_the_ceiling_refuses():
+    assert capacity.admission_refusal(active=9, ceiling=5, provider_label="Claude") is not None
+
+
+def test_an_empty_ceiling_refuses_everything():
+    """A provider configured to 0 takes no runs at all. `configured_ceiling`
+    never returns 0 today, but the gate must not read 0 as "unlimited"."""
+    assert capacity.admission_refusal(active=0, ceiling=0, provider_label="x") is not None
+
+
+def test_refusal_names_the_provider_and_survives_a_blank_label():
+    assert "Claude Sub" in capacity.admission_refusal(
+        active=5, ceiling=5, provider_label="Claude Sub"
+    )
+    assert "the LLM provider" in capacity.admission_refusal(
+        active=5, ceiling=5, provider_label="  "
+    )
+
+
+def test_admission_agrees_with_headroom_at_every_boundary():
+    """The two must never disagree: headroom > 0 iff admission is allowed.
+    They are separate functions with separate callers (campaign clamp vs
+    dispatch gate), and a drift between them is precisely the double-count the
+    composition argument rules out."""
+    ceiling = 5
+    for active in range(0, ceiling + 3):
+        headroom = max(ceiling - active, 0)
+        admits = capacity.admission_refusal(
+            active=active, ceiling=ceiling, provider_label="p"
+        ) is None
+        assert admits == (headroom > 0), f"disagreement at active={active}"

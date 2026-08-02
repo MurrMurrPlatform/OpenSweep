@@ -5,8 +5,9 @@ records approved_by/approved_at. Status only ever moves through the transition
 endpoint so every move is legality-checked and audited.
 """
 
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
@@ -20,8 +21,10 @@ from domains.tickets.schemas import (
     LinkFindingRequest,
     LinkPullRequestRequest,
     PlanEpicsRequest,
+    TriageBatchRequest,
     TicketDetailDTO,
     TicketDTO,
+    TicketStatus,
     TransitionTicketRequest,
     UpdateTicketRequest,
 )
@@ -497,6 +500,14 @@ async def suggest_epics(
     )
     intent = composed.text
     policy = await ensure_policy_for_effort(Effort.NORMAL)
+    # One grouping run = one reviewable plan. `plan-epics` groups its output
+    # under a shared plan_uid so a rule's epics cost ONE approval click; agent
+    # proposals defaulted to "" and so landed in the ungrouped bucket, costing
+    # one click each — the exact tedium the bulk gate exists to remove. Minted
+    # here and carried on the run, because the agent must not be trusted to
+    # echo it back and the platform tool can read it off the run it already
+    # resolves from the X-OpenSweep-Run-Uid header.
+    plan_uid = uuid4().hex
     await write_audit(
         kind="epic.propose.requested",
         subject_uid=req.repository_uid,
@@ -507,6 +518,7 @@ async def suggest_epics(
             "goals": goals,
             "aggressiveness": req.aggressiveness,
             "seeded_clusters": len(clusters),
+            "plan_uid": plan_uid,
         },
     )
     try:
@@ -515,7 +527,16 @@ async def suggest_epics(
             intent=intent,
             playbook="refine",
             title="Propose ticket groups",
-            target={"kind": "ticket-grouping"},
+            target={
+                "kind": "ticket-grouping",
+                "plan_uid": plan_uid,
+                # The clusters this run was shown as prior art. Kept so
+                # `propose` can reject a verbatim re-proposal of a grouping the
+                # platform already computed for free.
+                "seeded_cluster_members": [
+                    sorted(d.member_ticket_uids) for d in clusters
+                ],
+            },
             run_policy_uid=policy.uid,
             trigger=RunTrigger.MANUAL,
             triggered_by=user.uid,
@@ -524,6 +545,7 @@ async def suggest_epics(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {
         "run_uid": run.uid,
+        "plan_uid": plan_uid,
         "scheduled_agent_uid": run.scheduled_agent_uid,
         "candidate_count": len(candidates),
         "goals": goals,
@@ -540,10 +562,11 @@ async def build_ticket_epics(
     """Select tickets by rule and cut them into epics on a COMPUTED axis —
     no agent, no run, answers immediately.
 
-    This is the "top X issues in Y runs" path. Six of the eight axes (area,
-    feature, files, lens, class, linked) are arithmetic over data the tickets
-    already carry, so asking a model to eyeball them only added latency and
-    variance. `root-cause` is the exception and still goes through the agent
+    This is the "top X issues in Y runs" path. Six of the nine proposable axes
+    (area, feature, files, lens, class, linked) are arithmetic over data the
+    tickets already carry, so asking a model to eyeball them only added latency
+    and variance. `root-cause`, `theme` and `co-change` are the exceptions and
+    still go through the agent
     proposal tool (`opensweep_platform_propose_epic`).
 
     `dry_run` returns the identical plan without persisting, so the counts a
@@ -553,6 +576,193 @@ async def build_ticket_epics(
 
     await require_repo_in_org(req.repository_uid, user.org_uid)
     return await plan_epics(req, actor_uid=user.uid)
+
+
+class BulkTicketsRequest(BaseModel):
+    uids: list[str] = Field(min_length=1, max_length=200)
+
+
+class BulkTransitionRequest(BulkTicketsRequest):
+    status: TicketStatus
+
+
+async def _bulk(
+    uids: Sequence[str],
+    org_uid: str,
+    action: Callable[..., Awaitable[object]],
+) -> dict:
+    """Apply `action` to each ticket, reporting partial success.
+
+    Mirrors `EpicService.bulk_approve`, deliberately and in both respects:
+
+    * Tenancy is checked PER TICKET, before that ticket is touched. The uid
+      list is client-supplied and could otherwise mix in another org's ticket.
+    * A failure is REPORTED, not raised. Approving 30 tickets where one is
+      archived should land the other 29 and name the one that didn't — raising
+      on the first would make the outcome depend on list order.
+    """
+    # Local import to match this module's convention (the lifecycle package
+    # pulls in the executor registry). CapacityExceededError is a subclass, so
+    # a provider at its ceiling lands here as a per-ticket error rather than
+    # escaping as a 500 and discarding the tickets that DID dispatch.
+    from domains.runs.services.lifecycle import LifecycleError
+
+    service = TicketService()
+    ok: list[str] = []
+    errors: list[dict[str, str]] = []
+    for uid in dict.fromkeys(uids):
+        try:
+            ticket = await service.get_node(uid)
+            await require_repo_in_org(ticket.repository_uid, org_uid)
+            await action(ticket)
+            ok.append(uid)
+        except HTTPException as exc:
+            errors.append({"uid": uid, "detail": str(exc.detail)})
+        except LifecycleError as exc:
+            errors.append({"uid": uid, "detail": str(exc)})
+    return {"ok": ok, "errors": errors}
+
+
+@router.post("/bulk-status", operation_id="opensweep_ticket_bulk_transition")
+async def bulk_transition_tickets(
+    req: BulkTransitionRequest, user: UserDTO = Depends(get_current_user)
+) -> dict:
+    """Move N tickets in one action — Gate 1 for a whole selection.
+
+    Legality, audit records and the Gate-1 role check are inherited from
+    `TicketService.transition`; this only fans out."""
+    return await _bulk(
+        req.uids,
+        user.org_uid,
+        lambda t: TicketService().transition(
+            t.uid, req.status.value, actor_uid=user.uid, actor_role=user.role
+        ),
+    )
+
+
+@router.post("/bulk-implement", operation_id="opensweep_ticket_bulk_implement")
+async def bulk_implement_tickets(
+    req: BulkTicketsRequest, user: UserDTO = Depends(require_role("maintainer"))
+) -> dict:
+    """Dispatch implement runs for N approved tickets.
+
+    Each dispatch goes through the same `trigger_implement_run` as the single
+    route, so the provider concurrency ceiling, the one-write-run-per-ticket
+    guard and the predicted-path guard all apply per ticket. A selection larger
+    than the provider's headroom therefore lands the first few and reports the
+    rest as refused — it does NOT stampede the provider, which is the whole
+    reason the capacity gate had to exist before this endpoint did.
+    """
+    from domains.delivery.services.implement_run_service import trigger_implement_run
+
+    dispatched: dict[str, str] = {}
+
+    async def _go(ticket) -> None:
+        run = await trigger_implement_run(ticket, triggered_by=user.uid)
+        dispatched[ticket.uid] = run.uid
+
+    result = await _bulk(req.uids, user.org_uid, _go)
+    result["runs"] = dispatched
+    return result
+
+
+@router.post("/bulk-archive", operation_id="opensweep_ticket_bulk_archive")
+async def bulk_archive_tickets(
+    req: BulkTicketsRequest, user: UserDTO = Depends(require_role("maintainer"))
+) -> dict:
+    """Archive N tickets — the reversible 'clear the board' action."""
+    return await _bulk(
+        req.uids,
+        user.org_uid,
+        lambda t: TicketService().archive(t.uid, actor_uid=user.uid),
+    )
+
+
+@router.post("/triage-batch", operation_id="opensweep_ticket_triage_batch")
+async def triage_batch(
+    req: TriageBatchRequest, user: UserDTO = Depends(require_role("maintainer"))
+) -> dict:
+    """Triage a SELECTION of tickets in one run — questions asked once, not N times.
+
+    Not "refine-batch": that name reads as "dispatch N refine runs", which is
+    exactly what this is not. One run reads the shared code once, classifies
+    every question across the whole selection, answers the local ones itself
+    into the assumption ledger, and asks only what genuinely spans tickets.
+    """
+    from domains.tickets.services.batch_triage import MAX_BATCH, dispatch_batch_triage
+
+    await require_repo_in_org(req.repository_uid, user.org_uid)
+
+    # `exclude_grouped=False` — a DELIBERATE divergence from both epic
+    # endpoints. Grouping must not re-place a ticket already in an epic;
+    # triage has the opposite need, because an epic's PR closes every member
+    # unconditionally on merge, so a member with vague acceptance criteria is
+    # MORE dangerous than a loose ticket, not less.
+    facts = await load_ticket_facts(req.repository_uid, exclude_grouped=False)
+    candidates = select_tickets(
+        facts,
+        EpicSelection(
+            statuses=tuple(req.statuses),
+            min_priority=req.min_priority,
+            min_severity=req.min_severity,
+            labels=tuple(req.labels),
+            kinds=tuple(req.kinds),
+            area_keys=tuple(req.area_keys),
+            limit=req.limit,
+            sort=req.sort,
+        ),
+    )
+    if not candidates:
+        raise HTTPException(
+            status_code=409,
+            detail=f"no tickets match these filters ({len(facts)} candidate(s) exist)",
+        )
+    if len(candidates) > MAX_BATCH:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{len(candidates)} tickets selected; the batch ceiling is "
+                f"{MAX_BATCH}. Context grows faster than it earns beyond that — "
+                "narrow the filters or lower `limit`."
+            ),
+        )
+    if req.dry_run:
+        return {
+            "dry_run": True,
+            "selected": [c.uid for c in candidates],
+            "count": len(candidates),
+        }
+
+    # Two overlapping batches would double-write the same tickets and
+    # double-ask the same policy questions. `blocking_run` cannot catch it: a
+    # batch is playbook="refine" with no linked_ticket_uid. Serializing on the
+    # repository instead would 409 `suggest-epics`, which is the same playbook
+    # on the same repo and entirely unrelated — so guard narrowly on the
+    # target kind rather than widening `filter_active_runs` for one caller.
+    from domains.runs.services.active_runs import active_runs_for, conflict_detail
+
+    for run in await active_runs_for(repository_uid=req.repository_uid):
+        if dict(run.target or {}).get("kind") == "ticket-triage":
+            raise HTTPException(
+                status_code=409,
+                detail=conflict_detail(
+                    "a triage batch is already running for this repository", run
+                ),
+            )
+
+    run = await dispatch_batch_triage(
+        repository_uid=req.repository_uid,
+        candidates=candidates,
+        actor_uid=user.uid,
+        org_uid=user.org_uid,
+        autonomy=req.autonomy,
+    )
+    return {
+        "run_uid": run.uid,
+        "ticket_uids": [c.uid for c in candidates],
+        "count": len(candidates),
+        "effort": run.effort,
+    }
 
 
 @router.post("/{uid}/dissolve-epic", operation_id="opensweep_ticket_dissolve_epic")
@@ -666,7 +876,18 @@ async def link_pr(
 
 
 @router.post("/{uid}/implement", operation_id="opensweep_ticket_implement")
-async def implement_ticket(uid: str, user: UserDTO = Depends(require_role("maintainer"))) -> dict:
+async def implement_ticket(
+    uid: str,
+    force: bool = Query(
+        False,
+        description=(
+            "Dispatch even when another in-flight write run is predicted to "
+            "touch the same files. Overrides ONLY the path heuristic — the "
+            "one-write-run-per-ticket guard still applies."
+        ),
+    ),
+    user: UserDTO = Depends(require_role("maintainer")),
+) -> dict:
     """Dispatch a write-path implement run for a Gate-1-approved ticket (§6).
 
     409 when the ticket hasn't passed Gate 1 or an open PR already implements
@@ -690,7 +911,18 @@ async def implement_ticket(uid: str, user: UserDTO = Depends(require_role("maint
             detail="this ticket has an active thread — approve implementation from the thread instead",
         )
     try:
-        run = await trigger_implement_run(ticket, triggered_by=user.uid)
+        run = await trigger_implement_run(
+            ticket, triggered_by=user.uid, force_path_conflict=force
+        )
+        if force:
+            await write_audit(
+                kind="implement_run.path_conflict_overridden",
+                subject_uid=ticket.uid,
+                subject_type="Ticket",
+                actor_uid=user.uid,
+                repository_uid=ticket.repository_uid,
+                payload={"run_uid": run.uid},
+            )
     except LifecycleError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {

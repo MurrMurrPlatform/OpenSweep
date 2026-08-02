@@ -156,6 +156,30 @@ class EpicProposalDTO(BaseModel):
 # ── Epic building (deterministic axes — no agent involved) ──────────────────
 
 
+class TriageBatchRequest(BaseModel):
+    """Triage N tickets in ONE run instead of N runs.
+
+    Same selection vocabulary as `PlanEpicsRequest` / `SuggestEpicsRequest`,
+    because all three narrow the same pool through `select_tickets`.
+    """
+
+    repository_uid: str = Field(min_length=1)
+    statuses: list[str] = Field(default_factory=lambda: ["backlog", "todo"])
+    min_priority: str = ""
+    min_severity: str = ""
+    labels: list[str] = Field(default_factory=list)
+    kinds: list[str] = Field(default_factory=list)
+    area_keys: list[str] = Field(default_factory=list)
+    limit: int = Field(default=20, ge=0)
+    sort: str = "priority"
+    # Defaults to `assume` HERE ONLY. This endpoint has no prior behaviour, so
+    # it is not a change to anything; per-ticket refine and thread create keep
+    # `interrogate`. Batching exists to spend human attention once, which a
+    # per-ticket interrogation would defeat.
+    autonomy: str = "assume"
+    dry_run: bool = False
+
+
 class PlanEpicsRequest(BaseModel):
     """Select tickets by rule and cut them into epics on a computed axis.
 

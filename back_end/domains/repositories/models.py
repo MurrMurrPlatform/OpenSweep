@@ -80,6 +80,12 @@ class Repository(AsyncStructuredNode):
     # proposed work unless the operator has opted this repo into autonomy.
     agent_autonomy = BooleanProperty(default=False)
 
+    # DISTINCT from `agent_autonomy` above, despite the shared word. That one
+    # is a permission ("agents may move tickets"); this is the question-policy
+    # tier for thread/triage runs: interrogate|assume|strict. "" = inherit the
+    # platform default (interrogate). See domains/runs/services/autonomy.py.
+    default_autonomy = StringProperty(default="")
+
     created_at = DateTimeProperty(default_now=True)
     updated_at = DateTimeProperty(default_now=True)
 

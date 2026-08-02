@@ -496,3 +496,87 @@ def stance_block(
             "genuinely covered. Never end the run without `complete_run`."
         )
     return budget + "\n\n" + _tier_stance(tier, max_findings)
+
+
+# ── Question policy ─────────────────────────────────────────────────────────
+# Peer of `stance_block` above. Effort says how much COMPUTE to spend; autonomy
+# says how much JUDGMENT to spend on the user's behalf. Kept as two dials for
+# the reason m0010 renamed compute_dial: one question per knob.
+
+
+def _tier_question_policy(
+    tier: "Autonomy", *, ask_tool: str, subject_ref: str, assumption_target: str
+) -> str:
+    """The per-tier paragraph. Private, mirroring `_tier_stance`."""
+    from domains.runs.schemas import AUTONOMY_QUESTION_CAPS, Autonomy
+
+    cap = AUTONOMY_QUESTION_CAPS[tier]
+    record = (
+        f"`opensweep_platform_record_assumption` (ticket_uid `{assumption_target}`)"
+        if assumption_target
+        else "`opensweep_platform_record_assumption`"
+    )
+
+    if tier is Autonomy.STRICT:
+        return (
+            "Ask NOTHING. This run has no human attending it. Decide every open "
+            "question yourself from the code and this repository's existing "
+            "conventions, and record each decision with "
+            f"{record}. If the ticket carries no acceptance criteria, do NOT "
+            "invent them: call `complete_run` with "
+            "`failed=['no acceptance criteria — refusing to guess']` and stop. "
+            "A refusal you can act on beats a plausible guess you cannot."
+        )
+
+    if tier is Autonomy.ASSUME:
+        return (
+            f"Ask at most {cap} question(s) — spend them on the decisions you "
+            "genuinely cannot make, and ask them all in ONE turn via "
+            f"`{ask_tool}` ({subject_ref}). For everything else: pick the most "
+            "conventional answer FOR THIS CODEBASE, cite the file:line "
+            f"precedent you followed, record it with {record}, and proceed. "
+            "A question you could answer by reading the code is not a "
+            "question — read the code. Every assumption you record is shown to "
+            "the reviewer, so an assumption is a cheap, visible, reversible "
+            "decision; a question is an expensive one that stops the work."
+        )
+
+    # INTERROGATE — byte-identical to the pre-dial instruction. See
+    # tests/test_autonomy_block.py, which pins this against a golden string.
+    return (
+        "Interrogate the user: ask ALL currently independent clarifying "
+        f"questions in ONE turn — one `{ask_tool}` call per "
+        f"question ({subject_ref}, question, optional `options` "
+        "list of 2-6 short choices) — then end your turn and wait. The "
+        "platform holds the conversation until EVERY question is answered "
+        "(or the user forces continue) and delivers all answers together; "
+        "ask follow-ups that depend on earlier answers in a later round. "
+        "Questions are also mirrored to the ticket's discussion, where the "
+        "user can answer by replying. Surface trade-offs and your "
+        "recommendation inside each question. Do NOT silently assume "
+        "answers to open product questions."
+    )
+
+
+def autonomy_block(
+    autonomy: str,
+    *,
+    ask_tool: str = "opensweep_platform_ask_user",
+    subject_ref: str = "",
+    assumption_target: str = "",
+) -> str:
+    """The question-policy paragraph for any intent that can reach a human.
+
+    Belongs in the `structural` composition layer, which lands in `# Scope` and
+    cannot be displaced by an org overlay. Do NOT move it into a seeded agent
+    body: those are the org-editable instructions layer, and a `replace`
+    overlay would silently delete the dial.
+    """
+    from domains.runs.schemas import normalize_autonomy
+
+    return _tier_question_policy(
+        normalize_autonomy(autonomy),
+        ask_tool=ask_tool,
+        subject_ref=subject_ref,
+        assumption_target=assumption_target,
+    )
