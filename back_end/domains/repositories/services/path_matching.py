@@ -16,7 +16,11 @@ from typing import Sequence
 
 from logging_config import logger
 
-# stale_paths is briefing material, not a changelog — keep it bounded.
+# stale_paths is briefing material, not a changelog — keep it bounded. The cap
+# drops the OLDEST entries: a reviewer's question is "what changed since I last
+# looked", which the most recent paths answer. Keeping the oldest instead froze
+# a busy node's list at its first 200 paths forever, so the tooltip and the run
+# briefing showed stale history and never the change that triggered the badge.
 MAX_STALE_PATHS = 200
 
 
@@ -63,7 +67,9 @@ async def mark_nodes_stale(
             if not hits:
                 continue
             node.code_changed_at = now
-            merged = list(dict.fromkeys(list(node.stale_paths or []) + hits))
+            # Newest first, so the cap sheds history rather than the change that
+            # just landed. A re-touched path is promoted rather than duplicated.
+            merged = list(dict.fromkeys(hits + list(node.stale_paths or [])))
             node.stale_paths = merged[:MAX_STALE_PATHS]
             await node.save()
             marked += 1

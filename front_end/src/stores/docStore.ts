@@ -6,7 +6,6 @@ import type {
   DocDTO,
   DocEditDTO,
   DocEditStatus,
-  ScopeFreshnessDTO,
   UpdateDocRequest,
 } from '@/types/api'
 
@@ -210,12 +209,6 @@ export const useDocStore = defineStore('docs', () => {
     return apiGet<SweepEstimate>(`/repositories/${repoUid}/sweep/estimate`)
   }
 
-  /** Audit-coverage stamps rolled up per doc — "when was this page last audited,
-   *  and what was the outcome?" Staleness is the Doc DTO's derived `stale` field. */
-  async function fetchFreshness(repoUid: string): Promise<ScopeFreshnessDTO[]> {
-    return apiGet<ScopeFreshnessDTO[]>(`/repositories/${repoUid}/freshness`)
-  }
-
   // ── DocEdits (agent-proposed changes; pending → accepted | rejected) ──────
 
   async function fetchEdits(opts: { repository_uid?: string; status?: DocEditStatus } = {}): Promise<DocEditDTO[]> {
@@ -283,7 +276,6 @@ export const useDocStore = defineStore('docs', () => {
     audit,
     deepScan,
     sweepEstimate,
-    fetchFreshness,
     fetchEdits,
     acceptEdit,
     rejectEdit,

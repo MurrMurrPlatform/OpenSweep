@@ -7,7 +7,8 @@ machine.
 
 Keys are path-like ("backend/delivery/convergence"); the hierarchy is
 derived from key prefixes, never stored. A human edit or accepted AreaEdit
-counts as a review: it stamps last_reviewed_at and clears stale_paths.
+counts as a review — but only when it changes the SPEC, scope_paths or kind,
+and only when the area is not being retired: see _earns_review.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from domains.areas.models import (
     Area,
     AreaEdit,
     area_is_stale,
+    area_is_tracked,
     child_key_prefix_of,
     is_leaf,
 )
@@ -38,6 +40,7 @@ from domains.areas.schemas import (
     SubFeatureDTO,
     UpdateAreaRequest,
 )
+from domains.freshness import mark_reviewed, review_snapshot
 from domains.repositories.services.path_matching import watches_path
 from infrastructure.audit import write_audit
 
@@ -97,9 +100,34 @@ def normalize_key(value: str) -> str:
     return "/".join(s for s in segments if s)[:120]
 
 
-def _mark_reviewed(a: Area, now: datetime) -> None:
-    a.last_reviewed_at = now
-    a.stale_paths = []
+# A review is a claim that the area was re-checked against the code. Only the
+# spec, the scope anchor and the kind can carry that claim: a rename or a
+# doc_uids relink says nothing about whether the partition or the contract
+# still hold, and clearing a stale badge by fixing a title is how a review
+# signal stops meaning anything.
+_AREA_REVIEW_FIELDS = ("spec", "scope_paths", "kind")
+
+
+def _earns_review(a: Area, before: tuple, *, was_tracked: bool) -> bool:
+    """Did this write re-decide the area against the code?
+
+    Three ways to answer no, and all three are reachable:
+      - nothing a review could be about actually changed;
+      - the area ends up RETIRED — an absolute test, not a transition, because
+        an accepted retire edit for an already-disabled area would otherwise
+        blank its spec and scope (full replacement) and score that as a change;
+      - the write DESTROYED the scope anchor. An area that had scope paths and
+        now has none can never be marked stale again, so stamping it fresh
+        produces the worst possible row: untracked and confidently current.
+        Agent edits routinely omit scope_paths on a full replacement, so this
+        is a common path, not a corner. An area that never had a scope is a
+        different thing and still earns its stamp.
+    """
+    if not a.enabled:
+        return False
+    if was_tracked and not area_is_tracked(a):
+        return False
+    return review_snapshot(a, _AREA_REVIEW_FIELDS) != before
 
 
 async def list_areas(repository_uid: str) -> list[AreaDTO]:
@@ -190,6 +218,8 @@ async def update_area(
     checks an accepted AreaEdit gets, computed over the UPDATED values so
     the editor sees the overlap they just created."""
     a = await get_area(uid)
+    before = review_snapshot(a, _AREA_REVIEW_FIELDS)
+    was_tracked = area_is_tracked(a)
     if req.kind is not None:
         if req.kind not in AREA_KINDS:
             raise HTTPException(
@@ -208,7 +238,8 @@ async def update_area(
         a.enabled = req.enabled
     now = datetime.now(UTC)
     a.updated_at = now
-    _mark_reviewed(a, now)  # a human edit counts as a review
+    if _earns_review(a, before, was_tracked=was_tracked):
+        mark_reviewed(a, now)  # the contract or its anchor was re-decided
     await a.save()
     warnings = (
         validate_area_fields(
@@ -817,6 +848,8 @@ async def accept_area_edit(
         a = await Area.nodes.get_or_none(uid=e.area_uid)
         if a is None:
             raise HTTPException(status_code=409, detail="target Area no longer exists")
+        before = review_snapshot(a, _AREA_REVIEW_FIELDS)
+        was_tracked = area_is_tracked(a)
         # Full replacement: the edit carries the area's next shape.
         a.spec = e.proposed_spec or ""
         if e.key:
@@ -829,7 +862,12 @@ async def accept_area_edit(
         a.doc_uids = list(e.doc_uids or [])
         a.enabled = proposed_enabled
         a.updated_at = now
-        _mark_reviewed(a, now)  # an accepted edit counts as a review
+        # Retiring is not reviewing, and neither is blanking the scope on the
+        # way past — see _earns_review. Leaving the stamp untouched is what
+        # makes a re-enable come back truthfully stale rather than falsely
+        # current.
+        if _earns_review(a, before, was_tracked=was_tracked):
+            mark_reviewed(a, now)
         await a.save()
     else:
         # create_area 409s when the key was claimed since the proposal.

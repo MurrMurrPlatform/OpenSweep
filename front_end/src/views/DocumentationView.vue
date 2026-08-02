@@ -85,7 +85,7 @@ const areaStore = useAreaStore()
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
-const { uid: repoUid, slug: repoSlug } = useCurrentRepo()
+const { uid: repoUid, slug: repoSlug, repo } = useCurrentRepo()
 
 const loading = ref(true)
 const error = ref<string | null>(null)
@@ -251,6 +251,10 @@ function selectFeature(uid: string) {
 }
 
 const staleDocs = computed(() => docs.list.filter((d) => d.stale && !d.archived))
+
+/** Why the last freshness pass could not see every commit ('' = it could).
+ *  Same cursor that marks Areas — a degraded pass under-reports both. */
+const freshnessDegraded = computed(() => repo.value?.freshness_degraded_reason || '')
 
 /** Confirm-current: clear stale after reading a page, without inventing a
  *  no-op edit just to move the badge. Mirrors the Areas board. */
@@ -852,6 +856,14 @@ async function confirmDeleteMemory() {
         {{ staleDocs.length }} page{{ staleDocs.length === 1 ? '' : 's' }} behind the code
       </div>
 
+      <!-- Freshness honesty. Docs and Areas are marked stale by the SAME pass
+           off the same cursor, so when it can't see everything this count is
+           under-reported too — the Areas board said so and this page did not. -->
+      <p v-if="freshnessDegraded" class="flex items-center gap-1.5 text-xs text-warn">
+        <AlertTriangle class="h-3.5 w-3.5 shrink-0" />
+        The stale count may be incomplete — {{ freshnessDegraded }}
+      </p>
+
       <!-- Last export result: link to the PR that carries the docs. -->
       <div
         v-if="lastExport?.pr_url"
@@ -1086,6 +1098,17 @@ async function confirmDeleteMemory() {
                   <Badge v-if="selected.stale" variant="warn" class="px-1.5 text-[10px]" :title="selected.stale_paths.join('\n')">
                     <AlertTriangle class="h-3 w-3" /> stale
                   </Badge>
+                  <!-- No watch paths: the webhook has nothing to match, so this
+                       page can never go stale. Its clean row is an absence of
+                       signal, not a healthy one. -->
+                  <Badge
+                    v-if="!selected.tracked && !selected.archived"
+                    variant="outline"
+                    class="px-1.5 text-[10px]"
+                    title="No watched paths — this page can never be marked stale. Add watch paths below so code changes reach it."
+                  >
+                    untracked
+                  </Badge>
                   <Badge v-if="selected.archived" variant="secondary" class="px-1.5 text-[10px]" title="Retired — hidden from the wiki, exports, and audits">
                     <Archive class="h-3 w-3" /> retired
                   </Badge>
@@ -1155,7 +1178,10 @@ async function confirmDeleteMemory() {
                 <div class="mb-1 flex items-center gap-1.5 font-medium text-amber-800 dark:text-amber-300">
                   <AlertTriangle class="h-4 w-4" /> Code changed since last review:
                 </div>
-                <ul class="space-y-0.5">
+                <!-- Capped at MAX_STALE_PATHS (200) server-side and newest
+                     first, so scroll rather than letting a busy page render a
+                     200-line wall. -->
+                <ul class="max-h-48 space-y-0.5 overflow-y-auto">
                   <li v-for="path in selected.stale_paths" :key="path" class="break-all font-mono text-xs text-muted-foreground">
                     {{ path }}
                   </li>

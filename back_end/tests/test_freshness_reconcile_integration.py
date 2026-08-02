@@ -15,6 +15,7 @@ from domains.areas.models import Area, area_is_stale
 from domains.repositories.models import Repository
 from domains.repositories.services import freshness_sync
 from domains.repositories.services.freshness_sync import (
+    reconcile_all_repositories,
     reconcile_repository_freshness,
     sync_push_freshness,
 )
@@ -23,13 +24,21 @@ pytestmark = pytest.mark.integration
 
 
 class _FakeClient:
-    """Stands in for the git provider. `compare` maps base..head → paths."""
+    """Stands in for the git provider. `compare` maps base..head → paths.
 
-    def __init__(self, head="", compare=None, fail=False):
+    `fail` breaks every call; `compare_fail` breaks only the compare (head
+    still resolves), which is the shape of the wedge this backstop guards —
+    the range endpoint is gone but the branch is fine. `inactive` models a
+    revoked token.
+    """
+
+    def __init__(self, head="", compare=None, fail=False, compare_fail=False,
+                 inactive=False):
         self._head = head
         self._compare = compare or {}
         self._fail = fail
-        self.is_active = True
+        self._compare_fail = compare_fail
+        self.is_active = not inactive
 
     async def get_branch_head_sha(self, owner, repo, branch):
         if self._fail:
@@ -37,7 +46,7 @@ class _FakeClient:
         return self._head
 
     async def compare_commits(self, owner, repo, base, head):
-        if self._fail:
+        if self._fail or self._compare_fail:
             raise RuntimeError("github down")
         return self._compare.get((base, head), {"paths": [], "truncated": False})
 
@@ -128,6 +137,48 @@ async def test_failed_compare_leaves_the_cursor_behind_so_the_next_tick_retries(
 
     assert not result.applied
     assert repo.freshness_synced_sha == "h1"  # cursor did NOT advance
+
+
+async def test_a_wedged_cursor_persists_why_instead_of_rendering_green(monkeypatch):
+    """The loud failure (truncation) stamped a reason; the total one did not.
+
+    So a repo whose compare fails every tick — force-push + GC, repo transfer,
+    revoked token — kept `freshness_degraded_reason=""` and a
+    `freshness_synced_at` from the last GOOD pass, and the board rendered
+    "Staleness current as of <date>" forever while nothing was being marked.
+    """
+    repo = await _make_repo(freshness_synced_sha="h1")
+    _install(monkeypatch, _FakeClient(head="h2", compare_fail=True))
+
+    await reconcile_repository_freshness(repo)
+
+    stored = await Repository.nodes.get(uid=repo.uid)
+    assert stored.freshness_synced_sha == "h1"  # still pinned for the retry
+    assert "compare unavailable" in (stored.freshness_degraded_reason or "")
+
+
+async def test_an_unreachable_provider_persists_why(monkeypatch):
+    """Same hole, one branch earlier: a revoked token bailed before the stamp."""
+    repo = await _make_repo(freshness_synced_sha="h1")
+    _install(monkeypatch, _FakeClient(head="h2", inactive=True))
+
+    result = await reconcile_repository_freshness(repo)
+
+    stored = await Repository.nodes.get(uid=repo.uid)
+    assert not result.applied
+    assert stored.freshness_synced_sha == "h1"
+    assert "no active git provider connection" in (stored.freshness_degraded_reason or "")
+
+
+async def test_reconcile_sweep_reports_how_many_repos_are_degraded(monkeypatch):
+    """A fully wedged fleet used to be indistinguishable from a quiet one:
+    both summarised as {"applied": 0, "areas_marked": 0}."""
+    repo = await _make_repo(freshness_synced_sha="h1")
+    _install(monkeypatch, _FakeClient(head="h2", compare_fail=True))
+
+    out = await reconcile_all_repositories()
+
+    assert out["degraded"] >= 1
 
 
 async def test_paths_outside_every_scope_mark_nothing(monkeypatch):

@@ -29,11 +29,13 @@ source of truth that drifts from the webhook.
 from __future__ import annotations
 
 from bisect import bisect_left
+from collections import Counter
 from datetime import UTC, datetime
 
 from domains.areas.models import (
     Area,
     area_is_stale,
+    area_is_tracked,
     child_key_prefix_of,
     is_leaf,
 )
@@ -224,6 +226,7 @@ async def area_health(repository_uid: str) -> AreasHealthDTO:
                 depth=a.key.count("/"),
                 scope_paths=[str(p) for p in (a.scope_paths or []) if p],
                 file_count=file_count,
+                tracked=area_is_tracked(a),
                 stale=stale,
                 stale_paths=[str(p) for p in (a.stale_paths or []) if p],
                 stale_descendants=stale_descendants,
@@ -275,11 +278,27 @@ async def area_health(repository_uid: str) -> AreasHealthDTO:
     # `fresh`/`never_audited` around it would reclassify every historical stamp
     # (m0022 backfills them all to "unknown") and animate Fresh to ~0 on the
     # first load after deploy, for no actionable gain.
+    #
+    # One bucket per leaf, first match wins — that is what makes the tiles sum
+    # to `total`. Untracked outranks everything: a leaf with no scope cannot
+    # produce a truthful value on any other axis, so counting it as fresh (the
+    # old behaviour) put the map's worst rows in its best tile.
+    def _bucket(r: AreaHealthRowDTO) -> str:
+        if not r.tracked:
+            return "untracked"
+        if r.stale:
+            return "stale"
+        if r.last_checked is None:
+            return "never_audited"
+        return "fresh"
+
+    buckets = Counter(_bucket(r) for r in auditable)
     summary = AreaHealthSummaryDTO(
         total=len(auditable),
-        stale=sum(1 for r in auditable if r.stale),
-        never_audited=sum(1 for r in auditable if r.last_checked is None),
-        fresh=sum(1 for r in auditable if not r.stale and r.last_checked is not None),
+        untracked=buckets["untracked"],
+        stale=buckets["stale"],
+        never_audited=buckets["never_audited"],
+        fresh=buckets["fresh"],
     )
 
     return AreasHealthDTO(

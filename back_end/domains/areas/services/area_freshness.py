@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from domains.areas.models import Area
+from domains.freshness import mark_reviewed
 from domains.repositories.services.path_matching import (
     mark_nodes_stale,
     normalize_path,
@@ -63,7 +64,6 @@ async def confirm_area_current(repository_uid: str, key: str) -> Area | None:
     a = await get_area_by_key(repository_uid, normalize_key(key))
     if a is None:
         return None
-    a.last_reviewed_at = datetime.now(UTC)
-    a.stale_paths = []
+    mark_reviewed(a, datetime.now(UTC))
     await a.save()
     return a

@@ -142,9 +142,11 @@ class TokenAuthMiddleware:
     # plus the REST endpoints backing its mounted operations. Everything else
     # (admin, settings, LLM providers, …) stays closed to connect tokens.
     MCP_TOKEN_PATH_PREFIXES = (
+        # NB: the freshness endpoint is /api/v1/repositories/{uid}/freshness —
+        # its router carries the /api/v1/repositories prefix, so it is already
+        # covered above. A separate "/api/v1/freshness" entry matched no route.
         "/api/v1/repositories",
         "/api/v1/findings",
-        "/api/v1/freshness",
         "/api/v1/agents",
         "/api/v1/scheduled-agents",
         "/api/v1/docs",

@@ -164,10 +164,16 @@ async def confirm_area_current(
     key: str,
     **_: Any,
 ) -> dict[str, Any]:
-    """You verified this area is still correctly partitioned against the
-    current code (its scope_paths and kind still hold) and it needs no edit:
-    stamp the review so its stale flag clears. Only call this after actually
-    checking the area — never to silence a stale marker you did not verify."""
+    """You verified this area against the current code and it needs no edit:
+    stamp the review so its stale flag clears.
+
+    This covers the WHOLE area, not just the partition: its scope_paths and
+    kind still hold AND — if it has one — its spec still describes what the
+    code does. There is one review stamp per area, so confirming also marks
+    the spec current and drops the area from the generate-specs refresh queue.
+    Do not call it after checking only the partition of a spec'd area; propose
+    an edit or leave it stale instead. Never call it to silence a stale marker
+    you did not verify."""
     a = await area_freshness.confirm_area_current(repository_uid, key)
     if a is None:
         return {"status": "not_found", "key": key}

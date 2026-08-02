@@ -97,6 +97,11 @@ export interface RepositoryDTO {
   metadata?: Record<string, unknown>
   kill_switch_active?: boolean
   agent_autonomy?: boolean
+  /** When the freshness cursor last moved, and why the last pass could not see
+   *  everything ('' = complete). Docs and Areas are marked off the same pass,
+   *  so both boards must caveat with it. */
+  freshness_synced_at?: string | null
+  freshness_degraded_reason?: string
   created_at?: string | null
   updated_at?: string | null
 }
@@ -691,9 +696,13 @@ export interface DocDTO {
   pinned: boolean
   /** Code paths this page documents — staleness is derived from them. */
   watch_paths: string[]
+  /** false = no watch_paths at all: the webhook has nothing to match, so
+   *  `stale` can never become true. Untracked, not current. */
+  tracked: boolean
   /** True when watched code changed after the page was last reviewed. */
   stale: boolean
-  /** The watched paths that changed since the last review. */
+  /** The watched paths that changed since the last review, newest first
+   *  (capped at 200 server-side). */
   stale_paths: string[]
   code_changed_at?: string | null
   last_reviewed_at?: string | null
@@ -767,16 +776,6 @@ export interface MemoryDTO {
 // ── Freshness (Checked stamps, derived per scope) ────────────────────────────
 
 export type CheckedOutcome = 'clean' | 'findings' | 'failed'
-
-/** Row of GET /repositories/{uid}/freshness — one per Doc (scope_uid = doc uid,
- *  or the repository uid for the repo-level stamp). Coverage-only: staleness is
- *  the Doc DTO's derived `stale` field, not a competing "changed since" flag. */
-export interface ScopeFreshnessDTO {
-  scope_uid: string
-  last_checked: string | null
-  revision: string
-  outcome: CheckedOutcome
-}
 
 // ── RunPolicy ───────────────────────────────────────────────────────────────
 
@@ -2134,6 +2133,9 @@ export interface AreaHealthRowDTO {
   /** null when the file tree was unavailable — never a guessed count. */
   file_count: number | null
 
+  /** false = no scope_paths at all. On a LEAF that means the webhook can never
+   *  mark this area, so `stale: false` says "untracked", not "current". */
+  tracked: boolean
   stale: boolean
   stale_paths: string[]
   /** Stale leaves under this key — how a grouping shows its children's state. */
@@ -2165,8 +2167,13 @@ export interface UnassignedDocDTO {
   outcome: string
 }
 
+/** The four state tiles PARTITION `total` — every auditable leaf lands in
+ *  exactly one, in the order untracked → stale → never_audited → fresh. */
 export interface AreaHealthSummaryDTO {
   total: number
+  /** Enabled leaves with no scope_paths: nothing can mark them stale and
+   *  nothing can cover them. A map bug, not a healthy area. */
+  untracked: number
   stale: number
   never_audited: number
   fresh: number

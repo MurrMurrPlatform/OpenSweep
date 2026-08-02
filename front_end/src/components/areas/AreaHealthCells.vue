@@ -51,6 +51,18 @@ function docsTitle(h: AreaHealthRowDTO): string {
     </span>
 
     <template v-if="props.health">
+      <!-- An unscoped LEAF can never be marked stale and can never be covered,
+           so every other badge on this row is an absence of signal rather than
+           a healthy one. Groupings own no scope by design and are exempt. -->
+      <Badge
+        v-if="props.health.is_leaf && !props.health.tracked"
+        variant="warn"
+        class="px-1.5 text-[10px]"
+        title="No scope paths — the push webhook has nothing to match, so this area can never be marked stale or covered by an audit"
+      >
+        untracked
+      </Badge>
+
       <Badge
         v-if="props.health.spec_state === 'missing'"
         variant="outline"

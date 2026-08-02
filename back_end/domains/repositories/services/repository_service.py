@@ -134,6 +134,8 @@ def _to_dto(r: Repository) -> RepositoryDTO:
         metadata=dict(r.metadata or {}),
         kill_switch_active=bool(r.kill_switch_active),
         agent_autonomy=bool(getattr(r, "agent_autonomy", False)),
+        freshness_synced_at=getattr(r, "freshness_synced_at", None),
+        freshness_degraded_reason=getattr(r, "freshness_degraded_reason", "") or "",
         created_at=r.created_at,
         updated_at=r.updated_at,
     )

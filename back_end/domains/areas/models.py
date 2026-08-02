@@ -14,6 +14,7 @@ with feature_ignore holding the paths no feature owns (see AREA_KINDS
 below). `services/area_coverage.py` is what checks either axis is whole.
 """
 
+from domains.freshness import is_tracked, node_is_stale
 from neomodel import (
     AsyncStructuredNode,
     BooleanProperty,
@@ -68,7 +69,10 @@ class Area(AsyncStructuredNode):
     # Last push that touched scope_paths. Stale = code_changed_at newer than
     # last_reviewed_at (derived, never stored).
     code_changed_at = DateTimeProperty()
-    # Advances on human edit or accepted AreaEdit.
+    # Advances when the area's SPEC, scope_paths or kind change (a human edit
+    # or an accepted content AreaEdit) or on confirm_area_current. A rename, a
+    # doc_uids relink, or a retire-on-accept deliberately does not: none of
+    # them says the area was re-checked against the code.
     last_reviewed_at = DateTimeProperty()
     # Changed paths accumulated since the last review; cleared on review.
     stale_paths = JSONProperty(default=[])
@@ -113,12 +117,15 @@ class AreaEdit(AsyncStructuredNode):
 
 def area_is_stale(a: Area) -> bool:
     """Derived: code changed under scope_paths since the area was last
-    reviewed. Never stored."""
-    if a.code_changed_at is None:
-        return False
-    if a.last_reviewed_at is None:
-        return True
-    return a.code_changed_at > a.last_reviewed_at
+    reviewed. Never stored. The rule itself lives in `domains.freshness`."""
+    return node_is_stale(a)
+
+
+def area_is_tracked(a: Area) -> bool:
+    """Does this area own any scope path? An unscoped area can never go stale
+    — the webhook has nothing to match it against. For a grouping that is
+    correct by design; for a LEAF it means untracked, not fresh."""
+    return is_tracked(a.scope_paths)
 
 
 def child_key_prefix_of(parent_key: str, other_key: str) -> bool:
