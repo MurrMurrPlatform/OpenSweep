@@ -25,6 +25,12 @@ class Thread(AsyncStructuredNode):
     # refining | implementing | in_review | done | abandoned
     phase = StringProperty(default="refining", index=True)
 
+    # Question policy for this conversation: interrogate|assume|strict.
+    # AUTHORITATIVE for thread runs — the matching Run.autonomy is a dispatch
+    # snapshot, so the turn reminder must read this one or the two can disagree
+    # after an edit. "" = predates the dial; reads as `interrogate`.
+    autonomy = StringProperty(default="")
+
     # Soft plan gate: none | drafted | approved. Approval is NOT required to
     # implement; an approved plan is injected into the implement run context.
     plan_state = StringProperty(default="none")

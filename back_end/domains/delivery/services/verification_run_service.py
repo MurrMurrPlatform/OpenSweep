@@ -38,7 +38,7 @@ from domains.delivery.services.run_dispatch import dispatch_serialized
 from domains.findings.models import Finding
 from domains.runs.models import Run
 from domains.runs.schemas import Effort, RunTrigger
-from domains.runs.services.lifecycle import trigger_run
+from domains.runs.services.lifecycle import CapacityMode, trigger_run
 from domains.repositories.models import Repository
 from domains.repositories.services.workflow import guidance_section, stage_prompt_body
 from domains.run_policies.services.effort import ensure_policy_for_effort
@@ -201,6 +201,15 @@ async def trigger_verification_run(
             effort=Effort.NORMAL.value,
             trigger=trigger,
             triggered_by=triggered_by,
+            # The ONE dispatch that must not be refused for capacity. The
+            # caller (`playbooks._continue_review_chain`) turns any
+            # LifecycleError into a PERMANENT `verification_status="failed"`
+            # and moves on — deliberately, so a `pending` verdict can't wedge
+            # the fix chain. Under ENFORCE, provider pressure would therefore
+            # delete the skeptic pass outright, with no retry driver anywhere.
+            # The overshoot is bounded: one verification per verdict, and each
+            # over-ceiling admission is stamped usage["over_ceiling"].
+            capacity=CapacityMode.BEST_EFFORT,
         )
         verdict.verification_run_uid = run.uid
         await verdict.save()

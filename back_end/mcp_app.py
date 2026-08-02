@@ -124,6 +124,11 @@ OPENSWEEP_PLATFORM_TOOL_OPERATIONS = [
     "opensweep_platform_transition_ticket",
     "opensweep_platform_get_ticket",
     "opensweep_platform_list_tickets",
+    # The counterweight to ask_user under autonomy=assume: a decision made
+    # instead of asking must be recorded where the reviewer will see it.
+    "opensweep_platform_record_assumption",
+    # Batch triage: one question that spans several tickets, asked once.
+    "opensweep_platform_ask_policy_question",
     # Epics — agents may PROPOSE grouping related tickets under one parent;
     # approval (which materializes the parent) is human-only by default, and the
     # approve tool enforces that unless the repo has opted into agent_autonomy.

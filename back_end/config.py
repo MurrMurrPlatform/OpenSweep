@@ -174,6 +174,16 @@ class Settings(BaseSettings):
     # generation for minutes without emitting an event.
     OPENSWEEP_RUN_LIVENESS_TIMEOUT_SECONDS: int = 900
 
+    # How many dispatch pipelines ONE backend process may host at once. Each
+    # owns a git clone plus a CLI subprocess, so this bounds local disk and
+    # process pressure — it is NOT the concurrency ceiling (that is per
+    # provider, `LLMProvider.max_concurrent_runs`, enforced cross-process in
+    # lifecycle._assert_capacity). Matches the Celery worker's --concurrency so
+    # both hosts are symmetric. With default provider ceilings of 5 this should
+    # essentially never block; if it does, ceilings exceed what one backend can
+    # host.
+    OPENSWEEP_BACKEND_MAX_INFLIGHT_DISPATCHES: int = 10
+
     # Deployment topology. True (default) = exactly one backend + one worker
     # process, so a role's startup sweep can fail every run it owned instantly
     # (the dispatch task died with the process). Set False when running 2+

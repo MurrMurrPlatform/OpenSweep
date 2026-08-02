@@ -1552,6 +1552,16 @@ export interface PlanEpicsPreview {
 }
 
 /** Bulk approve reports partial success — always read `errors`. */
+/** Partial-success envelope for the bulk ticket actions.
+ *  `ok` and `errors` together always account for every uid submitted — a bulk
+ *  call never aborts on the first failure. */
+export interface BulkTicketResult {
+  ok: string[]
+  errors: { uid: string; detail: string }[]
+  /** bulk-implement only: ticket uid -> dispatched run uid. */
+  runs?: Record<string, string>
+}
+
 export interface BulkApproveResult {
   approved: EpicProposalDTO[]
   errors: { uid: string; detail: string }[]

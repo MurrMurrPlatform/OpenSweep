@@ -211,3 +211,67 @@ def test_status_description_shape():
     assert status_description(good).startswith("converged — 0 blocking")
     bad = _converge(resolutions=[{"state": "open", "severity": "high", "tags": ["correctness"]}])
     assert "1 blocking" in status_description(bad)
+
+
+# ── Second freshness axis: verdict vs BASE ──────────────────────────────────
+# Merging a sibling does not move THIS PR's head_sha, so every head-derived
+# check above still reads "fresh". Without this axis N siblings all report
+# converged and merge in sequence, each untested against the previous.
+
+from datetime import UTC, datetime  # noqa: E402
+
+
+def _converging_kwargs(**over):
+    """A PR that converges on every existing axis, so a failure below can only
+    come from the base-advanced check."""
+    base = dict(
+        head_sha="a" * 40,
+        ci_checks=[{"name": "ci", "status": "completed", "conclusion": "success"}],
+        latest_verdict={
+            "sha": "a" * 40,
+            "result": "approve",
+            "new_blocking_findings": 0,
+            "created_at": datetime(2026, 8, 2, 12, 0, tzinfo=UTC),
+        },
+        resolutions=[],
+        blocking_policy={},
+    )
+    base.update(over)
+    return base
+
+
+def test_baseline_converges_without_the_new_axis():
+    assert compute_convergence(**_converging_kwargs()).converged
+
+
+def test_none_base_advanced_at_changes_nothing():
+    """Every row predating the field reads None. It must be inert."""
+    assert compute_convergence(**_converging_kwargs(base_advanced_at=None)).converged
+
+
+def test_base_advancing_after_the_verdict_blocks():
+    state = compute_convergence(
+        **_converging_kwargs(base_advanced_at=datetime(2026, 8, 2, 13, 0, tzinfo=UTC))
+    )
+    assert not state.converged
+    assert any("base branch advanced" in r for r in state.reasons)
+
+
+def test_base_advancing_BEFORE_the_verdict_is_fine():
+    """The review already saw the new base — re-blocking would wedge the PR
+    forever, since nothing re-reviews a PR whose head didn't move."""
+    assert compute_convergence(
+        **_converging_kwargs(base_advanced_at=datetime(2026, 8, 2, 11, 0, tzinfo=UTC))
+    ).converged
+
+
+def test_a_verdictless_pr_does_not_gain_a_second_reason():
+    """It already has 'no verdict recorded'; adding a base reason would be
+    noise, and there is no created_at to compare against."""
+    state = compute_convergence(
+        **_converging_kwargs(
+            latest_verdict=None,
+            base_advanced_at=datetime(2026, 8, 2, 13, 0, tzinfo=UTC),
+        )
+    )
+    assert not any("base branch advanced" in r for r in state.reasons)

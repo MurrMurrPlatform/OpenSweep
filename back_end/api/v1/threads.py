@@ -46,7 +46,10 @@ async def create_thread(
     ticket = await TicketService().get_node(req.ticket_uid)
     await require_repo_in_org(ticket.repository_uid, user.org_uid)
     t = await ThreadService().create(
-        ticket_uid=req.ticket_uid, actor_uid=user.uid, org_uid=user.org_uid
+        ticket_uid=req.ticket_uid,
+        actor_uid=user.uid,
+        org_uid=user.org_uid,
+        autonomy=req.autonomy,
     )
     return thread_to_dto(t)
 

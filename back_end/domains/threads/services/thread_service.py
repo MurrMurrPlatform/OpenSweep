@@ -318,6 +318,37 @@ class ThreadService:
             raise HTTPException(status_code=409, detail="ticket already has an active thread")
         repo = await require_repository(ticket.repository_uid, require_github=True)
 
+        from domains.runs.schemas import Autonomy
+        from domains.runs.services.autonomy import resolve_autonomy
+
+        tier = resolve_autonomy(
+            requested=autonomy,
+            ticket_override=getattr(ticket, "autonomy", "") or "",
+            repository_default=getattr(repo, "default_autonomy", "") or "",
+        )
+        # `strict` promises never to ask. Without acceptance criteria it would
+        # have to invent them, so refuse BEFORE spending a run — the same
+        # discipline as the write-access pre-check ("ask whether we may push
+        # before spending a run"). Audited because a schedule-driven caller
+        # never sees an HTTP status.
+        if tier is Autonomy.STRICT and not (ticket.acceptance_criteria or []):
+            await write_audit(
+                kind="run.refused_strict_no_ac",
+                subject_uid=ticket.uid,
+                subject_type="Ticket",
+                actor_uid=actor_uid,
+                repository_uid=ticket.repository_uid,
+                payload={"autonomy": tier.value},
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "autonomy=strict requires acceptance criteria — this ticket "
+                    "has none. Refine it first, or start the thread with "
+                    "autonomy=assume."
+                ),
+            )
+
         work_branch = branch_name_for_ticket(ticket)
         base_branch = repo.default_branch or "main"
         # Adopt an existing remote branch (earlier thread/implement attempt).
@@ -333,6 +364,7 @@ class ThreadService:
             subject_ticket_uid=ticket_uid,
             branch=work_branch,
             created_by=actor_uid,
+            autonomy=tier.value,
         )
         await thread.save()
 
@@ -351,7 +383,8 @@ class ThreadService:
         try:
             run = await trigger_run(
                 repository_uid=ticket.repository_uid,
-                intent=build_thread_session_intent(ticket, thread.uid),
+                intent=build_thread_session_intent(ticket, thread.uid, tier.value),
+                autonomy=tier.value,
                 playbook="thread",
                 title=f"Thread: {(ticket.title or 'ticket')[:80]}",
                 target={
@@ -637,11 +670,62 @@ class ThreadService:
         """User forces the conversation on: deliver whatever is answered,
         dismiss the open questions."""
         t = await self.get_node(uid)
+        dismissed = [
+            (e.get("question") or "").strip()
+            for e in open_question_events(list(t.events or []))
+            if (e.get("question") or "").strip()
+        ]
         delivered = await self._deliver_pending_answers(t, force=True)
         if not delivered:
             raise HTTPException(status_code=409, detail="no pending questions to continue past")
+        # The message already tells the agent to "say what you assumed". That
+        # was prose; this makes it a RECORD with a visible hole in it, so a
+        # dismissed question that never gets an answer is something the
+        # reviewer can see rather than something that quietly evaporated. The
+        # next turn fills these in via record_assumption.
+        await self._stub_assumptions_for(t, dismissed, actor_uid=actor_uid)
         await self.record_event(t, "questions_continued", by=actor_uid)
         return t
+
+    async def _stub_assumptions_for(
+        self, thread: Thread, questions: list[str], *, actor_uid: str
+    ) -> None:
+        """One unreviewed, empty-bodied assumption per dismissed question.
+
+        Best-effort: forcing the conversation on must never fail because the
+        ledger could not be written."""
+        if not questions or not thread.subject_ticket_uid:
+            return
+        try:
+            from domains.platform_tools.assumptions import merge_assumption
+            from domains.tickets.models import Ticket
+
+            ticket = await Ticket.nodes.get_or_none(uid=thread.subject_ticket_uid)
+            if ticket is None:
+                return
+            rows = list(ticket.assumptions or [])
+            now = datetime.now(UTC).isoformat()
+            for q in questions:
+                rows = merge_assumption(
+                    rows,
+                    {
+                        "assumption": f"(unrecorded) {q}",
+                        "because": "",
+                        "confidence": "low",
+                        "result": "unreviewed",
+                        "note": "",
+                        "question": q,
+                        "source_run_uid": "",
+                        "ts": now,
+                    },
+                )
+            ticket.assumptions = rows
+            await ticket.save()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                f"assumption stubs failed for thread {thread.uid}: {exc}",
+                extra={"tag": "threads"},
+            )
 
     async def transition(self, uid: str, to_phase: str, *, actor_uid: str) -> Thread:
         t = await self.get_node(uid)

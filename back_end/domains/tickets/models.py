@@ -64,6 +64,18 @@ class Ticket(AsyncStructuredNode):
     #  approved_by, approved_at}. Empty dict = no plan yet.
     plan = JSONProperty(default={})
 
+    # Per-ticket question-policy override: interrogate|assume|strict.
+    # "" = inherit the repository default. Exists because "this one is a
+    # known-shape chore, don't interrogate me" is the judgment a repo-wide
+    # default cannot make.
+    autonomy = StringProperty(default="")
+
+    # Assumptions the agent made INSTEAD of asking, under autonomy=assume.
+    # [{assumption, because, confidence, result, note, question,
+    #   source_run_uid, ts}] — the `result` triple mirrors Verdict.ac_results
+    # so the review agent emits a familiar shape. Empty list = none recorded.
+    assumptions = JSONProperty(default=[])
+
     # Gate-1 provenance — set on backlog → todo, kept as the approval record.
     approved_by = StringProperty(default="")
     approved_at = DateTimeProperty()
@@ -92,8 +104,9 @@ class EpicProposal(AsyncStructuredNode):
     suggested_labels = JSONProperty(default=[])
     suggested_priority = StringProperty(default="medium")
 
-    # What makes these belong together (EpicAxis). Six of the eight axes are
-    # computed, not judged — only `root-cause` needs the agent. Recording the
+    # What makes these belong together (EpicAxis). Six of the nine proposable
+    # axes are computed, not judged — the agent is needed only for
+    # `root-cause`, `theme` and `co-change`. Recording the
     # axis is what lets the review card show a one-line structured reason
     # instead of a paragraph of model prose.
     axis = StringProperty(default="root-cause", index=True)

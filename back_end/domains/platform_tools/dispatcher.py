@@ -18,7 +18,9 @@ from typing import Any, Awaitable, Callable
 from domains.platform_tools import (
     add_analysis_note,
     ask_question,
+    ask_policy_question,
     ask_user,
+    record_assumption,
     attach_artifact,
     complete_run,
     confirm_area_current,
@@ -119,6 +121,16 @@ _TOOLS: dict[str, tuple[_ToolFn, str]] = {
         ask_user,
         "ask the user a structured question and pause the thread for their "
         "answer",
+    ),
+    "ask_policy_question": (
+        ask_policy_question,
+        "ask ONE question that changes how several tickets get written; "
+        "records it and lets the run continue",
+    ),
+    "record_assumption": (
+        record_assumption,
+        "record a decision you made INSTEAD of asking, so the reviewer can "
+        "check it",
     ),
     "upsert_analysis": (
         upsert_analysis,

@@ -115,21 +115,46 @@ class EpicService:
         axis: str = "root-cause",
         evidence: dict | None = None,
         plan_uid: str = "",
+        seeded_cluster_members: list[list[str]] | None = None,
         origin: str = "agent",
     ) -> tuple[EpicProposal, bool]:
-        """Record a grouping proposal. Idempotent on the member set: an open
-        proposal for the same repository with the same members is returned
-        instead of duplicated. Returns (proposal, deduplicated)."""
+        """Record a grouping proposal. Idempotent on the member set: a live
+        proposal for the same repository that CONTAINS or is contained by these
+        members is returned instead of duplicated. Returns
+        (proposal, deduplicated).
+
+        Containment, not equality: exact-set matching let a subset, a superset
+        and a one-member difference each create a second overlapping proposal,
+        and nothing stops two grouping runs over the same board from producing
+        near-identical sets. Overlap WITHOUT containment stays allowed — that
+        is a legitimately different grouping — and is resolved at approval,
+        where the drop-already-grouped path already lives.
+        """
         members = await TicketService().validate_group_members(
             repository_uid, member_ticket_uids
         )
         member_uids = [m.uid for m in members]
+        wanted = set(member_uids)
+
+        # An agent must not bill a review for a grouping the platform computed
+        # for free and already showed it as prior art.
+        for cluster in seeded_cluster_members or []:
+            if set(cluster) == wanted:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "these tickets are already one of the computed clusters "
+                        "you were shown — propose a grouping that extends or "
+                        "cuts across them, or leave them to the rule"
+                    ),
+                )
 
         existing = await EpicProposal.nodes.filter(
             repository_uid=repository_uid, status="proposed"
         )
         for p in existing:
-            if set(p.member_ticket_uids or []) == set(member_uids):
+            seen = set(p.member_ticket_uids or [])
+            if seen and (seen <= wanted or wanted <= seen):
                 return p, True
 
         # An agent may only claim an axis a model is actually needed for. One

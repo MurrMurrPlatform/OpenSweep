@@ -260,6 +260,15 @@ class PullRequestService:
 
     async def apply_github_payload(self, repo: Repository, client, payload: dict) -> PullRequestDTO:
         """Upsert one GitHub `pull_request` payload, refresh checks, recompute."""
+        # Read the prior state BEFORE the upsert so the merge can be detected as
+        # an EDGE (not-merged → merged). Edge-triggering is what makes the
+        # sibling sweep idempotent under webhook replay and under the 5-minute
+        # sync beat: a redelivered `closed` event finds the row already merged
+        # and does nothing, instead of re-flagging every sibling forever.
+        before = await PullRequest.nodes.get_or_none(
+            pr_key=pr_key(repo.uid, int(payload["number"]))
+        )
+        was_merged = bool(before is not None and (before.state or "") == "merged")
         pr = await self.upsert_from_payload(repo, payload)
         checks = []
         if pr.head_sha and pr.state == "open":
@@ -285,6 +294,17 @@ class PullRequestService:
 
         state = await self.recompute(pr)
         await self._publish_status(repo, pr, state)
+        # Covers merges OpenSweep did not perform: the webhook, the sync beat,
+        # and PRs merged directly on GitHub. Best-effort — a sibling sweep must
+        # never fail the payload sync.
+        if not was_merged and (pr.state or "") == "merged":
+            try:
+                await self.mark_base_advanced(pr)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    f"base-advanced sweep failed for PR {pr.pr_key}: {exc}",
+                    extra={"tag": "delivery"},
+                )
         return pull_request_to_dto(pr)
 
     async def sync_from_github(self, repository_uid: str, github_number: int) -> PullRequestDTO:
@@ -390,6 +410,44 @@ class PullRequestService:
 
     # ── Convergence ──────────────────────────────────────────────────────
 
+    async def mark_base_advanced(self, merged: PullRequest) -> int:
+        """Flag every OTHER open PR on the same base as un-reviewed-against-base.
+
+        Convergence is head-derived, so a sibling's head_sha did not change
+        when this PR merged: its verdict stays "fresh", its published
+        `opensweep/converged` status stays green, and it can be merged untested
+        against a base that just moved. Repeat for N siblings and every one of
+        them reports ready.
+
+        Walked in `github_number` order so the republished statuses and any
+        audit trail are reproducible. Per-PR failures are logged and skipped —
+        one unreachable sibling must never abort the sweep, and this is called
+        from a best-effort block AFTER GitHub has already merged.
+
+        Returns how many siblings were flagged.
+        """
+        now = datetime.now(UTC)
+        siblings = [
+            p
+            for p in await PullRequest.nodes.filter(
+                repository_uid=merged.repository_uid, state="open"
+            )
+            if p.uid != merged.uid and (p.base_ref or "") == (merged.base_ref or "")
+        ]
+        flagged = 0
+        for pr in sorted(siblings, key=lambda p: int(p.github_number or 0)):
+            try:
+                pr.base_advanced_at = now
+                await pr.save()
+                await self.recompute_and_publish(pr)
+                flagged += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    f"base-advanced flag failed for PR {pr.pr_key}: {exc}",
+                    extra={"tag": "delivery"},
+                )
+        return flagged
+
     async def recompute(self, pr: PullRequest) -> ConvergenceState:
         # Local import: resolution_service imports models only; this avoids a
         # service-level cycle while reusing ensure_merge_policy.
@@ -417,6 +475,7 @@ class PullRequestService:
                 "sha": verdict.sha,
                 "result": verdict.result,
                 "new_blocking_findings": int(verdict.new_blocking_findings or 0),
+                "created_at": verdict.created_at,
             }
             if verdict
             else None
@@ -432,6 +491,7 @@ class PullRequestService:
             pr_state=pr.state or "open",
             draft=bool(pr.draft),
             base_is_default=bool(pr.base_is_default),
+            base_advanced_at=pr.base_advanced_at,
         )
         pr.converged = state.converged
         pr.convergence = state.model_dump(mode="json")
@@ -530,6 +590,8 @@ class PullRequestService:
             from domains.threads.services.hooks import note_pr_merged
 
             await note_pr_merged(pr.uid)
+            # Siblings on this base are now reviewed against a base that moved.
+            await self.mark_base_advanced(pr)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 f"merge follow-through failed for PR {pr.uid}: {exc}",

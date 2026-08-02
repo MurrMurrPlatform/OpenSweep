@@ -404,6 +404,85 @@ class AskUserBody(BaseModel):
     context: str = ""
 
 
+class AskPolicyQuestionBody(BaseModel):
+    question: str = Field(min_length=1)
+    applies_to_ticket_uids: list[str] = Field(min_length=2)
+    options: list[str] = Field(default_factory=list)
+    context: str = ""
+
+
+@router.post(
+    "/ask-policy-question",
+    operation_id="opensweep_platform_ask_policy_question",
+)
+async def http_ask_policy_question(
+    req: AskPolicyQuestionBody,
+    request: Request,
+    user: UserDTO = Depends(get_current_user),
+):
+    """Record ONE question that spans several tickets (batch triage).
+
+    Non-blocking: the run proceeds under an assumption and the answer becomes a
+    repository policy the next batch is seeded with."""
+    from domains.platform_tools.ask_policy_question import ask_policy_question
+    from domains.runs.models import Run
+
+    executor = request.headers.get("x-opensweep-run-uid") or "manual"
+    run = await Run.nodes.get_or_none(uid=executor)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    await require_tool_repo_access(request, user, run.repository_uid)
+    return await _invoke_platform_tool(
+        "ask_policy_question",
+        ask_policy_question,
+        question=req.question,
+        applies_to_ticket_uids=req.applies_to_ticket_uids,
+        options=req.options,
+        context=req.context,
+        executor=executor,
+    )
+
+
+class RecordAssumptionBody(BaseModel):
+    assumption: str = Field(min_length=1)
+    because: str = ""
+    confidence: str = "medium"
+    question: str = ""
+
+
+@router.post(
+    "/record-assumption/{ticket_uid}",
+    operation_id="opensweep_platform_record_assumption",
+)
+async def http_record_assumption(
+    ticket_uid: str,
+    req: RecordAssumptionBody,
+    request: Request,
+    user: UserDTO = Depends(get_current_user),
+):
+    """Record a decision the agent made INSTEAD of asking (autonomy=assume).
+
+    The counterweight to ask_user: an unasked question must become a visible
+    artifact, never a silent guess."""
+    from domains.platform_tools.assumptions import record_assumption
+    from domains.tickets.models import Ticket
+
+    ticket = await Ticket.nodes.get_or_none(uid=ticket_uid)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail=f"Ticket {ticket_uid} not found")
+    await require_tool_repo_access(request, user, ticket.repository_uid)
+    return await _invoke_platform_tool(
+        "record_assumption",
+        record_assumption,
+        ticket_uid=ticket.uid,
+        assumption=req.assumption,
+        because=req.because,
+        confidence=req.confidence,
+        question=req.question,
+        executor=request.headers.get("x-opensweep-run-uid") or "manual",
+    )
+
+
 @router.post(
     "/ask-user/{thread_uid}",
     operation_id="opensweep_platform_ask_user",

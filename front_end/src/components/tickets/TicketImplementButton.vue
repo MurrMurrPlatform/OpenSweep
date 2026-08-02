@@ -40,6 +40,19 @@ const eligible = computed(
     (props.ticket.status === 'todo' || props.ticket.status === 'in-progress'),
 )
 
+/** Why this ticket cannot be implemented right now, in the user's terms.
+ *  Rendering NOTHING for an ineligible ticket read as a broken page — the
+ *  Implement button simply was not there and no surface said why. */
+const blockedReason = computed(() => {
+  if (props.ticket.parent_ticket_uid)
+    return 'Part of an epic — implement the epic parent; its PR closes this one.'
+  if (props.ticket.status === 'backlog')
+    return 'Needs approval first (Gate 1): move it to Todo.'
+  if (props.ticket.status === 'in-review') return 'Already in review.'
+  if (props.ticket.status === 'done') return 'Already done.'
+  return 'Not implementable in its current state.'
+})
+
 // In-flight WORK runs targeting this ticket replace the Implement button with
 // a "view run" chip while one exists (polls ~5s, stops on terminal). Chat
 // runs never gate this surface (useActiveRuns filters them out).
@@ -93,7 +106,18 @@ async function dispatch() {
 
 <template>
   <ActiveRunChip v-if="hasActive && activeRun" :run="activeRun" />
-  <template v-else-if="eligible">
+  <!-- Ineligible: say WHY rather than rendering nothing. A missing button is
+       indistinguishable from a broken page. -->
+  <Button
+    v-else-if="!eligible"
+    variant="outline"
+    size="sm"
+    disabled
+    :title="blockedReason"
+  >
+    <Rocket /> Implement
+  </Button>
+  <template v-else>
     <Button
       :variant="compact ? 'outline' : 'default'"
       size="sm"

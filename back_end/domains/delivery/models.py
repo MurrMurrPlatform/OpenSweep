@@ -43,6 +43,15 @@ class PullRequest(AsyncStructuredNode):
     head_ref = StringProperty(default="")
     base_ref = StringProperty(default="")
     base_is_default = BooleanProperty(default=True)
+    # When a SIBLING PR on this same base last merged. Convergence is
+    # head-derived, so a sibling merging does not move this PR's head_sha —
+    # its verdict stays "fresh" and its published converged status stays green
+    # against a base that has moved. This is the second freshness axis:
+    # verdict vs BASE, not just verdict vs HEAD.
+    #
+    # Deliberately NOT backfilled: None reads as "never advanced", which is the
+    # correct, non-disruptive default for every existing row.
+    base_advanced_at = DateTimeProperty()
 
     ticket_uid = StringProperty(default="", index=True)
 
@@ -78,6 +87,12 @@ class Verdict(AsyncStructuredNode):
     finding_uids = JSONProperty(default=[])
     # [{criterion, result: pass|fail|unverifiable, note}]
     ac_results = JSONProperty(default=[])
+    # [{assumption, result: confirmed|refuted|unverifiable, note}] — the
+    # reviewer's judgment on assumptions the implementer made instead of
+    # asking. A SIBLING of ac_results, never merged into it: "did the PR meet
+    # the criterion" and "was the guess right" are different questions, and
+    # folding them together would corrupt the AC pass-rate.
+    assumption_results = JSONProperty(default=[])
 
     source_run_uid = StringProperty(default="", index=True)
     executor = StringProperty(default="manual")

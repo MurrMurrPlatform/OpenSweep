@@ -17,7 +17,7 @@ from uuid import uuid4
 
 import pydantic
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from api.dependencies import get_current_user, require_role
 from domains.runs.models import Run
@@ -502,6 +502,74 @@ async def get_run_changes(uid: str, user: UserDTO = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail=f"Run {uid} not found")
     await require_repo_in_org(r.repository_uid, user.org_uid)
     return RunChangesDTO(**await read_changes(r))
+
+
+
+class AnswerPolicyQuestionRequest(BaseModel):
+    answer: str = Field(min_length=1)
+
+
+@router.post(
+    "/{uid}/policy-questions/{question_uid}/answer",
+    operation_id="opensweep_run_answer_policy_question",
+)
+async def answer_policy_question(
+    uid: str,
+    question_uid: str,
+    req: AnswerPolicyQuestionRequest,
+    user: UserDTO = Depends(require_role("maintainer")),
+) -> dict:
+    """Answer a batch-triage policy question — and make the answer durable.
+
+    The answer is written as a `Policy:`-titled Memory by THIS route, not by
+    the agent: an agent that decides what its own answer was is not a record.
+    `Memory.fingerprint` makes re-answering an idempotent overwrite, which is
+    the right semantics — policies get revised, not versioned.
+
+    The next batch is seeded with these up front, so the question stops being
+    asked. NOTE the honest limit: `search_memory` is full-text, so a
+    differently-worded question can still slip through and be re-asked. Seeding
+    narrows that; it does not close it.
+    """
+    from domains.memory.services import memory_service
+    from domains.runs.models import Run
+
+    run = await Run.nodes.get_or_none(uid=uid)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    await require_repo_in_org(run.repository_uid, user.org_uid)
+
+    rows = [dict(q) for q in (run.questions or [])]
+    target = next((q for q in rows if q.get("uid") == question_uid), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="question not found")
+    if target.get("status") == "answered":
+        raise HTTPException(status_code=409, detail="question is already answered")
+
+    target["status"] = "answered"
+    target["answer"] = req.answer
+    target["answered_by"] = user.uid
+    run.questions = rows
+    await run.save()
+
+    question_text = (target.get("question") or "").strip()
+    # The question's own words go in the BODY so a later full-text search on
+    # how someone phrases it again still hits.
+    await memory_service.write_memory(
+        repository_uid=run.repository_uid,
+        title=f"Policy: {question_text[:120]}",
+        body=f"Q: {question_text}\n\nA: {req.answer}",
+        source_run_uid=run.uid,
+    )
+    await write_audit(
+        kind="run.policy_question_answered",
+        subject_uid=run.uid,
+        subject_type="Run",
+        actor_uid=user.uid,
+        repository_uid=run.repository_uid or "",
+        payload={"question_uid": question_uid},
+    )
+    return {"run_uid": run.uid, "question_uid": question_uid, "status": "answered"}
 
 
 @router.get("/{uid}", response_model=RunDTO, operation_id="opensweep_get_run")

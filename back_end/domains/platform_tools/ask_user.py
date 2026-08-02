@@ -18,6 +18,60 @@ from fastapi import HTTPException
 from infrastructure.audit import write_audit
 
 
+def asked_question_count(events: list[dict]) -> int:
+    """Questions this thread has already spent, over its LIFETIME.
+
+    Lifetime, not per-turn: a per-turn count would let the agent ask K
+    questions every turn forever, which is the behaviour the cap exists to
+    stop. Dismissed questions still count — the user paid attention to them.
+    """
+    return sum(1 for e in events or [] if e.get("type") == "question")
+
+
+def question_cap_refusal(events: list[dict], *, autonomy: str) -> dict | None:
+    """The refusal payload when this thread has spent its question budget.
+
+    Returns None when the agent may still ask.
+
+    Deliberately a 200 with a payload, NOT a 4xx. The existing `_validate`
+    422s are for MALFORMED input; a cap breach is well-formed input arriving at
+    the wrong time, and some harnesses read a 4xx tool result as a transport
+    error and retry-loop on it. The payload carries the redirect, which is the
+    whole point: it converts a blocked question into a ledger entry instead of
+    a stalled turn.
+
+    Enforced server-side rather than left to the prompt because the failure is
+    asymmetric. An agent that ignores a prompt-level FINDING cap files 8
+    findings instead of 5 — cheap. An agent that ignores a question cap ends
+    its turn 8 times and leaves a human staring at 8 answer cards on a ticket
+    that is going nowhere, which is exactly the state `assume` exists to
+    prevent. Precedent: `_validate` already enforces `len(options) > 6` here
+    rather than trusting the prompt.
+    """
+    from domains.runs.services.autonomy import question_cap
+
+    cap = question_cap(autonomy)
+    if cap is None:
+        return None
+    asked = asked_question_count(events)
+    if asked < cap:
+        return None
+    return {
+        "status": "capped",
+        "question_uid": "",
+        "asked": asked,
+        "cap": cap,
+        "instruction": (
+            f"Question budget for this thread is spent ({asked}/{cap}, "
+            f"autonomy={autonomy or 'assume'}). Do NOT ask this — answer it "
+            "yourself with the most conventional choice for this codebase, "
+            "cite the file:line precedent, and record it via "
+            "`opensweep_platform_record_assumption`. The reviewer sees every "
+            "assumption you record."
+        ),
+    }
+
+
 def _validate(*, thread_uid: str, question: str, options: list[str]) -> None:
     if not (thread_uid or "").strip():
         raise HTTPException(status_code=422, detail="thread_uid is required")
@@ -50,6 +104,12 @@ async def ask_user(
     thread_uid = thread.uid  # the candidate may have been the ticket uid
     if thread.phase in {"done", "abandoned"}:
         raise HTTPException(status_code=409, detail=f"thread is {thread.phase}")
+
+    capped = question_cap_refusal(
+        thread.events or [], autonomy=getattr(thread, "autonomy", "") or ""
+    )
+    if capped is not None:
+        return capped
     now = datetime.now(UTC)
     question_uid = uuid4().hex
     thread.events = [

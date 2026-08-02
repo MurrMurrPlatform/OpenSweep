@@ -43,6 +43,7 @@ import TicketCard from '@/components/tickets/TicketCard.vue'
 import TicketDialog from '@/components/tickets/TicketDialog.vue'
 import TicketOriginBadge from '@/components/tickets/TicketOriginBadge.vue'
 import TicketRefineButton from '@/components/tickets/TicketRefineButton.vue'
+import TicketImplementButton from '@/components/tickets/TicketImplementButton.vue'
 import TicketStatusPipeline from '@/components/tickets/TicketStatusPipeline.vue'
 import TicketTransitionButtons from '@/components/tickets/TicketTransitionButtons.vue'
 import CommentThread from '@/components/comments/CommentThread.vue'
@@ -259,6 +260,13 @@ async function startThread() {
           <MessagesSquare /> Open thread
         </Button>
         <TicketRefineButton v-if="!ticket.archived" :ticket="ticket" />
+        <!-- The one-shot path. It was previously reachable only from the board
+             card, so approving a ticket on this page left nothing to click. -->
+        <TicketImplementButton
+          v-if="!ticket.archived"
+          :ticket="ticket"
+          @updated="onUpdated"
+        />
         <Button variant="ghost" size="sm" :loading="discussing" @click="discussInRun">
           <MessagesSquare /> Discuss
         </Button>

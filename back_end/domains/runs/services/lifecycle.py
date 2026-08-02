@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
@@ -66,10 +67,100 @@ class LifecycleError(RuntimeError):
     """Raised when a Run cannot be dispatched (policy, kill switch, etc.)."""
 
 
+class CapacityExceededError(LifecycleError):
+    """Refused because the resolved provider is at its concurrency ceiling.
+
+    A distinct type because the correct reaction differs from every other
+    LifecycleError: nothing is *wrong* with the request, so an automated caller
+    must retry it on its own beat instead of recording a permanent failure.
+    Interactive callers keep the plain 409 that every LifecycleError already
+    maps to at the API boundary, so no route needs to know about this.
+
+    No Run row is created for a refusal. That is deliberate and load-bearing:
+    `active_run_count` counts queued/running/paused_quota, so any row parked
+    while waiting for capacity would consume the very headroom it waits for and
+    never recover. The queue therefore lives OUTSIDE the Run table — every
+    caller already owns a durable retryable intent (a campaign part stays
+    `pending`, a scheduled agent leaves `last_scheduled_at` unstamped, an
+    implement dispatch rolls the ticket back to `todo`, a webhook is re-driven
+    by the PR sync beat).
+    """
+
+
+class CapacityMode(StrEnum):
+    """Whether a dispatch honours the provider's concurrency ceiling.
+
+    BEST_EFFORT exists for continuations whose refusal would be *permanently*
+    destructive and which have no retry driver — currently only the
+    verification (skeptic) run, whose caller turns any LifecycleError into a
+    terminal `verification_status="failed"`. Over-ceiling admissions are
+    stamped `usage["over_ceiling"]` so the exception is visible on the run
+    rather than only in a log.
+    """
+
+    ENFORCE = "enforce"
+    BEST_EFFORT = "best_effort"
+
+
 # Executors that launch a CLI subprocess with cwd = repo path. They get a
 # throwaway `git clone` from GitHub so their tool calls only see tracked
 # files (no .venv, no node_modules, no build artefacts).
 _CLI_SANDBOXED_EXECUTORS = {Executor.CLAUDE_CODE, Executor.OPENCODE}
+
+
+async def _assert_capacity(
+    provider: LLMProvider,
+    *,
+    mode: CapacityMode,
+    playbook: str,
+    repository_uid: str,
+) -> bool:
+    """Concurrency check for the FINAL resolved provider.
+
+    Returns True when the run is being admitted OVER the ceiling (BEST_EFFORT),
+    so the caller can stamp it. Raises `CapacityExceededError` under ENFORCE.
+
+    Called after the write-capable re-selection, because that step can swap the
+    provider — checking earlier would size against a provider the run will not
+    use. Called before the Run row is persisted, so a refusal leaves nothing
+    behind for the reconciler to find.
+    """
+    from domains.llm_providers.services.capacity import (
+        active_run_count,
+        admission_refusal,
+        configured_ceiling,
+    )
+
+    ceiling = configured_ceiling(provider)
+    active = await active_run_count(getattr(provider, "uid", "") or "")
+    refusal = admission_refusal(
+        active=active,
+        ceiling=ceiling,
+        provider_label=(getattr(provider, "label", "") or "").strip(),
+    )
+    if refusal is None:
+        return False
+    if mode == CapacityMode.BEST_EFFORT:
+        logger.warning(
+            "capacity: admitting %s run over ceiling (%s/%s) on provider %s",
+            playbook,
+            active,
+            ceiling,
+            getattr(provider, "uid", ""),
+        )
+        return True
+    await write_audit(
+        kind="run.capacity_refused",
+        subject_uid=getattr(provider, "uid", "") or "",
+        subject_type="LLMProvider",
+        repository_uid=repository_uid,
+        payload={
+            "playbook": playbook,
+            "active": active,
+            "ceiling": ceiling,
+        },
+    )
+    raise CapacityExceededError(refusal)
 
 
 def dispatch_result_is_stale(run_status: str, self_reported_status: str = "") -> bool:
@@ -125,6 +216,9 @@ async def trigger_run(
     # a tier to report).
     effort: str = "",
     reasoning: str = "",
+    # Question-policy tier, stamped for provenance. Thread.autonomy stays
+    # authoritative for thread runs — see runs/services/autonomy.py.
+    autonomy: str = "",
     trigger: RunTrigger = RunTrigger.MANUAL,
     triggered_by: str = "",
     surface: str = "runs",
@@ -136,6 +230,10 @@ async def trigger_run(
     # stamped on the Run so the surface never reports a clean compose.
     composed_degraded: bool = False,
     degraded_layers: tuple[str, ...] | list[str] = (),
+    # Honour the resolved provider's max_concurrent_runs. BEST_EFFORT is for
+    # continuations whose refusal would be permanently destructive and which
+    # have no retry driver — see CapacityMode.
+    capacity: CapacityMode = CapacityMode.ENFORCE,
 ) -> Run:
     """Create a Run and dispatch its first turn.
 
@@ -261,6 +359,18 @@ async def trigger_run(
         active_provider = write_provider
     chosen_executor = executor or _executor_for_provider(active_provider)
 
+    # Concurrency ceiling. Placed HERE — after the write-capable re-selection
+    # above (which can swap `active_provider`) and before any of the work
+    # below — so it sizes against the provider the run will actually use, does
+    # no briefing I/O on the refusal path, and leaves no Run row behind. It
+    # sits after `assert_runnable`, so a kill switch still outranks capacity.
+    over_ceiling = await _assert_capacity(
+        active_provider,
+        mode=capacity,
+        playbook=playbook,
+        repository_uid=repository_uid,
+    )
+
     try:
         # Policy precedence: the explicit per-run run_policy_uid wins (agent
         # dispatch resolves the binding's pin / effort there), then the
@@ -315,6 +425,7 @@ async def trigger_run(
         provider_uid=(active_provider.uid or "").strip(),
         effort=effort or "",
         reasoning=reasoning or "",
+        autonomy=autonomy or "",
         agent_uid=agent_uid,
         agent_rev=agent_rev,
         status=RunStatus.QUEUED.value,
@@ -338,6 +449,10 @@ async def trigger_run(
             # Which process owns the dispatch asyncio task — that process
             # fails this run at its next startup if it dies mid-run.
             "dispatch_runtime": get_role(),
+            # Admitted past the provider's concurrency ceiling (BEST_EFFORT).
+            # Recorded so an over-subscribed provider is visible on the run
+            # itself, not just in a log line nobody reads.
+            **({"over_ceiling": True} if over_ceiling else {}),
             "provider_uid": (active_provider.uid or "").strip(),
             "provider_kind": (active_provider.kind or "").strip(),
             "provider_label": (active_provider.label or "").strip(),
@@ -433,6 +548,60 @@ def _log_task_failure(run_uid: str, done: asyncio.Task) -> None:
         )
 
 
+_DISPATCH_SLOTS: asyncio.Semaphore | None = None
+_DISPATCH_SLOTS_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def _dispatch_slots() -> asyncio.Semaphore:
+    """Per-loop singleton bounding in-process dispatch fan-out.
+
+    A DIFFERENT resource from the provider ceiling in `_assert_capacity`: that
+    one bounds how many runs may start per provider (cross-process, the real
+    concurrency limit); this bounds how many pipelines THIS process may host,
+    which has to hold even when three providers each have headroom. Each
+    pipeline owns a git clone and a CLI subprocess. The Celery worker branch is
+    already bounded by `--concurrency`; the backend branch was bounded by
+    nothing.
+
+    Rebuilt when the running loop changes. A Semaphore's waiter futures belong
+    to the loop that created them, so a module-level instance shared across the
+    fresh loops the test suite (and celery's `asyncio.run`) create would park a
+    waiter on a dead loop and hang forever.
+
+    Per-process, like the `turn_service` in-flight guard. It is a local-resource
+    backstop, NOT the concurrency ceiling — do not mistake it for one.
+    """
+    global _DISPATCH_SLOTS, _DISPATCH_SLOTS_LOOP
+
+    loop = asyncio.get_running_loop()
+    if _DISPATCH_SLOTS is None or _DISPATCH_SLOTS_LOOP is not loop:
+        _DISPATCH_SLOTS = asyncio.Semaphore(
+            max(int(settings.OPENSWEEP_BACKEND_MAX_INFLIGHT_DISPATCHES), 1)
+        )
+        _DISPATCH_SLOTS_LOOP = loop
+    return _DISPATCH_SLOTS
+
+
+async def _bounded_pipeline(run_uid: str, make_pipeline) -> None:
+    """Hold a process slot for the whole pipeline (clone → agent → finalize).
+
+    The slot covers the entire pipeline, not just its start: the clone and the
+    agent turn are what consume disk and processes, so releasing early would
+    make the bound meaningless.
+    """
+    slots = _dispatch_slots()
+    if slots.locked():
+        # Honest about the wait. Without this the run sits `queued` with no
+        # explanation, and the 900s reconciler would eventually blame "the
+        # dispatching process likely restarted".
+        run = await Run.nodes.get_or_none(uid=run_uid)
+        if run is not None:
+            run.usage = {**(run.usage or {}), "awaiting_dispatch_slot": True}
+            await run.save()
+    async with slots:
+        await make_pipeline()
+
+
 async def _launch_dispatch(run: Run, make_pipeline, *, wait_for_completion: bool) -> Run:
     """Start (or hand off) a run's dispatch pipeline.
 
@@ -446,6 +615,10 @@ async def _launch_dispatch(run: Run, make_pipeline, *, wait_for_completion: bool
     single check fixes every worker-context path. `get_role()` is the same
     signal stamped as usage["dispatch_runtime"]."""
     if wait_for_completion:
+        # Deliberately NOT slot-bounded. Playbook hooks (on_turn_complete) run
+        # INSIDE a pipeline — i.e. inside a held slot — and dispatch follow-on
+        # runs. Acquiring a second slot here would deadlock the moment all N
+        # slots are held by pipelines whose hooks chain. Do not "fix" this.
         await make_pipeline()
         return await Run.nodes.get(uid=run.uid)
     if get_role() == WORKER:
@@ -461,7 +634,7 @@ async def _launch_dispatch(run: Run, make_pipeline, *, wait_for_completion: bool
             args=[run.uid], soft_time_limit=soft, time_limit=hard
         )
         return run
-    task = asyncio.create_task(make_pipeline())
+    task = asyncio.create_task(_bounded_pipeline(run.uid, make_pipeline))
     task.add_done_callback(lambda done: _log_task_failure(run.uid, done))
     return run
 

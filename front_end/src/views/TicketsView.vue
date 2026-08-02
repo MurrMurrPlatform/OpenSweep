@@ -66,6 +66,17 @@ const { uid: repoUid, repo } = useCurrentRepo()
 const toast = useToast()
 
 const tickets = ref<TicketDTO[]>([])
+
+/* ── Bulk selection (lane view) ───────────────────────────────────────────
+ * Mirrors FindingsView: a Set of uids, a busy guard, a counted confirm, and
+ * failed uids left selected so a retry is one click. Selection is cleared
+ * whenever the workspace changes — otherwise "select all" in one repo could
+ * act on rows that are no longer on screen. */
+type BulkAction = 'todo' | 'implement' | 'archive'
+const selected = ref<Set<string>>(new Set())
+const bulkBusy = ref<BulkAction | null>(null)
+const confirmBulkOpen = ref(false)
+const confirmBulkAction = ref<BulkAction | null>(null)
 const loading = ref(true)
 const error = ref<string | null>(null)
 const createOpen = ref(false)
@@ -132,7 +143,10 @@ async function loadOrphanPrs() {
   }
 }
 
-watch(repoUid, () => void reload(), { immediate: true })
+watch(repoUid, () => {
+  selected.value = new Set()
+  void reload()
+}, { immediate: true })
 
 // Implement/refine runs move tickets across lanes and open PRs. Ride the shared
 // /runs/active heartbeat: when the in-flight set changes, the board is stale.
@@ -365,6 +379,104 @@ async function moveTicket(ticket: TicketDTO, to: TicketStatus) {
     tickets.value = tickets.value.map((t) => (t.uid === ticket.uid ? { ...t, status: prev } : t))
     const msg = e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e)
     toast.error(e instanceof ApiError && e.status === 409 ? 'Illegal transition' : 'Move failed', msg)
+  }
+}
+
+/* ── Bulk actions ─────────────────────────────────────────────────────────
+ * Every action delegates to the single-ticket service on the backend, so
+ * legality checks, audit records and the epic-member 409s are inherited. The
+ * response is a partial-success envelope: `ok` and `errors` together account
+ * for every uid, and the failures are surfaced rather than swallowed. */
+
+const visibleSelectedCount = computed(
+  () => laneItems.value.filter((t) => selected.value.has(t.uid)).length,
+)
+const allVisibleSelected = computed(
+  () => laneItems.value.length > 0 && visibleSelectedCount.value === laneItems.value.length,
+)
+
+function toggleOne(uid: string, on: boolean) {
+  const next = new Set(selected.value)
+  if (on) next.add(uid)
+  else next.delete(uid)
+  selected.value = next
+}
+
+/** Select-all acts on what is CURRENTLY VISIBLE only — the lane's filters and
+ *  search have already narrowed it, and acting on hidden rows is how bulk
+ *  actions surprise people. */
+function toggleAllVisible(on: boolean) {
+  const next = new Set(selected.value)
+  for (const t of laneItems.value) {
+    if (on) next.add(t.uid)
+    else next.delete(t.uid)
+  }
+  selected.value = next
+}
+
+const BULK_COPY: Record<BulkAction, { title: string; verb: string }> = {
+  todo: { title: 'Approve for implementation?', verb: 'approve' },
+  implement: { title: 'Dispatch implement runs?', verb: 'implement' },
+  archive: { title: 'Archive tickets?', verb: 'archive' },
+}
+
+const confirmBulkCopy = computed(() => {
+  const n = selected.value.size
+  const a = confirmBulkAction.value
+  if (!a) return { title: '', body: '' }
+  const noun = `${n} ticket${n === 1 ? '' : 's'}`
+  if (a === 'todo')
+    return {
+      title: BULK_COPY.todo.title,
+      body: `Move ${noun} from backlog to todo. This is Gate 1 — it records who approved each one.`,
+    }
+  if (a === 'implement')
+    return {
+      title: BULK_COPY.implement.title,
+      body:
+        `Dispatch an implement run for ${noun}. Each run costs money. If the provider is at ` +
+        `its concurrency ceiling the excess is refused and reported, not queued.`,
+    }
+  return { title: BULK_COPY.archive.title, body: `Archive ${noun}. This is reversible.` }
+})
+
+function askBulk(action: BulkAction) {
+  confirmBulkAction.value = action
+  confirmBulkOpen.value = true
+}
+
+async function runBulk() {
+  const action = confirmBulkAction.value
+  confirmBulkOpen.value = false
+  confirmBulkAction.value = null
+  if (!action || bulkBusy.value) return
+  const uids = [...selected.value]
+  if (!uids.length) return
+
+  bulkBusy.value = action
+  try {
+    const res =
+      action === 'todo'
+        ? await store.bulkSetStatus(uids, 'todo')
+        : action === 'implement'
+          ? await store.bulkImplement(uids)
+          : await store.bulkArchive(uids)
+
+    // Keep ONLY the failures selected, so retrying is one click and the user
+    // can see exactly which ones need attention.
+    selected.value = new Set(res.errors.map((e) => e.uid))
+    if (res.ok.length) toast.success(`${BULK_COPY[action].verb}d ${res.ok.length} ticket(s)`)
+    if (res.errors.length) {
+      toast.error(
+        `${res.errors.length} ticket(s) failed`,
+        res.errors[0]?.detail ?? 'They stay selected so you can retry.',
+      )
+    }
+    await reload({ silent: true })
+  } catch (e) {
+    toast.error('Bulk action failed', e instanceof Error ? e.message : String(e))
+  } finally {
+    bulkBusy.value = null
   }
 }
 
@@ -662,21 +774,64 @@ function onTicketCreated(ticket: TicketDTO) {
             : COLUMN_HINTS[laneView]"
           class="border-0"
         />
+        <div
+          v-if="laneItems.length"
+          class="mb-3 flex flex-wrap items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2"
+        >
+          <label class="flex cursor-pointer items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              class="h-4 w-4 cursor-pointer accent-primary"
+              :checked="allVisibleSelected"
+              @change="toggleAllVisible(($event.target as HTMLInputElement).checked)"
+            />
+            Select all {{ laneItems.length }} shown
+          </label>
+          <span v-if="selected.size" class="text-sm text-muted-foreground">
+            {{ selected.size }} selected
+          </span>
+          <div v-if="selected.size" class="ml-auto flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" :disabled="!!bulkBusy" @click="askBulk('todo')">
+              Approve for implementation
+            </Button>
+            <Button size="sm" :disabled="!!bulkBusy" @click="askBulk('implement')">
+              Implement
+            </Button>
+            <Button size="sm" variant="outline" :disabled="!!bulkBusy" @click="askBulk('archive')">
+              Archive
+            </Button>
+            <Button size="sm" variant="ghost" :disabled="!!bulkBusy" @click="selected = new Set()">
+              Clear
+            </Button>
+          </div>
+        </div>
         <TransitionGroup
           v-else
           tag="div"
           name="board-card"
           class="stagger-children relative grid gap-3 sm:grid-cols-2 xl:grid-cols-3"
         >
-          <TicketCard
+          <div
             v-for="ticket in laneItems"
             :key="ticket.uid"
-            :ticket="ticket"
-            :subticket-count="childCounts[ticket.uid] ?? 0"
-            :thread="activeThreadByTicket[ticket.uid] ?? null"
-            @updated="onTicketUpdated"
-            @deleted="onTicketDeleted"
-          />
+            class="relative"
+            :class="selected.has(ticket.uid) && 'rounded-xl ring-2 ring-primary'"
+          >
+            <input
+              type="checkbox"
+              class="absolute left-2 top-2 z-10 h-4 w-4 cursor-pointer accent-primary"
+              :aria-label="`Select ${ticket.title}`"
+              :checked="selected.has(ticket.uid)"
+              @change="toggleOne(ticket.uid, ($event.target as HTMLInputElement).checked)"
+            />
+            <TicketCard
+              :ticket="ticket"
+              :subticket-count="childCounts[ticket.uid] ?? 0"
+              :thread="activeThreadByTicket[ticket.uid] ?? null"
+              @updated="onTicketUpdated"
+              @deleted="onTicketDeleted"
+            />
+          </div>
         </TransitionGroup>
       </CardContent>
     </Card>
@@ -746,6 +901,19 @@ function onTicketCreated(ticket: TicketDTO) {
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction @click="confirmGateMove()">Approve</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+
+    <AlertDialog v-model:open="confirmBulkOpen">
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{{ confirmBulkCopy.title }}</AlertDialogTitle>
+          <AlertDialogDescription>{{ confirmBulkCopy.body }}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction @click="runBulk()">Continue</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

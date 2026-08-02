@@ -43,6 +43,9 @@ class ThreadDetailDTO(ThreadDTO):
 
 class CreateThreadRequest(BaseModel):
     ticket_uid: str = Field(min_length=1)
+    # interrogate | assume | strict. "" = inherit (ticket → repository →
+    # interrogate). See domains/runs/services/autonomy.py.
+    autonomy: str = ""
 
 
 class UpdateThreadPlanRequest(BaseModel):

@@ -246,6 +246,15 @@ def test_platform_tools_are_tracking_safe():
         "opensweep_platform_submit_thread_plan",
         "opensweep_platform_submit_for_review",
         "opensweep_platform_ask_user",
+        # The counterweight to ask_user under autonomy=assume: records a
+        # decision the agent made instead of asking. Appends to
+        # Ticket.assumptions — OpenSweep state only, never the source
+        # repository — and the recorded value is surfaced to the reviewer
+        # rather than acted on, so it cannot change what ships.
+        "opensweep_platform_record_assumption",
+        # Batch triage policy question: appends to Run.questions (OpenSweep
+        # state only) and returns immediately — it cannot change what ships.
+        "opensweep_platform_ask_policy_question",
     }
     missing_delivery = delivery - actual
     assert not missing_delivery, f"delivery tools missing: {missing_delivery}"
