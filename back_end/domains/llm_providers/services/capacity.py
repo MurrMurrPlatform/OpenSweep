@@ -6,11 +6,8 @@ campaign tick clamps its dispatch capacity to the headroom computed here, so
 several campaigns pointed at one subscription cannot collectively stampede
 it just because each is individually under its own limit.
 
-This bounds runs we *start*. It is not a mutual-exclusion primitive: the
-codex-subscription credential lease (`codex_credential`) is the hard one, and
-it serializes to 1 per subscription on the `exec` path regardless of what is
-configured here. Setting a codex provider above 1 does not buy parallelism —
-it buys `paused_quota` parks on the 10-minute resume beat.
+This bounds runs we *start*; it is a soft ceiling, not a mutual-exclusion
+primitive.
 """
 
 from __future__ import annotations
@@ -27,10 +24,9 @@ def configured_ceiling(provider) -> int:
     """The provider's ceiling.
 
     Unset (NULL/0 — a row written before m0016, or outside create/update)
-    falls back to the KIND's default, not the platform's: guessing 5 for a
-    codex subscription that the credential lease serializes to 1 would be
-    the one wrong direction to guess in. Negative is nonsense; clamp to 1
-    rather than letting it read as "unlimited" downstream.
+    falls back to the KIND's default, not the platform's. Negative is
+    nonsense; clamp to 1 rather than letting it read as "unlimited"
+    downstream.
     """
     configured = int(getattr(provider, "max_concurrent_runs", None) or 0)
     if configured <= 0:

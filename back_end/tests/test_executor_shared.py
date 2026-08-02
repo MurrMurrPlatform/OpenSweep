@@ -17,7 +17,6 @@ from domains.executors._shared import (
     resolve_wall_ceiling,
 )
 from domains.executors.base import DispatchRequest
-from domains.llm_providers.services.runtime_env import ProviderRuntime, build_runtime
 from domains.run_policies.services.ceilings import UsageSnapshot
 from domains.run_policies.services.system_default import DEFAULT_MAX_WALL_SECONDS
 from infrastructure import artifact_store
@@ -246,7 +245,7 @@ def test_wall_kill_detection_expression():
 
 
 def test_llm_executor_timeout_message_matches_wall_kill_detection():
-    """cli_tracking/internal_llm detect wall kills via startswith('timed out')
+    """cli_tracking detects wall kills via startswith('timed out')
     against llm_executor's message — pin the format so a rename can't silently
     regress LIMIT_EXCEEDED back to FAILED."""
     import inspect
@@ -312,11 +311,11 @@ def _policy(**fields):
 class TestResolveWallCeiling:
     def test_override_outranks_everything(self):
         req = _req(max_wall_seconds_override=42, policy=_policy(max_wall_seconds=900))
-        assert resolve_wall_ceiling(req, "mlx") == 42
+        assert resolve_wall_ceiling(req, "opencode") == 42
 
     def test_local_provider_skips_wall_ceiling(self):
         req = _req(policy=_policy(max_wall_seconds=900))
-        assert resolve_wall_ceiling(req, "mlx") is None
+        assert resolve_wall_ceiling(req, "opencode") is None
         assert resolve_wall_ceiling(req, "opencode") is None
 
     def test_policy_ceiling_applies_to_metered_kinds(self):
@@ -325,7 +324,7 @@ class TestResolveWallCeiling:
 
     def test_system_default_fallback(self):
         req = _req()
-        assert resolve_wall_ceiling(req, "claude_api") == DEFAULT_MAX_WALL_SECONDS
+        assert resolve_wall_ceiling(req, "claude_subscription") == DEFAULT_MAX_WALL_SECONDS
 
 
 class TestCeilingWarnings:
@@ -396,52 +395,3 @@ class TestCeilingWarnings:
             wall_ceiling=None,
         )
         assert warnings == []
-
-
-# ── Codex credential dir hygiene (audit #21) ──────────────────────────────
-
-
-def _codex_provider(uid="prov-1"):
-    return SimpleNamespace(
-        uid=uid,
-        kind="codex_subscription",
-        credential_secret='{"tokens": "secret"}',
-        api_key_env="",
-    )
-
-
-class TestCodexRuntimeCleanup:
-    def test_home_is_deterministic_per_provider(self):
-        rt1 = build_runtime(_codex_provider())
-        rt2 = build_runtime(_codex_provider())
-        try:
-            assert rt1.home_override == rt2.home_override
-            assert "opensweep-codex-prov-1" in rt1.home_override
-        finally:
-            rt1.cleanup()
-
-    def test_cleanup_removes_home_dir(self):
-        import os
-
-        rt = build_runtime(_codex_provider(uid="prov-clean"))
-        home = rt.home_override
-        assert home and os.path.isdir(home)
-        rt.cleanup()
-        assert not os.path.exists(home)
-        assert rt.home_override is None
-        rt.cleanup()  # idempotent
-
-    def test_cleanup_refuses_foreign_paths(self, tmp_path):
-        victim = tmp_path / "not-opensweep"
-        victim.mkdir()
-        rt = ProviderRuntime(home_override=str(victim))
-        rt.cleanup()
-        assert victim.exists()
-
-    def test_context_manager_cleans_up(self):
-        import os
-
-        with build_runtime(_codex_provider(uid="prov-ctx")) as rt:
-            home = rt.home_override
-            assert home and os.path.isdir(home)
-        assert not os.path.exists(home)

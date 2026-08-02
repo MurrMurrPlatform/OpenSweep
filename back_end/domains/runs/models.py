@@ -133,6 +133,6 @@ PLAYBOOKS = {"chat", "ask", "review", "fix", "implement", "verify", "document", 
 
 RUN_SURFACES = {"runs", "comment", "chat", "slack"}
 
-EXECUTORS = {"internal_llm", "claude_code", "codex", "opencode", "manual"}
+EXECUTORS = {"claude_code", "opencode", "manual"}
 
 EXECUTION_MODES = {"analyze_only"}

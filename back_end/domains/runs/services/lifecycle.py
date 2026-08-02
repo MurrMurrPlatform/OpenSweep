@@ -29,7 +29,6 @@ from domains.execution.services.sandbox_service import SandboxService
 # imports here so any caller of the lifecycle service also pulls them in.
 from domains.executors import claude_code as _adapter_claude_code  # noqa: F401
 from domains.executors import cli_tracking as _adapter_cli_tracking  # noqa: F401
-from domains.executors import internal_llm as _adapter_internal_llm  # noqa: F401
 from domains.executors import manual as _adapter_manual  # noqa: F401
 from domains.executors.base import AdapterRegistry, DispatchRequest
 from domains.runs.models import RUN_SURFACES, Run
@@ -69,9 +68,8 @@ class LifecycleError(RuntimeError):
 
 # Executors that launch a CLI subprocess with cwd = repo path. They get a
 # throwaway `git clone` from GitHub so their tool calls only see tracked
-# files (no .venv, no node_modules, no build artefacts). Internal_llm uses
-# HTTP + platform read tools and doesn't need a working dir.
-_CLI_SANDBOXED_EXECUTORS = {Executor.CLAUDE_CODE, Executor.CODEX, Executor.OPENCODE}
+# files (no .venv, no node_modules, no build artefacts).
+_CLI_SANDBOXED_EXECUTORS = {Executor.CLAUDE_CODE, Executor.OPENCODE}
 
 
 def dispatch_result_is_stale(run_status: str, self_reported_status: str = "") -> bool:
@@ -246,8 +244,8 @@ async def trigger_run(
         )
     # A WRITE run whose executor is resolved from the provider (executor is None —
     # how the delivery services dispatch since G1) MUST land on a write-capable
-    # executor. If the active/pinned provider is read-only (internal_llm/codex),
-    # re-select a write-capable one from the org chain so the run doesn't silently
+    # executor. If the active/pinned provider is read-only, re-select a
+    # write-capable one from the org chain so the run doesn't silently
     # no-op at the write gate. An explicit `executor` (legacy callers) is trusted.
     if (
         chosen_mode != ExecutionMode.ANALYZE_ONLY
@@ -294,7 +292,7 @@ async def trigger_run(
     # their tool calls only see tracked files. A CLI executor is never
     # dispatched without a working dir — sandbox prep failure fails the run.
     # The clone itself happens in the background pipeline below, never inside
-    # the caller's request. Internal_llm keeps None.
+    # the caller's request. Executors without a working dir keep None.
     if (
         prepared_sandbox is None
         and sandbox_factory is None
@@ -1005,9 +1003,9 @@ async def redispatch_run(
     if chosen_mode == ExecutionMode.IMPLEMENT:
         # Write runs (fix/implement) work in a write sandbox and go through
         # the write gate — only executors with a write surface may resume
-        # them. A read-only fallback (internal_llm/opencode/codex tracking)
-        # would waste the round; leave the run paused (raise → the resume
-        # task records the error and retries a later tick) instead.
+        # them. A read-only fallback would waste the round; leave the run
+        # paused (raise → the resume task records the error and retries a
+        # later tick) instead.
         # Only the run's org's providers can ever be selected below, so build the
         # write-support exclusion from that org (not every org's rows).
         exclude |= {
@@ -1136,7 +1134,7 @@ async def _ensure_run_workspace(
 ) -> str | None:
     """Reuse the run's workspace for a retry; recreate from workspace_spec
     when it is gone. Returns the container path; None for executors that need
-    no working dir (internal_llm)."""
+    no working dir (manual)."""
     path = await workspace_service.live_workspace_path(run)
     if path is not None:
         return path
@@ -1217,12 +1215,8 @@ def _executor_for_provider(provider: LLMProvider) -> Executor:
     kind = (provider.kind or "").strip()
     if kind == "claude_subscription":
         return Executor.CLAUDE_CODE
-    if kind == "codex_subscription":
-        return Executor.CODEX
     if kind == "opencode":
         return Executor.OPENCODE
-    if kind in {"claude_api", "openai_api", "mlx", "lmstudio", "ollama", "custom"}:
-        return Executor.INTERNAL_LLM
     raise LifecycleError(
         f"Active provider kind '{kind}' is not supported for runs."
     )
@@ -1232,8 +1226,7 @@ def _executor_for_provider(provider: LLMProvider) -> Executor:
 # commit in a write sandbox). claude_code and opencode: opencode edits files
 # with its own tools in the sandbox clone under the write contract (G1 — the
 # local-LLM delivery loop), and the finalize path validates + pushes its commits
-# the same way. internal_llm is HTTP + read tools, and the codex tracking adapter
-# is deliberately read/report only.
+# the same way.
 _WRITE_CAPABLE_EXECUTORS = frozenset({Executor.CLAUDE_CODE, Executor.OPENCODE})
 
 
@@ -1248,9 +1241,9 @@ def _provider_supports_write(provider: LLMProvider) -> bool:
 async def _select_write_capable_provider(run_org_uid: str) -> LLMProvider | None:
     """Pick a write-capable provider from the org's §8 fallback chain.
 
-    Excludes every provider whose executor has no write surface (internal_llm,
-    codex) so a WRITE run never lands on a read-only executor and silently no-ops
-    at the write gate. Returns None when the org has no write-capable provider.
+    Excludes every provider whose executor has no write surface so a WRITE
+    run never lands on a read-only executor and silently no-ops at the write
+    gate. Returns None when the org has no write-capable provider.
     """
     exclude = {
         (p.uid or "").strip()

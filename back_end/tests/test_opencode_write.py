@@ -29,13 +29,12 @@ def test_opencode_provider_supports_write():
     assert lifecycle._provider_supports_write(_FakeProvider("opencode")) is True
     # Read-only executors stay rejected.
     assert lifecycle._provider_supports_write(_FakeProvider("ollama")) is False
-    assert lifecycle._provider_supports_write(_FakeProvider("codex_subscription")) is False
+    assert lifecycle._provider_supports_write(_FakeProvider("codex_subscription")) is False  # removed kind → not write-capable
 
 
 def test_opencode_in_write_capable_set():
     assert Executor.OPENCODE in lifecycle._WRITE_CAPABLE_EXECUTORS
     assert Executor.CLAUDE_CODE in lifecycle._WRITE_CAPABLE_EXECUTORS
-    assert Executor.CODEX not in lifecycle._WRITE_CAPABLE_EXECUTORS
 
 
 def test_cli_tracking_write_prompt_is_a_write_contract():
@@ -103,7 +102,7 @@ async def test_select_write_capable_excludes_readonly_providers(monkeypatch):
 
 
 async def test_select_write_capable_none_when_all_readonly(monkeypatch):
-    providers = [_FakeProvider("ollama", uid="ol"), _FakeProvider("codex_subscription", uid="cx")]
+    providers = [_FakeProvider("ollama", uid="ol"), _FakeProvider("codex_subscription", uid="cx")]  # removed kinds
 
     class _Nodes:
         async def filter(self, **_kw):

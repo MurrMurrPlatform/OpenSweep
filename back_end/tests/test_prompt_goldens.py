@@ -1,6 +1,6 @@
 """Golden-file tests for the prompt kit.
 
-The four system prompts and the four stance tiers are pinned byte-for-byte:
+The system prompts and the four stance tiers are pinned byte-for-byte:
 prompt text is an interface (agents are tuned against it), so drift must be a
 deliberate, reviewed change. Regenerate with:
 
@@ -17,7 +17,7 @@ from domains.executors.prompt_kit import stance_block, system_prompt
 
 GOLDENS_DIR = Path(__file__).parent / "goldens"
 
-KINDS = ("claude_code_read", "claude_code_write", "internal_llm", "cli_tracking")
+KINDS = ("claude_code_read", "claude_code_write", "cli_tracking", "cli_tracking_write")
 TIERS = ("short", "normal", "deep", "unlimited")
 
 # Fixed fake policy so the goldens are deterministic.
@@ -71,7 +71,7 @@ def test_no_dollar_language_anywhere():
 
 
 def test_envelope_contract_present_for_envelope_kinds():
-    for kind in ("internal_llm", "cli_tracking"):
+    for kind in ("cli_tracking",):
         text = system_prompt(kind)
         assert "```json" in text
         assert '"tool_calls"' in text

@@ -227,7 +227,7 @@ def _fake_provider_model(monkeypatch):
 async def test_providers_activate_baseline_on_a_fresh_install(_fake_provider_model):
     ds = _fake_provider_model
     res = await ds.seed_llm_providers(SeedMode.UPSERT)
-    assert res.created == 3
+    assert res.created == 2
     active = [p for p in _FakeProvider.store if p.active]
     assert len(active) == 1 and active[0].label == "Claude Code (subscription)"
     # Providers are strictly org-owned: every seeded row belongs to the local org.

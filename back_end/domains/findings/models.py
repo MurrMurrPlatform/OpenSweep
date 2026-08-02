@@ -56,7 +56,7 @@ class Finding(AsyncStructuredNode):
     last_confirmed_at = DateTimeProperty()
     # Last time any run re-found (confirmed) this finding.
     executor = StringProperty(default="manual", index=True)
-    # internal_llm | claude_code | codex | opencode | manual
+    # claude_code | opencode | manual (historical rows may carry removed executors)
     source_path = StringProperty(default="tool-call")
     # tool-call | parsed-blob | raw-derived
     parse_status = StringProperty(default="ok")

@@ -28,7 +28,7 @@ export type FindingStatusFilter = FindingStatus | 'processed'
 export type SourcePath = 'tool-call' | 'parsed-blob' | 'raw-derived'
 export type ParseStatus = 'ok' | 'degraded'
 
-export type Executor = 'internal_llm' | 'claude_code' | 'codex' | 'opencode' | 'manual'
+export type Executor = 'claude_code' | 'opencode' | 'manual'
 export type ExecutionMode = 'analyze_only' | 'implement'
 export type Autonomy = 'disabled' | 'suggest' | 'ask-before-run' | 'auto-run-cheap' | 'auto-run-any'
 export type AgentProvenance = 'system' | 'user' | 'imported'
@@ -925,17 +925,7 @@ export interface Sandbox {
 
 // ── LLM provider (admin) ────────────────────────────────────────────────────
 
-export type LLMProviderKind =
-  | 'claude_subscription'
-  | 'codex_subscription'
-  | 'claude_api'
-  | 'openai_api'
-  | 'mlx'
-  | 'lmstudio'
-  | 'ollama'
-  | 'opencode'
-  | 'aider'
-  | 'custom'
+export type LLMProviderKind = 'claude_subscription' | 'opencode'
 
 export type LLMProviderHealth = 'ok' | 'degraded' | 'unreachable' | 'unknown'
 
@@ -956,10 +946,6 @@ export interface LLMProvider {
    * How many runs may execute on this provider at once (>=1). Campaign
    * dispatch clamps to the remaining headroom, so this is a ceiling across
    * ALL campaigns, not per-campaign.
-   *
-   * Note for codex_subscription: the credential lease serializes that
-   * subscription to one run regardless, so values above 1 buy paused_quota
-   * parks rather than parallelism.
    */
   max_concurrent_runs?: number
   notes?: string
@@ -1002,6 +988,23 @@ export interface LLMProviderKindMeta {
   default_api_key_env?: string
   /** Picker order; 0/absent = hidden from the picker (ops-only kinds). */
   featured?: number
+  /** One connect-dialog tile per endpoint the kind can drive (opencode:
+   *  OMLX / LM Studio / Ollama / Azure Foundry / generic OpenAI-compatible). */
+  endpoint_presets?: LLMProviderEndpointPreset[]
+}
+
+/** One opencode endpoint preset — prefills the connect dialog. */
+export interface LLMProviderEndpointPreset {
+  key: string
+  label: string
+  tagline?: string
+  base_url: string
+  /** Hosted endpoints require a key; local servers don't. */
+  needs_api_key: boolean
+  default_model?: string
+  /** Stored verbatim on the provider row (e.g. opencode npm package override). */
+  extra_args?: string
+  setup_steps?: string[]
 }
 
 // ── Audit (Event) ───────────────────────────────────────────────────────────

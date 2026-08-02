@@ -26,7 +26,7 @@ pytestmark = pytest.mark.asyncio
 class _Node:
     def __init__(self, **kw):
         defaults = dict(
-            org_uid="", label="p", kind="mlx", base_url="", model="", api_key_env="",
+            org_uid="", label="p", kind="opencode", base_url="", model="", api_key_env="",
             cli_command_template="", extra_args="", enabled=True, active=False,
             fallback_priority=100, notes="", credential_secret="",
             last_health_check_at=None, last_health_status="unknown",
@@ -148,7 +148,7 @@ async def test_fallback_chain_stays_inside_the_org():
 
 async def test_org_admin_creates_org_scoped_provider_with_own_token():
     req = CreateLLMProviderRequest(
-        label="Acme Claude", kind=LLMProviderKind.CLAUDE_API, credential_secret="sk-acme"
+        label="Acme Claude", kind=LLMProviderKind.CLAUDE_SUBSCRIPTION, credential_secret="sk-acme"
     )
     dto = await LLMProviderService().create(req, user=_user("org-a"))
     assert dto.org_uid == "org-a"
@@ -156,13 +156,13 @@ async def test_org_admin_creates_org_scoped_provider_with_own_token():
 
 
 async def test_create_always_stamps_the_callers_org_even_for_platform_admins():
-    req = CreateLLMProviderRequest(label="Admin's", kind=LLMProviderKind.MLX)
+    req = CreateLLMProviderRequest(label="Admin's", kind=LLMProviderKind.OPENCODE)
     dto = await LLMProviderService().create(req, user=_user("org-a", platform=True))
     assert dto.org_uid == "org-a"  # no shared=True path exists anymore
 
 
 async def test_create_without_an_org_is_422():
-    req = CreateLLMProviderRequest(label="Nowhere", kind=LLMProviderKind.MLX)
+    req = CreateLLMProviderRequest(label="Nowhere", kind=LLMProviderKind.OPENCODE)
     with pytest.raises(HTTPException) as exc:
         await LLMProviderService().create(req, user=_user(""))
     assert exc.value.status_code == 422
@@ -206,7 +206,7 @@ async def test_activation_is_per_scope():
 
 def test_default_cli_template_lookup():
     assert "claude -p" in default_cli_template(LLMProviderKind.CLAUDE_SUBSCRIPTION)
-    assert default_cli_template("claude_api") == ""       # HTTP kind — no CLI
+    assert "opencode run" in default_cli_template(LLMProviderKind.OPENCODE)
     assert default_cli_template("no-such-kind") == ""
 
 
@@ -257,16 +257,17 @@ async def test_create_with_bare_kind_fills_catalog_defaults():
     # The connect dialog sends as little as {kind}; the row must come out
     # labelled, addressed, and dispatchable.
     dto = await LLMProviderService().create(
-        CreateLLMProviderRequest(kind=LLMProviderKind.LMSTUDIO), user=_user("org-a")
+        CreateLLMProviderRequest(kind=LLMProviderKind.OPENCODE), user=_user("org-a")
     )
-    assert dto.label == "LM Studio"
-    assert dto.base_url == "http://host.docker.internal:1234/v1"
-    assert dto.model == KIND_CATALOG[LLMProviderKind.LMSTUDIO]["default_model"]
+    assert dto.label == "opencode"
+    assert dto.base_url == "http://host.docker.internal:2345/v1"
+    assert dto.model == KIND_CATALOG[LLMProviderKind.OPENCODE]["default_model"]
 
-    api = await LLMProviderService().create(
-        CreateLLMProviderRequest(kind=LLMProviderKind.OPENAI_API), user=_user("org-a")
+    claude = await LLMProviderService().create(
+        CreateLLMProviderRequest(kind=LLMProviderKind.CLAUDE_SUBSCRIPTION), user=_user("org-a")
     )
-    assert api.api_key_env == "OPENAI_API_KEY"
+    assert claude.label == "Claude Code"
+    assert "claude -p" in claude.cli_command_template
 
 
 async def test_create_explicit_values_beat_catalog_defaults():
@@ -274,7 +275,7 @@ async def test_create_explicit_values_beat_catalog_defaults():
     # passes the base_url SSRF guard.
     dto = await LLMProviderService().create(
         CreateLLMProviderRequest(
-            kind=LLMProviderKind.OLLAMA, label="My box",
+            kind=LLMProviderKind.OPENCODE, label="My box",
             base_url="http://host.docker.internal:1234/v1", model="m1",
         ),
         user=_user("org-a"),
@@ -290,7 +291,7 @@ async def test_create_rejects_ssrf_base_url():
     with pytest.raises(HTTPException) as exc:
         await LLMProviderService().create(
             CreateLLMProviderRequest(
-                kind=LLMProviderKind.OLLAMA, label="evil",
+                kind=LLMProviderKind.OPENCODE, label="evil",
                 base_url="http://169.254.169.254/latest/meta-data/",
             ),
             user=_user("org-a"),
@@ -300,9 +301,9 @@ async def test_create_rejects_ssrf_base_url():
 
 def test_picker_features_exactly_the_user_facing_kinds():
     hidden = {k for k, m in KIND_CATALOG.items() if not m["featured"]}
-    assert hidden == {LLMProviderKind.AIDER, LLMProviderKind.CUSTOM}
+    assert hidden == set()  # both kinds are user-facing
     order = [m["featured"] for m in KIND_CATALOG.values() if m["featured"]]
-    assert sorted(order) == list(range(1, 9))  # unique, contiguous picker order
+    assert sorted(order) == list(range(1, 3))  # unique, contiguous picker order
 
 
 # ── Status probe (onboarding) ────────────────────────────────────────────────

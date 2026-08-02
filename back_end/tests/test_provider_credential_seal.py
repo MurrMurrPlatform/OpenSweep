@@ -78,7 +78,7 @@ def test_sealed_secret_without_key_returns_plaintext():
 class _Node:
     def __init__(self, **kw):
         defaults = dict(
-            org_uid="", label="p", kind="mlx", base_url="", model="", api_key_env="",
+            org_uid="", label="p", kind="opencode", base_url="", model="", api_key_env="",
             cli_command_template="", extra_args="", enabled=True, active=False,
             fallback_priority=100, notes="", credential_secret="",
             last_health_check_at=None, last_health_status="unknown",
@@ -141,7 +141,7 @@ def _user(org="org-a"):
 
 async def test_create_stores_sealed_credential(fake_providers):
     req = CreateLLMProviderRequest(
-        label="Acme Claude", kind=LLMProviderKind.CLAUDE_API, credential_secret="sk-acme"
+        label="Acme Claude", kind=LLMProviderKind.CLAUDE_SUBSCRIPTION, credential_secret="sk-acme"
     )
     dto = await LLMProviderService().create(req, user=_user())
     node = await FakeLLMProvider.nodes.get_or_none(uid=dto.uid)
@@ -154,7 +154,7 @@ async def test_create_stores_sealed_credential(fake_providers):
 
 
 async def test_create_without_credential_stores_empty(fake_providers):
-    req = CreateLLMProviderRequest(label="No cred", kind=LLMProviderKind.MLX)
+    req = CreateLLMProviderRequest(label="No cred", kind=LLMProviderKind.OPENCODE)
     dto = await LLMProviderService().create(req, user=_user())
     node = await FakeLLMProvider.nodes.get_or_none(uid=dto.uid)
     assert node.credential_secret == ""

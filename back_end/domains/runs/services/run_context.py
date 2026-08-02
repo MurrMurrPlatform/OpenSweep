@@ -4,7 +4,7 @@ Ported from V2's session_context. A chat run created from a PR/ticket/finding
 carries only link uids on the node; without this preamble the CLI agent
 starts blind ("do you see the ticket?" → it greps around). Rendered from the
 linked entities and injected on EVERY turn (claude: --append-system-prompt;
-codex: prompt prefix), so context survives CLI session rotation and resume.
+opencode: prompt prefix), so context survives CLI session rotation and resume.
 """
 
 from __future__ import annotations

@@ -16,15 +16,8 @@ def _provider(uid="p-1", ceiling=5, kind="claude_subscription"):
     return SimpleNamespace(uid=uid, max_concurrent_runs=ceiling, kind=kind)
 
 
-def test_codex_defaults_to_one_because_the_lease_serializes_it():
-    """The credential lease is a hard mutual exclusion of 1 per subscription
-    on the exec path; a higher ceiling would only manufacture paused_quota
-    parks on the 10-minute resume beat."""
-    assert default_max_concurrent_runs("codex_subscription") == 1
-
-
 def test_other_kinds_get_the_platform_default():
-    for kind in ("claude_subscription", "claude_api", "ollama", "custom"):
+    for kind in ("claude_subscription", "opencode"):
         assert default_max_concurrent_runs(kind) == DEFAULT_MAX_CONCURRENT_RUNS
 
 
@@ -39,14 +32,14 @@ def test_configured_ceiling_defaults_rows_written_before_m0016():
 
 
 def test_unset_ceiling_falls_back_to_the_KIND_default_not_the_platform_one():
-    """Guessing 5 for a codex row the credential lease serializes to 1 is
-    the one wrong direction to guess in."""
+    """An unset row resolves through the KIND default (which currently
+    equals the platform default for both kinds)."""
     assert capacity.configured_ceiling(
-        _provider(ceiling=0, kind="codex_subscription")
-    ) == 1
+        _provider(ceiling=0, kind="opencode")
+    ) == DEFAULT_MAX_CONCURRENT_RUNS
     assert capacity.configured_ceiling(
-        _provider(ceiling=None, kind="codex_subscription")
-    ) == 1
+        _provider(ceiling=None, kind="opencode")
+    ) == DEFAULT_MAX_CONCURRENT_RUNS
 
 
 def test_configured_ceiling_never_returns_zero_or_negative():
@@ -55,10 +48,10 @@ def test_configured_ceiling_never_returns_zero_or_negative():
 
 
 def test_explicit_ceiling_wins_over_the_kind_default():
-    """An operator who raised a codex provider to 3 gets 3 — the ceiling is
+    """An operator who raised a provider to 3 gets 3 — the ceiling is
     advice about capacity, not an override of the lease."""
     assert capacity.configured_ceiling(
-        _provider(ceiling=3, kind="codex_subscription")
+        _provider(ceiling=3, kind="opencode")
     ) == 3
 
 

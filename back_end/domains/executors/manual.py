@@ -6,7 +6,7 @@ the HTTP surface at `/api/v1/platform-tools/*`) and finishes by calling
 `complete_run`.
 
 This adapter exists primarily to land the platform tool surface end-to-end
-without needing claude_code / internal_llm running.
+without needing claude_code / opencode running.
 """
 
 from __future__ import annotations

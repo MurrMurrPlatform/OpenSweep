@@ -1,8 +1,8 @@
-"""Tracking-only CLI executor adapters for Codex and OpenCode.
+"""Tracking CLI executor adapter for OpenCode.
 
-These adapters invoke the active CLI provider and parse a final JSON envelope
-of platform-tool calls. They are deliberately read/report only: no patch or
-apply surface is available in v1.
+The adapter invokes the active opencode provider and parses a final JSON
+envelope of platform-tool calls (read runs), or runs the write contract
+(implement/fix runs — G1 local-LLM delivery loop).
 
 Shared plumbing (provider/ceiling resolution, stream recording, envelope
 extraction + tool dispatch, warnings-only ceiling accounting) lives in `_shared.py`.
@@ -15,8 +15,6 @@ import json
 import logging
 import time
 from typing import Any
-
-from fastapi import HTTPException
 
 from domains.areas.services import area_coverage
 from domains.executors._shared import (
@@ -32,12 +30,9 @@ from domains.executors._shared import (
 from domains.executors.base import AdapterRegistry, DispatchRequest, DispatchResult, ExecutorAdapter
 from domains.executors.prompt_kit import stance_block, system_prompt as build_system_prompt
 from domains.executors.quota import detect_quota_exhaustion
-from domains.executors.reasoning import reasoning_args
 from domains.runs.schemas import Executor, ExecutionMode, RunStatus
 from domains.runs.services.run_events import append_event
-from domains.llm_providers.services import codex_cli
 from domains.llm_providers.models import LLMProvider
-from domains.llm_providers.services import codex_credential
 from domains.llm_providers.services.llm_executor import (
     invoke as invoke_provider,
 )
@@ -51,13 +46,11 @@ logger = logging.getLogger(__name__)
 # Patch tools stay off in tracking-only v1.
 _DENY_TOOLS = {"attach_patch_to_finding": "patch tools are disabled in tracking-only v1"}
 
-# Codex continuation pass (Task 7).
-# Codex exec has no --resume; the continuation technique re-prompts with a
-# capped tail of the prior transcript (same approach as turn_cli.build_codex_prompt).
-# OpenCode has no session resume either, but transcript-tail re-prompt is only
-# wired for codex for now — opencode gets no continuation yet (no session id
-# to thread, and the opencode MCP transport doesn't surface a resume handle).
-CODEX_CONTINUATION_TAIL_CAP = 8_000
+# Continuation pass (Task 7).
+# `opencode run` has no session resume; the continuation technique re-prompts
+# with a capped tail of the prior transcript (same approach as
+# turn_cli.build_transcript_prompt).
+CONTINUATION_TAIL_CAP = 8_000
 _MIN_CONTINUATION_WALL_SECONDS = 120
 
 _CONTINUATION_NUDGE_TRACKING = (
@@ -100,10 +93,10 @@ _TRACKED_FILES_TIMEOUT_SECONDS = 30
 def envelope_has_complete_run(envelope: dict[str, Any] | None) -> bool:
     """True when a parsed final envelope contains a `complete_run` tool call.
 
-    Envelope-based codex runs stamp Run.completed_at only AFTER the
-    continuation decision (execute_envelope_tool_calls runs later), so
-    `_completed_via_mcp` cannot see an envelope-path completion in time — the
-    envelope itself is the authoritative first-pass completion signal.
+    Envelope-based runs stamp Run.completed_at only AFTER the continuation
+    decision (execute_envelope_tool_calls runs later), so `_completed_via_mcp`
+    cannot see an envelope-path completion in time — the envelope itself is
+    the authoritative first-pass completion signal.
     """
     if not envelope:
         return False
@@ -239,20 +232,15 @@ async def area_partition_nudge(
         return ""
 
 
-def codex_continuation_prompt(nudge: str, transcript_tail: str) -> str:
-    """codex exec has no --resume: re-prompt with a capped tail of the prior
-    transcript as context (same technique as turn_cli.build_codex_prompt)."""
-    tail = transcript_tail[-CODEX_CONTINUATION_TAIL_CAP:]
+def continuation_prompt(nudge: str, transcript_tail: str) -> str:
+    """opencode run has no session resume: re-prompt with a capped tail of the
+    prior transcript as context (same technique as turn_cli.build_transcript_prompt)."""
+    tail = transcript_tail[-CONTINUATION_TAIL_CAP:]
     return (
         "Your previous attempt at this task stopped early (context below — "
         "this CLI has no session resume):\n"
         f"{tail}\n\n{nudge}"
     )
-
-
-# The codex `exec --json` stream reducer lives in the shared codex adapter;
-# re-exported here under its historical name for existing call sites/tests.
-_codex_delta_feeder = codex_cli.delta_feeder
 
 
 class _CLITrackingAdapter(ExecutorAdapter):
@@ -275,65 +263,19 @@ class _CLITrackingAdapter(ExecutorAdapter):
             # In-memory only — per-stage workflow override, never saved.
             provider.model = req.model_override
 
-        # App-server path (opt-in): a TRANSPORT swap only — the run still goes
-        # through _run_passes, so envelope tool_calls, the continuation pass and
-        # quota handling all apply. The persistent session holds the credential
-        # lease for ITS lifetime, so this run takes no per-run lease; that is what
-        # lets many runs share one server, each on its own codex thread.
-        if self.provider_kind == "codex_subscription" and codex_cli.app_server_enabled(provider):
-            try:
-                session = await codex_cli.acquire_app_server(provider)
-            except HTTPException as exc:
-                return self._paused_busy(req, exc)
-            try:
-                return await self._run_passes(req, provider, started, session=session)
-            finally:
-                await codex_cli.release_app_server(session)
-
-        # Codex subscriptions serialize per credential and durably persist any
-        # rotation codex performs across the run's passes (inert for opencode and
-        # for bind-mount codex — see codex_credential.codex_credential_txn). Held
-        # across ALL passes so the lease covers the continuation and the rotated
-        # auth.json is written back once, on exit. Without it a run seeds the
-        # sealed auth.json, lets codex rotate the refresh token, then discards it,
-        # so the next run reuses a consumed refresh token and codex fails with
-        # "access token could not be refreshed".
-        try:
-            async with codex_credential.codex_credential_txn(provider):
-                return await self._run_passes(req, provider, started)
-        except HTTPException as exc:
-            return self._paused_busy(req, exc)
-
-    def _paused_busy(self, req: DispatchRequest, exc: HTTPException) -> DispatchResult:
-        """Another codex run holds this subscription's exclusive lease past the
-        wait budget. Treat it like a quota pause (a state, not a failure):
-        PAUSED_QUOTA is resumable, so the run is re-dispatched later instead of
-        failing hard — mirrors the turn path returning a retryable 503."""
-        logger.info(
-            f"{self.name.value} run {req.run_uid}: codex subscription busy "
-            f"({getattr(exc, 'detail', exc)}) — pausing for retry",
-            extra={"tag": "codex"},
-        )
-        return DispatchResult(
-            status=RunStatus.PAUSED_QUOTA,
-            error="codex subscription busy — another run holds the credential lease",
-            summary=f"{self.name.value} paused: codex subscription busy — will retry",
-        )
+        return await self._run_passes(req, provider, started)
 
     async def _run_passes(
-        self, req: DispatchRequest, provider: LLMProvider, started: float, session=None
+        self, req: DispatchRequest, provider: LLMProvider, started: float
     ) -> DispatchResult:
-        """The run pipeline. `session` swaps the codex TRANSPORT to the persistent
-        app-server; everything else — envelope extraction, executing the agent's
-        tool_calls, the continuation pass, quota handling, the raw transcript —
-        is identical, because that is what makes a run a run."""
+        """The run pipeline: envelope extraction, executing the agent's
+        tool_calls, the continuation pass, quota handling, the raw transcript."""
         timeout = resolve_wall_ceiling(req, provider.kind)
         # Write mode (OpenCode local-LLM delivery loop, G1): an implement/fix run
         # on a write-capable tracking executor gets the write contract — edit +
         # test + COMMIT in the sandbox clone with the CLI's own tools — instead of
         # the read-only "investigate + emit envelope" one. The finalize path then
         # validates those commits and pushes, exactly as it does for claude_code.
-        # Codex is never write-capable, so it never reaches this branch.
         write_mode = (
             self.name == Executor.OPENCODE and req.mode == ExecutionMode.IMPLEMENT
         )
@@ -341,9 +283,9 @@ class _CLITrackingAdapter(ExecutorAdapter):
         instruction = (
             _write_instruction(req, timeout) if write_mode else _instruction(req, timeout)
         )
-        # Both CLIs get the code-graph MCP server over the workspace clone —
-        # opencode through its generated config, codex through `-c` argv
-        # overrides (llm_executor) — under this same availability gate.
+        # The CLI gets the code-graph MCP server over the workspace clone —
+        # through opencode's generated config (llm_executor) — under this same
+        # availability gate.
         system_prompt = base_prompt
         if code_graph_available(req.repository_local_path or ""):
             system_prompt = base_prompt + "\n" + CODE_GRAPH_PROMPT
@@ -354,29 +296,17 @@ class _CLITrackingAdapter(ExecutorAdapter):
         )
         append_event(req.run_uid, "user_message", text=instruction)
 
-        # on_chunk delivers the running TOTAL per stream; the transcript wants
-        # only the new tail, as assistant_text chunks (consecutive chunks merge
-        # in the UI). codex streams JSONL events (`exec --json`) — surface only
-        # agent_message text, not the raw envelope/reasoning noise. opencode
-        # streams plain text, which passes through as the raw tail.
-        is_codex = self.provider_kind == "codex_subscription"
-        # The app-server streams plain agent text, not `exec --json` events, so
-        # it needs the raw-tail passthrough rather than the JSONL feeder.
-        use_app_server = session is not None
-        codex_feed = _codex_delta_feeder() if (is_codex and not use_app_server) else None
-
         async def _invoke(*, instruction: str, timeout_seconds, on_chunk):
-            if use_app_server:
-                return await codex_cli.invoke_via_app_server(
-                    session, provider, system_prompt=system_prompt, instruction=instruction,
-                    timeout_seconds=timeout_seconds, working_dir=req.repository_local_path,
-                    on_chunk=on_chunk, run_uid=req.run_uid,
-                )
             return await invoke_provider(
                 provider, system_prompt=system_prompt, instruction=instruction,
                 timeout_seconds=timeout_seconds, working_dir=req.repository_local_path,
-                on_chunk=on_chunk, run_uid=req.run_uid, extra_cli_args=reasoning_cli_args,
+                on_chunk=on_chunk, run_uid=req.run_uid,
             )
+
+        # on_chunk delivers the running TOTAL per stream; the transcript wants
+        # only the new tail, as assistant_text chunks (consecutive chunks merge
+        # in the UI). opencode streams plain text, which passes through as the
+        # raw tail.
         streamed_len = {"stdout": 0}
         recorder = StreamRecorder(
             run_uid=req.run_uid,
@@ -386,19 +316,11 @@ class _CLITrackingAdapter(ExecutorAdapter):
 
         async def _on_chunk(stream: str, text: str) -> None:
             if stream == "stdout":
-                if codex_feed is not None:
-                    for delta in codex_feed(text):
-                        append_event(req.run_uid, "assistant_text", text=delta)
-                else:
-                    delta = text[streamed_len["stdout"]:]
-                    if delta:
-                        streamed_len["stdout"] = len(text)
-                        append_event(req.run_uid, "assistant_text", text=delta)
+                delta = text[streamed_len["stdout"]:]
+                if delta:
+                    streamed_len["stdout"] = len(text)
+                    append_event(req.run_uid, "assistant_text", text=delta)
             await recorder.record_total(stream, text)
-
-        # Reasoning level → codex `-c model_reasoning_effort=…` argv override
-        # (empty for opencode and for unset levels).
-        reasoning_cli_args = reasoning_args(req.reasoning, provider.kind).get("cli_config") or []
 
         try:
             inv = await _invoke(
@@ -443,28 +365,29 @@ class _CLITrackingAdapter(ExecutorAdapter):
                 summary=f"{self.name.value} paused: provider quota exhausted — will retry",
             )
 
-        # Codex continuation pass (Task 7): if codex did not finish and wall
+        # Continuation pass (Task 7): if the agent did not finish and wall
         # budget remains, re-prompt once with a capped tail of the prior
-        # transcript as context. "Did not finish" has two signals: the MCP-path
-        # completion (`_completed_via_mcp`, for MCP-configured codex) AND the
-        # envelope-path completion (`complete_run` in the first-pass envelope,
-        # already parsed above) — the latter is required because envelope tool
-        # calls execute later, so completed_at is not yet stamped at this gate.
-        # OpenCode gets no continuation yet — no session resume is available and
-        # transcript-tail re-prompt is only wired for codex for now.
+        # transcript as context (`opencode run` has no session resume).
+        # "Did not finish" has two signals: the MCP-path completion
+        # (`_completed_via_mcp`, for MCP-configured runs) AND the envelope-path
+        # completion (`complete_run` in the first-pass envelope, already parsed
+        # above) — the latter is required because envelope tool calls execute
+        # later, so completed_at is not yet stamped at this gate.
         # A third signal OVERRIDES both: an area-mapping run whose map still has
         # an unpartitioned axis has not finished the job it was given, so
         # `area_partition_nudge` forces the pass even on a clean complete_run.
+        # Write runs are excluded — the nudges speak the envelope contract,
+        # which write runs don't use.
         # Tracking variable: last_inv points at whichever pass ran last so that
         # status decisions (wall-kill, FAILED) and usage always reflect the
         # final pass outcome.
         last_inv = inv
         continuation_pass = False
         continuation_reason = ""
-        if self.provider_kind == "codex_subscription":
+        if not write_mode:
             remaining_wall = (timeout - wall) if timeout is not None else None
             # Policy gate: max_continuation_passes=0 disables the (single)
-            # codex continuation; None/>=1 allows it.
+            # continuation; None/>=1 allows it.
             policy_passes = (
                 req.policy.max_continuation_passes if req.policy is not None else None
             )
@@ -497,7 +420,7 @@ class _CLITrackingAdapter(ExecutorAdapter):
                         "continuation pass to finish the partition",
                         extra={"tag": "areas"},
                     )
-                cont_prompt = codex_continuation_prompt(nudge, raw_stdout)
+                cont_prompt = continuation_prompt(nudge, raw_stdout)
                 append_event(req.run_uid, "user_message", text=nudge)
 
                 cont_recorder = StreamRecorder(
@@ -505,21 +428,14 @@ class _CLITrackingAdapter(ExecutorAdapter):
                     repository_uid=req.repository_uid,
                     label=f"live {self.name.value} continuation transcript",
                 )
-                # Continuation only runs for codex — same transport, same parsing
-                # as the first pass (JSONL for exec, plain text for app-server).
-                cont_feed = _codex_delta_feeder() if not use_app_server else None
                 cont_streamed = {"stdout": 0}
 
                 async def _on_cont_chunk(stream: str, text: str) -> None:
                     if stream == "stdout":
-                        if cont_feed is not None:
-                            for delta in cont_feed(text):
-                                append_event(req.run_uid, "assistant_text", text=delta)
-                        else:
-                            delta = text[cont_streamed["stdout"]:]
-                            if delta:
-                                cont_streamed["stdout"] = len(text)
-                                append_event(req.run_uid, "assistant_text", text=delta)
+                        delta = text[cont_streamed["stdout"]:]
+                        if delta:
+                            cont_streamed["stdout"] = len(text)
+                            append_event(req.run_uid, "assistant_text", text=delta)
                     await cont_recorder.record_total(stream, text)
 
                 try:
@@ -556,7 +472,7 @@ class _CLITrackingAdapter(ExecutorAdapter):
                     )
                     if complete_run_count >= 2:
                         logger.info(
-                            "codex continuation: both passes emitted complete_run — "
+                            "continuation: both passes emitted complete_run — "
                             "the continuation's wins (%d total in merged list)",
                             complete_run_count,
                         )
@@ -635,10 +551,6 @@ class _CLITrackingAdapter(ExecutorAdapter):
             outcome=outcome or extract_outcome({"summary": (envelope or {}).get("summary")}),
         )
 
-class CodexAdapter(_CLITrackingAdapter):
-    name = Executor.CODEX
-    provider_kind = "codex_subscription"
-
 
 class OpenCodeAdapter(_CLITrackingAdapter):
     name = Executor.OPENCODE
@@ -711,5 +623,4 @@ in this working copy. Do NOT push. Finish by calling
 """
 
 
-AdapterRegistry.register(CodexAdapter())
 AdapterRegistry.register(OpenCodeAdapter())

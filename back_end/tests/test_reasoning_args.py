@@ -23,39 +23,6 @@ def test_claude_subscription_env_budgets():
     }
 
 
-def test_codex_subscription_cli_config_passes_every_level():
-    for level in ("low", "medium", "high"):
-        assert reasoning_args(level, "codex_subscription") == {
-            "cli_config": ["-c", f"model_reasoning_effort={level}"]
-        }
-
-
-def test_claude_api_thinking_block():
-    assert reasoning_args("low", "claude_api") == {
-        "api": {"thinking": {"type": "disabled"}}
-    }
-    assert reasoning_args("medium", "claude_api") == {
-        "api": {"thinking": {"type": "enabled", "budget_tokens": 8192}}
-    }
-    assert reasoning_args("high", "claude_api") == {
-        "api": {"thinking": {"type": "enabled", "budget_tokens": 24576}}
-    }
-
-
-def test_openai_api_reasoning_effort():
-    for level in ("low", "medium", "high"):
-        assert reasoning_args(level, "openai_api") == {
-            "api": {"reasoning_effort": level}
-        }
-
-
-def test_local_kinds_suppress_thinking_only_on_low():
-    for kind in ("mlx", "lmstudio", "ollama"):
-        assert reasoning_args("low", kind) == {"api": {"suppress_thinking": True}}
-        assert reasoning_args("medium", kind) == {"api": {"suppress_thinking": False}}
-        assert reasoning_args("high", kind) == {"api": {"suppress_thinking": False}}
-
-
 def test_unknown_kind_returns_empty():
     assert reasoning_args("high", "opencode") == {}
     assert reasoning_args("high", "aider") == {}

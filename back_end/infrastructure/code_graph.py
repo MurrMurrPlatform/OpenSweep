@@ -81,23 +81,6 @@ def code_graph_opencode_server(workspace_path: str) -> dict | None:
     }
 
 
-def code_graph_codex_overrides(workspace_path: str) -> list[str]:
-    """`codex exec -c key=value` overrides that register the code-graph MCP
-    server for one invocation — codex has no per-run config file flag, so the
-    server rides in as TOML config overrides (values quoted via json.dumps,
-    which is valid TOML for plain strings)."""
-    import json
-
-    if not code_graph_available(workspace_path):
-        return []
-    env = _env_for(workspace_path)
-    env_toml = ", ".join(f"{k} = {json.dumps(v)}" for k, v in env.items())
-    return [
-        f"mcp_servers.code-graph.command={json.dumps(code_graph_binary())}",
-        f"mcp_servers.code-graph.env={{{env_toml}}}",
-    ]
-
-
 async def index_code_graph(workspace_path: str, *, timeout_seconds: int = 120) -> bool:
     """Index a workspace clone so the agent's first structural query is
     instant. Called from sandbox creation (covers recreation too) —

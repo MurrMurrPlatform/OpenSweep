@@ -13,20 +13,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Node.js 20 + headless coding-agent CLIs (see Dockerfile.dev for the rundown):
-# claude / codex / opencode executors + the mcp-remote stdio bridge that
+# claude / opencode executors + the mcp-remote stdio bridge that
 # connects them to OpenSweep's /mcp/platform mount.
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g \
         @anthropic-ai/claude-code \
-        @openai/codex@0.145.0 \
         opencode-ai \
         mcp-remote \
     && npm cache clean --force
 
-# aider (Python-based coding agent).
-RUN pip install --no-cache-dir aider-chat
 
 # codebase-memory-mcp — per-workspace code-graph MCP server for coding agents
 # (KNOWLEDGE_V3_CODE_GRAPH.md). Pinned release; single static binary, verified

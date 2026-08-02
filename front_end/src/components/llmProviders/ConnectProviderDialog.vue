@@ -16,7 +16,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { useLLMProviderStore } from '@/stores/llmProviderStore'
 import { useToast } from '@/composables/useToast'
 import { ChevronLeft, KeyRound, Server, TerminalSquare } from 'lucide-vue-next'
-import type { LLMProvider, LLMProviderKindMeta } from '@/types/api'
+import type { LLMProvider, LLMProviderEndpointPreset, LLMProviderKindMeta } from '@/types/api'
 
 const props = defineProps<{ open: boolean }>()
 const emit = defineEmits<{
@@ -28,7 +28,19 @@ const emit = defineEmits<{
 const store = useLLMProviderStore()
 const toast = useToast()
 
-const selected = ref<LLMProviderKindMeta | null>(null)
+/** One picker tile: a plain kind (Claude Code), or a kind + endpoint preset
+ *  (opencode × OMLX / LM Studio / Ollama / Azure Foundry / generic API). */
+interface Tile {
+  key: string
+  label: string
+  tagline: string
+  needsApiKey: boolean
+  transport: string
+  meta: LLMProviderKindMeta
+  preset: LLMProviderEndpointPreset | null
+}
+
+const selected = ref<Tile | null>(null)
 const credential = ref('')
 const baseUrl = ref('')
 const model = ref('')
@@ -40,53 +52,88 @@ watch(() => props.open, (val) => {
   store.fetchCatalog().catch(() => {})
 })
 
-/** Picker tiles: featured kinds in platform order; API-key kinds split off
- *  under their own divider. Everything else (aider, custom) is ops-only. */
-const featured = computed(() =>
+/** Picker tiles: featured kinds in platform order, kinds with endpoint
+ *  presets flattened to one tile per preset. API-key tiles split off under
+ *  their own divider. */
+const tiles = computed<Tile[]>(() =>
   store.catalog
     .filter((c) => (c.featured ?? 0) > 0)
-    .sort((a, b) => (a.featured ?? 0) - (b.featured ?? 0)),
+    .sort((a, b) => (a.featured ?? 0) - (b.featured ?? 0))
+    .flatMap((meta): Tile[] => {
+      const presets = meta.endpoint_presets
+      if (!presets?.length) {
+        return [{
+          key: meta.kind,
+          label: meta.default_label || meta.display_name,
+          tagline: meta.tagline || '',
+          needsApiKey: !!meta.needs_api_key,
+          transport: meta.transport,
+          meta,
+          preset: null,
+        }]
+      }
+      return presets.map((preset) => ({
+        key: `${meta.kind}:${preset.key}`,
+        label: preset.label,
+        tagline: preset.tagline || meta.tagline || '',
+        needsApiKey: !!preset.needs_api_key,
+        transport: meta.transport,
+        meta,
+        preset,
+      }))
+    }),
 )
-const agentTiles = computed(() => featured.value.filter((c) => !c.needs_api_key))
-const apiTiles = computed(() => featured.value.filter((c) => c.needs_api_key))
+const agentTiles = computed(() => tiles.value.filter((t) => !t.needsApiKey))
+const apiTiles = computed(() => tiles.value.filter((t) => t.needsApiKey))
 
-function tileIcon(meta: LLMProviderKindMeta) {
-  if (meta.needs_api_key) return KeyRound
-  return meta.transport.startsWith('local CLI') ? TerminalSquare : Server
+function tileIcon(tile: Tile) {
+  if (tile.needsApiKey) return KeyRound
+  return tile.transport.startsWith('local CLI') ? TerminalSquare : Server
 }
 
-function pick(meta: LLMProviderKindMeta) {
-  selected.value = meta
+function pick(tile: Tile) {
+  selected.value = tile
   credential.value = ''
-  baseUrl.value = meta.default_base_url || ''
-  model.value = meta.default_model || ''
+  baseUrl.value = tile.preset ? tile.preset.base_url : (tile.meta.default_base_url || '')
+  model.value = (tile.preset?.default_model ?? tile.meta.default_model) || ''
 }
 
-/** Codex can fall back to the host ~/.codex bind-mount — token is optional.
- *  Catalog kinds may also declare themselves optional (opencode: no key for a
- *  local server, a key for a hosted OpenAI-compatible endpoint). */
-const credentialOptional = computed(
-  () => selected.value?.kind === 'codex_subscription' || selected.value?.credential_optional === true,
+/** The API key is required for hosted presets (they answer 401 without one);
+ *  everywhere else the catalog decides (opencode: optional — no key needed
+ *  for a local server). */
+const credentialOptional = computed(() => {
+  const t = selected.value
+  if (!t) return false
+  if (t.preset) return !t.preset.needs_api_key
+  return t.meta.credential_optional === true
+})
+
+const setupSteps = computed(
+  () => selected.value?.preset?.setup_steps ?? selected.value?.meta.setup_steps ?? [],
 )
 
 const canSubmit = computed(() => {
-  const m = selected.value
-  if (!m) return false
-  if (m.needs_base_url && !baseUrl.value.trim()) return false
-  if (m.needs_credential && !credentialOptional.value && !credential.value.trim()) return false
+  const t = selected.value
+  if (!t) return false
+  if (t.meta.needs_base_url && !baseUrl.value.trim()) return false
+  if (t.meta.needs_credential && !credentialOptional.value && !credential.value.trim()) return false
   return true
 })
 
 async function connect() {
-  const m = selected.value
-  if (!m) return
+  const t = selected.value
+  if (!t) return
   submitting.value = true
   try {
     // Send only what the user actually provided — the backend fills label,
-    // model, URL, and CLI wiring from the platform catalog.
-    const payload: Partial<LLMProvider> & { credential_secret?: string } = { kind: m.kind }
-    if (m.needs_base_url) payload.base_url = baseUrl.value.trim()
+    // model, URL, and CLI wiring from the platform catalog. A preset tile
+    // additionally pins its label and endpoint-specific extra_args (e.g.
+    // Azure's @ai-sdk/openai package override).
+    const payload: Partial<LLMProvider> & { credential_secret?: string } = { kind: t.meta.kind }
+    if (t.preset) payload.label = t.preset.label
+    if (t.meta.needs_base_url) payload.base_url = baseUrl.value.trim()
     if (model.value.trim()) payload.model = model.value.trim()
+    if (t.preset?.extra_args) payload.extra_args = t.preset.extra_args
     if (credential.value.trim()) payload.credential_secret = credential.value.trim()
     const created = await store.create(payload)
     toast.success('Provider connected', created.label)
@@ -121,16 +168,16 @@ async function connect() {
         <DialogBody class="flex flex-col gap-4">
           <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <button
-              v-for="meta in agentTiles"
-              :key="meta.kind"
+              v-for="tile in agentTiles"
+              :key="tile.key"
               type="button"
               class="card-interactive flex items-start gap-3 rounded-lg border bg-card p-3 text-left hover:border-primary/50"
-              @click="pick(meta)"
+              @click="pick(tile)"
             >
-              <component :is="tileIcon(meta)" class="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+              <component :is="tileIcon(tile)" class="mt-0.5 h-5 w-5 shrink-0 text-primary" />
               <span class="min-w-0">
-                <span class="block font-medium">{{ meta.default_label || meta.display_name }}</span>
-                <span class="block text-xs text-muted-foreground">{{ meta.tagline }}</span>
+                <span class="block font-medium">{{ tile.label }}</span>
+                <span class="block text-xs text-muted-foreground">{{ tile.tagline }}</span>
               </span>
             </button>
           </div>
@@ -138,21 +185,21 @@ async function connect() {
           <template v-if="apiTiles.length">
             <div class="flex items-center gap-3">
               <div class="h-px flex-1 bg-border" />
-              <span class="text-xs uppercase tracking-wider text-muted-foreground">Pay-per-token APIs</span>
+              <span class="text-xs uppercase tracking-wider text-muted-foreground">Hosted APIs (via opencode)</span>
               <div class="h-px flex-1 bg-border" />
             </div>
             <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <button
-                v-for="meta in apiTiles"
-                :key="meta.kind"
+                v-for="tile in apiTiles"
+                :key="tile.key"
                 type="button"
                 class="card-interactive flex items-start gap-3 rounded-lg border bg-card p-3 text-left hover:border-primary/50"
-                @click="pick(meta)"
+                @click="pick(tile)"
               >
-                <component :is="tileIcon(meta)" class="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+                <component :is="tileIcon(tile)" class="mt-0.5 h-5 w-5 shrink-0 text-primary" />
                 <span class="min-w-0">
-                  <span class="block font-medium">{{ meta.default_label || meta.display_name }}</span>
-                  <span class="block text-xs text-muted-foreground">{{ meta.tagline }}</span>
+                  <span class="block font-medium">{{ tile.label }}</span>
+                  <span class="block text-xs text-muted-foreground">{{ tile.tagline }}</span>
                 </span>
               </button>
             </div>
@@ -172,13 +219,13 @@ async function connect() {
               <ChevronLeft class="h-5 w-5" />
               <span class="sr-only">Back to picker</span>
             </button>
-            Connect {{ selected.default_label || selected.display_name }}
+            Connect {{ selected.label }}
           </DialogTitle>
           <DialogDescription>{{ selected.tagline }}</DialogDescription>
         </DialogHeader>
 
         <DialogBody class="flex flex-col gap-3">
-          <div v-if="selected.needs_base_url" class="flex flex-col gap-1.5">
+          <div v-if="selected.meta.needs_base_url" class="flex flex-col gap-1.5">
             <Label for="connect-base-url">Server URL</Label>
             <Input id="connect-base-url" v-model="baseUrl" class="font-mono" />
             <span class="text-xs text-muted-foreground">
@@ -186,27 +233,27 @@ async function connect() {
             </span>
           </div>
 
-          <div v-if="selected.needs_base_url" class="flex flex-col gap-1.5">
+          <div v-if="selected.meta.needs_base_url" class="flex flex-col gap-1.5">
             <Label for="connect-model">Model</Label>
             <Input id="connect-model" v-model="model" />
           </div>
 
-          <div v-if="selected.needs_credential" class="flex flex-col gap-1.5">
+          <div v-if="selected.meta.needs_credential" class="flex flex-col gap-1.5">
             <Label for="connect-credential">
-              {{ selected.credential_label || 'Credential' }}
+              {{ selected.preset ? 'API key' : (selected.meta.credential_label || 'Credential') }}
               <span v-if="credentialOptional" class="font-normal text-muted-foreground">(optional)</span>
             </Label>
             <Textarea
               id="connect-credential"
               v-model="credential"
-              :placeholder="selected.credential_placeholder"
-              :rows="selected.kind === 'codex_subscription' ? 5 : 2"
+              :placeholder="selected.meta.credential_placeholder"
+              :rows="2"
               class="font-mono text-xs"
             />
-            <div v-if="selected.setup_steps?.length" class="rounded-md bg-muted p-3 text-xs text-muted-foreground">
+            <div v-if="setupSteps.length" class="rounded-md bg-muted p-3 text-xs text-muted-foreground">
               <div class="mb-1 font-medium text-foreground">How to get this</div>
               <ol class="list-decimal space-y-1 pl-5">
-                <li v-for="(step, i) in selected.setup_steps" :key="i">{{ step }}</li>
+                <li v-for="(step, i) in setupSteps" :key="i">{{ step }}</li>
               </ol>
             </div>
           </div>

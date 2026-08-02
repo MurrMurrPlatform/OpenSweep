@@ -21,10 +21,9 @@ from domains.runs.schemas import Executor
 # subscription executors we return None and surface "usage proxies" only.
 _CHARS_PER_TOKEN = 4.0
 
-_DOLLARS_PER_1K_TOK = {
-    Executor.INTERNAL_LLM: 0.003,  # tilted toward small/cheap default
-    # claude_code / codex / opencode → subscription / local → no dollar figure
-}
+# claude_code / opencode → subscription / local → no dollar figure. The
+# mechanism stays for any future metered executor.
+_DOLLARS_PER_1K_TOK: dict[Executor, float] = {}
 
 
 @dataclass
@@ -64,9 +63,7 @@ def estimate(
 
     # Executor-specific complexity guess.
     base_secs = {
-        Executor.INTERNAL_LLM: 15,
         Executor.CLAUDE_CODE: 45,
-        Executor.CODEX: 45,
         Executor.OPENCODE: 30,
         Executor.MANUAL: 0,
     }.get(executor, 30)

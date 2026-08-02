@@ -1,16 +1,16 @@
 '''Prompt kit — single source for executor system prompts + the budget/stance
 paragraph.
 
-Consolidates what the three executor adapters (claude_code read/write,
-internal_llm, cli_tracking) used to triplicate:
+Consolidates what the executor adapters (claude_code read/write,
+cli_tracking read/write) used to triplicate:
 
 - the shared prompt core: OpenSweep identity, investigation ethos,
   look-before-write discipline, durable-output rules (incl. the
   no-actionable-finding-is-valid rule), and the `complete_run` report contract
   (now with the covered_paths / skipped_paths / lens_verdicts coverage fields);
 - per-kind deltas: write-mode hard rules (claude_code_write), the JSON
-  envelope output contract (internal_llm / cli_tracking — wording preserved
-  verbatim so envelope parsing behavior is unchanged), and the MCP startup
+  envelope output contract (cli_tracking — wording preserved verbatim so
+  envelope parsing behavior is unchanged), and the MCP startup
   note (claude_code kinds only);
 - `stance_block()` — the single budget+stance paragraph that replaced both
   `_shared.budget_briefing` and `review_run_service.depth_block`.
@@ -32,7 +32,6 @@ from infrastructure.code_graph import CODE_GRAPH_PROMPT
 PromptKind = Literal[
     "claude_code_read",
     "claude_code_write",
-    "internal_llm",
     "cli_tracking",
     "cli_tracking_write",
 ]
@@ -56,8 +55,8 @@ PLATFORM_WRITE_TOOLS = (
 # Platform-state read tools.
 PLATFORM_READ_TOOLS = ("list_docs", "read_doc", "search_memory")
 
-# Deep-scan Analysis authoring (internal_llm only — ignored on runs whose
-# intent doesn't ask for a whole-repo report).
+# Deep-scan Analysis authoring — ignored on runs whose intent doesn't ask
+# for a whole-repo report.
 ANALYSIS_TOOLS = (
     "upsert_analysis",
     "set_analysis_section",
@@ -65,7 +64,7 @@ ANALYSIS_TOOLS = (
     "ask_question",
 )
 
-# News radar + open-web research (internal_llm / news-scout runs).
+# News radar + open-web research (news-scout runs).
 NEWS_READ_TOOLS = ("list_news_items", "list_interests", "web_search", "fetch_url")
 NEWS_WRITE_TOOLS = ("create_news_item",)
 
@@ -213,7 +212,10 @@ never finish without calling the required opensweep-platform tools."""
 _MCP_NAMING_NOTE = """Platform tools reach you over MCP: `create_finding` appears in your tool list
 as `mcp__opensweep-platform__opensweep_platform_create_finding` (shown in some
 prompts as `opensweep_platform_create_finding`); the same naming applies to
-every platform tool listed above."""
+every platform tool listed above. Platform READ tools additionally carry a
+`read` segment: `list_news_items` appears as
+`opensweep_platform_read_list_news_items` (same for `list_interests`,
+`list_docs`, `search_memory`; `read_doc` is `opensweep_platform_read_doc`)."""
 
 _WRITE_HARD_RULES = """You are a Claude Code agent running inside OpenSweep on a WRITE run
 (implement or fix). You are working in a disposable sandbox clone with the
@@ -257,47 +259,6 @@ non-compliant work:
 # Envelope output contracts — the ```json examples and their surrounding
 # instructions are preserved VERBATIM from the pre-consolidation prompts, so
 # `extract_envelope` keeps seeing exactly the shape it was tuned for.
-
-_ENVELOPE_CONTRACT_INTERNAL = (
-    '''Respond with ONE JSON object at the end of your message:
-
-```json
-{
-  "summary": "<one-line summary>",
-  "tool_calls": [
-    {"tool": "create_finding", "args": {...}},
-    ...,
-    {"tool": "complete_run", "args": {
-      "summary": "<one short paragraph on the run outcome>",
-      "did": ["<what you did>"],
-      "skipped": ["<what you skipped and why>"],
-      "succeeded": ["<what succeeded>"],
-      "failed": ["<what failed and why>"],
-      "next_steps": ["<follow-ups or future suggestions>"]
-    }}
-  ]
-}
-```
-
-Always end the tool_calls with that `complete_run` entry — one short sentence
-per list item, omitting lists you have nothing for. It is stored on the Run
-and shown to humans who did not watch the run.
-
-'''
-    + COVERAGE_NOTE
-    + """
-
-The platform will execute each tool_call in order, server-side. Use full,
-valid args. Do NOT speculate about whether a tool succeeded — just queue
-the calls.
-
-Your JSON envelope MUST contain durable OpenSweep output. Include
-`create_finding` for each bug, docs gap, stale assumption, missing capability,
-or improvement you discover; do not finish with an empty `tool_calls` array.
-
-"""
-    + NO_ACTIONABLE_FINDING_RULE_ENVELOPE
-)
 
 _ENVELOPE_CONTRACT_CLI = (
     '''At the end, return one JSON object:
@@ -345,6 +306,24 @@ call in the envelope as described above.
 # ── System prompt assembly ────────────────────────────────────────────────
 
 
+def _specialised_intent_tools() -> str:
+    """News + analysis tool advertisement for the harness prompts. These runs
+    (news-scout, deep-scan) used to be the internal_llm executor's job; on the
+    harness executors the tools ride the same platform surface and are simply
+    ignored by runs whose intent doesn't ask for them."""
+    return (
+        "Some runs carry a specialised intent; the matching platform tools ride\n"
+        "the same surface and are ignored on every other run:\n\n"
+        "  - NEWS runs (open-web radar — only when the intent asks for news\n"
+        "    research):\n\n"
+        + render_tool_list((*NEWS_READ_TOOLS, *NEWS_WRITE_TOOLS), indent="      ")
+        + "\n\n  - DEEP-SCAN runs whose intent asks you to author an Analysis (a\n"
+        "    whole-repo report); ignore these on runs that don't ask for a\n"
+        "    report:\n\n"
+        + render_tool_list(ANALYSIS_TOOLS, indent="      ")
+    )
+
+
 def _claude_code_read() -> str:
     return "\n\n".join(
         [
@@ -354,6 +333,7 @@ def _claude_code_read() -> str:
             + render_tool_list(PLATFORM_WRITE_TOOLS)
             + "\n\nand read tools for platform state:\n\n"
             + render_tool_list(PLATFORM_READ_TOOLS),
+            _specialised_intent_tools(),
             _MCP_NAMING_NOTE,
             CODE_GRAPH_PROMPT,
             MCP_STARTUP_NOTE,
@@ -383,33 +363,6 @@ def _claude_code_write() -> str:
     )
 
 
-def _internal_llm() -> str:
-    tools = (
-        "You have:\n\n"
-        "  - READ tools — request them via your `tool_calls` envelope: the\n"
-        "    file/code readers (read_code, trace, prior_findings), OpenSweep-data\n"
-        "    readers (opensweep_list_findings, opensweep_search_findings,\n"
-        "    opensweep_get_finding), plus:\n\n"
-        + render_tool_list((*PLATFORM_READ_TOOLS, *NEWS_READ_TOOLS), indent="      ")
-        + "\n\n  - WRITE tools — the platform tool surface:\n\n"
-        + render_tool_list((*PLATFORM_WRITE_TOOLS, *NEWS_WRITE_TOOLS), indent="      ")
-        + "\n\n  - DEEP-SCAN tools — only when the run's intent asks you to author an\n"
-        "    Analysis (a whole-repo report); ignore these on runs that don't ask\n"
-        "    for a report:\n\n"
-        + render_tool_list(ANALYSIS_TOOLS, indent="      ")
-    )
-    return "\n\n".join(
-        [
-            IDENTITY_TRACKING,
-            tools,
-            LOOK_BEFORE_WRITE,
-            READ_ONLY_RULE,
-            INVESTIGATION_ETHOS,
-            _ENVELOPE_CONTRACT_INTERNAL,
-        ]
-    )
-
-
 def _cli_tracking() -> str:
     return "\n\n".join(
         [
@@ -417,6 +370,7 @@ def _cli_tracking() -> str:
             "You may inspect code and run read-only commands. Platform tools you may\n"
             "call (through the envelope below, or natively when they appear as\n"
             "`opensweep_*` MCP tools):\n\n" + render_tool_list(PLATFORM_WRITE_TOOLS),
+            _specialised_intent_tools(),
             READ_ONLY_RULE,
             LOOK_BEFORE_WRITE,
             INVESTIGATION_ETHOS,
@@ -445,7 +399,6 @@ def _cli_tracking_write() -> str:
 _KIND_BUILDERS = {
     "claude_code_read": _claude_code_read,
     "claude_code_write": _claude_code_write,
-    "internal_llm": _internal_llm,
     "cli_tracking": _cli_tracking,
     "cli_tracking_write": _cli_tracking_write,
 }

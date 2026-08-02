@@ -8,9 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class Executor(StrEnum):
-    INTERNAL_LLM = "internal_llm"
     CLAUDE_CODE = "claude_code"
-    CODEX = "codex"
     OPENCODE = "opencode"
     MANUAL = "manual"
 

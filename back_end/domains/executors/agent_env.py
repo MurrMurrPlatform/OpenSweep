@@ -42,7 +42,7 @@ def build_agent_env(*, run_uid: str = "", extra: dict[str, str] | None = None) -
       every agent invocation runs inside a disposable sandbox clone),
     - OPENSWEEP_RUN_UID when a run uid is given,
     - `extra`: credentials the caller explicitly passes through
-      (CLAUDE_CODE_OAUTH_TOKEN, provider api keys, CODEX_HOME, …).
+      (CLAUDE_CODE_OAUTH_TOKEN, provider api keys, …).
     """
     env = {name: os.environ[name] for name in AGENT_ENV_ALLOWLIST if os.environ.get(name)}
     env["IS_SANDBOX"] = "1"
