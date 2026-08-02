@@ -208,10 +208,14 @@ class SandboxService:
                     # the sandbox can fetch later, so every needed ref must be
                     # present NOW. Only the existing work branch (fix runs) is
                     # required; source/base fall back like the checkout below.
-                    wanted: list[tuple[str, bool]] = [(source_branch, False)]
-                    wanted += [(r, False) for r in (extra_refs or [])]
+                    # Required ref first: dedup keeps the first entry, so a
+                    # work branch that doubles as the source branch must not
+                    # lose its required flag.
+                    wanted: list[tuple[str, bool]] = []
                     if checkout_existing:
                         wanted.append((sandbox_branch, True))
+                    wanted += [(source_branch, False)]
+                    wanted += [(r, False) for r in (extra_refs or [])]
                     seen: set[str] = set()
                     for ref, required in wanted:
                         ref = (ref or "").strip()
@@ -225,17 +229,28 @@ class SandboxService:
                             depth=depth,
                             required=required,
                         )
+                # Branch checkouts start explicitly from the remote-tracking
+                # ref: a plain `checkout <name>` guesses the branch through
+                # remote.origin.fetch, which a single-branch clone restricts
+                # to the default branch — so guessing fails even though
+                # _fetch_branch put the ref in refs/remotes/origin/.
                 if checkout_existing:
                     # Fix-runs / branch adoption: the remote branch MUST exist
                     # (fetched as a required ref above). A failure here is
                     # a real error — never silently fork a new branch.
-                    await _run(["git", "-C", container_path, "checkout", sandbox_branch])
+                    await _run([
+                        "git", "-C", container_path, "checkout", "-B", sandbox_branch,
+                        f"refs/remotes/origin/{sandbox_branch}",
+                    ])
                 else:
                     # Best-effort checkout of the source branch (fetched
                     # above); if it doesn't exist, fall back to the clone's
                     # default HEAD.
                     try:
-                        await _run(["git", "-C", container_path, "checkout", source_branch])
+                        await _run([
+                            "git", "-C", container_path, "checkout", "-B", source_branch,
+                            f"refs/remotes/origin/{source_branch}",
+                        ])
                     except RuntimeError:
                         pass
                     await _run(["git", "-C", container_path, "checkout", "-b", sandbox_branch])
