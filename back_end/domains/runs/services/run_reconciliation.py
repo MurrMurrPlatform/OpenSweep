@@ -3,7 +3,7 @@
 Dispatch is an in-process asyncio task (the FastAPI backend for API
 dispatches, a Celery worker for schedule ticks and quota resumes). If that
 process restarts or crashes mid-run, nothing is left to move the row out of
-`queued`/`running`. Two repair paths:
+`queued`/`running`. Three repair paths:
 
   - reconcile_orphaned_runs — startup sweep: the restarting process
     immediately fails the runs it owned (usage["dispatch_runtime"]).
@@ -108,9 +108,9 @@ def is_orphan(
 async def reconcile_stale_runs(*, grace_seconds: int = 90) -> int:
     """Fail every dead queued/running run in the graph.
 
-    This scans all repairable rows across all tenants, so it belongs on the
-    Celery beat tick (and process startup), never on a request path — see
-    reconcile_runs for the request-path variant.
+    This scans all repairable rows across all tenants, so its only caller is
+    the 5-minute Celery beat tick; it must never run on a request path. See
+    reconcile_runs for the variant request handlers use.
     """
     return await reconcile_runs(
         await Run.nodes.filter(status__in=list(_REPAIRABLE_STATUSES)),
