@@ -419,3 +419,112 @@ def test_pending_opensweep_runs_route_is_mounted():
     assert "/api/v1/comments/pending-opensweep-runs" in paths
     op = paths["/api/v1/comments/pending-opensweep-runs"]["get"]
     assert op["operationId"] == "opensweep_comment_pending_runs"
+
+
+
+# ── the list repairs the rows it fetched ─────────────────────────────────────
+#
+# WHY: reconcile_stale_runs() used to run inline here, scanning every
+# repairable Run across every tenant on each page load. Dropping it left the
+# 5-minute beat tick as the only repair for this view, so a run whose
+# dispatching process had died could sit in the list reading "running" for
+# minutes. The list now repairs only the rows it already holds — bounded by
+# the caller's own in-flight runs, no extra query, no cross-tenant read.
+
+
+def _one_stale_row(monkeypatch, runs_module):
+    """Point the route at a single queued/running row, and make the repair
+    fail it the way _fail_run does — in place, on the same object."""
+    stale = _node("stuck")
+    stale.status = "running"
+
+    async def only_stale(**kwargs):
+        return [stale]
+
+    async def fake_reconcile(runs, **kwargs):
+        for r in runs:
+            r.status = "failed"
+
+    monkeypatch.setattr(
+        runs_module, "Run", SimpleNamespace(nodes=SimpleNamespace(filter=only_stale))
+    )
+    monkeypatch.setattr(runs_module, "reconcile_runs", fake_reconcile)
+    return stale
+
+
+async def test_the_list_reports_a_repaired_row_as_failed(runs_api, monkeypatch):
+    _one_stale_row(monkeypatch, runs_api)
+    out = await runs_api.list_runs(
+        response=Response(), repository_uid=None, executor=None, status=None,
+        playbook=None, linked_pr_uid=None, linked_ticket_uid=None,
+        linked_finding_uid=None, surface=None, limit=100, offset=0, user=_user(),
+    )
+    assert [(r.uid, r.status) for r in out] == [("stuck", "failed")]
+
+
+async def test_a_status_filter_drops_a_row_the_repair_just_failed(runs_api, monkeypatch):
+    """?status=running must not come back holding a run just marked failed.
+
+    The status predicate is pushed into Cypher, so the row matched when it was
+    fetched; reconcile_runs then moved it. Without the re-check the caller
+    gets a "running" list containing a failed run.
+    """
+    _one_stale_row(monkeypatch, runs_api)
+    assert await _uids(runs_api, user=_user(), status="running") == []
+    assert await _uids(runs_api, user=_user()) == ["stuck"]
+
+
+async def test_the_repair_only_sees_rows_already_fetched(runs_api, monkeypatch):
+    """Bounded by this request's own result set — never a fresh unbounded read."""
+    seen: list[list] = []
+
+    async def fake_reconcile(runs, **kwargs):
+        seen.append(list(runs))
+
+    monkeypatch.setattr(runs_api, "reconcile_runs", fake_reconcile)
+    await _uids(runs_api, user=_user())
+    assert len(seen) == 1
+    assert {r.uid for r in seen[0]} == {"visible", "legacy", "reply", "mine", "theirs"}
+
+
+async def test_scheduled_agent_run_history_repairs_its_own_rows(monkeypatch):
+    """Same self-heal on GET /scheduled-agents/{uid}/runs.
+
+    The agent's history is where someone checks whether last night's run
+    worked; a row orphaned by a restart must not read "running" there until
+    the beat tick comes round.
+    """
+    import api.v1.scheduled_agents as agents_api
+    import domains.runs.models as run_models
+    import domains.runs.services.run_reconciliation as reconciliation
+    from domains.agents.services import scheduled_agent_service
+
+    stale = _node("stuck")
+    stale.status = "running"
+    stale.scheduled_agent_uid = "sa1"
+
+    async def fake_filter(**kwargs):
+        assert kwargs == {"scheduled_agent_uid": "sa1"}  # scoped, not a scan
+        return [stale]
+
+    async def fake_get_model(uid):
+        return SimpleNamespace(uid=uid, repository_uid="repo1")
+
+    async def fake_require(repo, org):
+        return None
+
+    repaired: list[list] = []
+
+    async def fake_reconcile(runs, **kwargs):
+        repaired.append(list(runs))
+        for r in runs:
+            r.status = "failed"
+
+    monkeypatch.setattr(run_models.Run, "nodes", SimpleNamespace(filter=fake_filter))
+    monkeypatch.setattr(scheduled_agent_service, "get_scheduled_agent_model", fake_get_model)
+    monkeypatch.setattr(agents_api, "require_repo_in_org", fake_require)
+    monkeypatch.setattr(reconciliation, "reconcile_runs", fake_reconcile)
+
+    out = await agents_api.list_runs(uid="sa1", user=_user())
+    assert [(r.uid, r.status) for r in out] == [("stuck", "failed")]
+    assert [r.uid for r in repaired[0]] == ["stuck"]

@@ -127,11 +127,15 @@ async def trigger_scheduled_agent_run(
 @router.get("/{uid}/runs", response_model=list[RunDTO])
 async def list_runs(uid: str, user: UserDTO = Depends(get_current_user)):
     from domains.runs.models import Run
+    from domains.runs.services.run_reconciliation import reconcile_runs
     from domains.runs.services.turn_service import run_to_dto
 
     s = await scheduled_agent_service.get_scheduled_agent_model(uid)
     await require_repo_in_org(s.repository_uid, user.org_uid)
     nodes = await Run.nodes.filter(scheduled_agent_uid=uid)
+    # Repair this agent's own rows before reporting them — a run orphaned by a
+    # process restart must not sit here reading "running" until the beat tick.
+    await reconcile_runs(nodes)
     out = [run_to_dto(r) for r in nodes]
     out.sort(
         key=lambda x: x.started_at

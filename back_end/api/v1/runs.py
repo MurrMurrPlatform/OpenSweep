@@ -349,8 +349,14 @@ async def list_runs(
     ):
         if value:
             query[field] = value
+    nodes = await Run.nodes.filter(**query)
+    # Repair the rows this request already holds, so the list does not show a
+    # run as queued/running when its dispatching process is long dead. Bounded
+    # by the caller's own in-flight runs — the graph-wide sweep stays on the
+    # beat tick (domains/runs/services/run_reconciliation.py).
+    await reconcile_runs(nodes)
     out: list[RunDTO] = []
-    for r in await Run.nodes.filter(**query):
+    for r in nodes:
         r_surface = r.surface or "runs"
         if surface is None:
             if r_surface != "runs":
@@ -361,6 +367,11 @@ async def list_runs(
             if r_surface != "chat" or (r.triggered_by or "") != user.uid:
                 continue
         elif surface != "all" and r_surface != surface:
+            continue
+        # Re-check the status the query already filtered on: reconcile_runs
+        # may have just moved a row to "failed", and ?status=running must not
+        # come back holding one.
+        if status and r.status != status:
             continue
         out.append(run_to_dto(r))
     out.sort(
