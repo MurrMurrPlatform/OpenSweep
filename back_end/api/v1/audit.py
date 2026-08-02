@@ -55,7 +55,9 @@ def visibility_scope(
     every personal-org owner is role="admin", so an org role would expose
     instance-wide events to any tenant.
     """
-    if repository_uid is not None:
+    # Truthiness, not `is not None`, and for the same reason repo_scope uses
+    # it: `?repository_uid=` binds "" and has always meant "no repo filter".
+    if repository_uid:
         # An explicit repo the caller cannot see returns nothing rather than
         # falling back to the whole org. It also never widens to platform
         # events — those belong to no repository.
@@ -70,7 +72,7 @@ async def list_events(
     kind: Optional[str] = Query(None),
     actor_uid: Optional[str] = Query(None),
     repository_uid: Optional[str] = Query(None),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(100, le=500),
     offset: int = Query(0, ge=0),
     user: UserDTO = Depends(get_current_user),
 ):
@@ -82,6 +84,10 @@ async def list_events(
     Visibility, ordering and the window are all one Cypher query: the audit
     log is the fastest-growing label in the graph, and reading it whole to
     hand back 100 rows got slower with every run the instance ever did.
+
+    Unlike the other list routes this one sends no X-Total-Count: counting
+    the matches means scanning them, which is the cost this route exists to
+    avoid. Page until you get a short page.
     """
     repos, platform_events = visibility_scope(
         allowed_repos=await org_repo_uids(user.org_uid),
@@ -107,7 +113,11 @@ async def list_events(
             params[field] = value
     rows, _ = await adb.cypher_query(
         f"MATCH (e:Event) WHERE {' AND '.join(where)} "
-        "RETURN e ORDER BY e.occurred_at DESC SKIP $offset LIMIT $limit",
+        # `IS NULL` first: Cypher sorts nulls to the top on DESC, which would
+        # pin undated legacy rows above every real event forever. The Python
+        # sort this replaced treated a missing date as the oldest possible.
+        "RETURN e ORDER BY e.occurred_at IS NULL, e.occurred_at DESC "
+        "SKIP $offset LIMIT $limit",
         params,
     )
     return [_to_dto(Event.inflate(row[0])) for row in rows]

@@ -303,7 +303,7 @@ class AnalysisService:
         they carry no grade, so a killed scan never becomes the repo's health
         surface. Superseded analyses are excluded too."""
         candidates = await self.list(
-            repository_uid=repository_uid, include_superseded=False
+            repository_uids=[repository_uid], include_superseded=False
         )
         current = next(
             (c for c in candidates if c.status != AnalysisStatus.INCOMPLETE), None

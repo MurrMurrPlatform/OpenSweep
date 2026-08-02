@@ -28,17 +28,14 @@ async def list_threads(
     subject_ticket_uid: str | None = Query(None),
     user: UserDTO = Depends(get_current_user),
 ):
+    from domains.tenancy import repo_scope
+
     if repository_uid is not None:
         await require_repo_in_org(repository_uid, user.org_uid)
     threads = await ThreadService().list(
-        repository_uid=repository_uid or "",
+        repository_uids=await repo_scope(repository_uid, user.org_uid),
         subject_ticket_uid=subject_ticket_uid or "",
     )
-    if repository_uid is None:
-        from domains.tenancy import org_repo_uids
-
-        allowed = await org_repo_uids(user.org_uid)
-        threads = [t for t in threads if t.repository_uid in allowed]
     return [thread_to_dto(t) for t in threads]
 
 

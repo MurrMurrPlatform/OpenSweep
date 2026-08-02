@@ -110,6 +110,17 @@ def test_repository_uid_filter_scopes_the_list():
     assert _scope(platform=True, repository_uid="repo-a") == (["repo-a"], False)
 
 
+def test_an_empty_repository_uid_is_not_a_repo_filter():
+    """`?repository_uid=` binds "", which has always meant "no filter".
+
+    Treating "" as a named repo narrows to a repository uid that cannot
+    exist (uid is required and unique), so the caller silently gets nothing
+    instead of their whole org.
+    """
+    assert _scope(platform=False, repository_uid="") == (["repo-a"], False)
+    assert _scope(platform=True, repository_uid="") == (["repo-a"], True)
+
+
 async def test_a_caller_with_no_visible_repos_never_queries(monkeypatch):
     async def no_repos(org_uid):
         return set()
