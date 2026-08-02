@@ -4,11 +4,11 @@ The four run services (review / verify / implement / fix) repeat the same
 skeletons; this module is their single home:
 
 - ``dispatch_serialized`` — in-flight guard (blocking_run → 409) + the actual
-  dispatch, serialized behind a per-target asyncio.Lock. The guard read and
-  the run-row write inside ``trigger_run`` are separated by many awaits, so
-  without the lock two concurrent dispatches for the same PR/ticket could
-  both pass the guard and race two write runs onto one branch (same pattern
-  as turn_service._SEND_LOCKS).
+  dispatch, serialized behind a per-target cross-process ``dist_lock``. The
+  guard read and the run-row write inside ``trigger_run`` are separated by many
+  awaits, so without the lock two concurrent dispatches for the same PR/ticket
+  — even from different processes (backend webhook + worker auto-fix) — could
+  both pass the guard and race two write runs onto one branch.
 - ``require_repository`` — repository 404 / GitHub-coordinates 400 checks.
 - ``finalize_write_run`` — the shared write-run finalize flow (fix /
   implement): sandbox lookup → failed-run audit → write gate →
@@ -18,7 +18,6 @@ skeletons; this module is their single home:
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
@@ -36,12 +35,10 @@ from domains.runs.services.active_runs import (
 )
 from domains.repositories.models import Repository
 from infrastructure.audit import write_audit
+from infrastructure.dist_lock import dist_lock
 from infrastructure.git_providers import get_git_credentials
 from logging_config import logger
 
-# Per-process, per-target locks. Entries are never evicted — the population
-# (PRs/tickets under active work) is small and locks are tiny.
-_DISPATCH_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 # Shared write-run intent section (KNOWLEDGE_V3_DOCUMENTATION.md §9): every
@@ -79,12 +76,26 @@ async def dispatch_serialized(
 
     ``active_filter`` is the kwargs for ``active_runs_for`` (e.g.
     ``{"pull_request_uid": pr.uid}``); a conflicting active run raises the
-    standard 409 with ``conflict_detail``. The lock keys on the linked
-    entity uid so concurrent dispatches for the SAME PR/ticket serialize —
-    the second one then sees the first's queued run and 409s.
+    standard 409 with ``conflict_detail``. The lock keys on the linked entity
+    uid so concurrent dispatches for the SAME PR/ticket serialize — the second
+    one then sees the first's queued run and 409s.
+
+    The lock is CROSS-PROCESS (dist_lock): fix/review/implement dispatches come
+    from BOTH the backend (webhooks, HTTP) and the worker (auto-fix chains), so a
+    per-process lock let the two both pass the in-flight check and double-dispatch
+    — two runs on the same PR, racing pushes on the same branch.
     """
-    lock = _DISPATCH_LOCKS.setdefault(target_uid, asyncio.Lock())
-    async with lock:
+    async with dist_lock(
+        f"dispatch:{target_uid}", ttl_seconds=120, blocking_timeout=30
+    ) as acquired:
+        if not acquired:
+            # Couldn't serialize within the window — refuse rather than risk a
+            # double-dispatch. Rare: another dispatch for the SAME target held
+            # the lock past the timeout.
+            raise HTTPException(
+                status_code=409,
+                detail="another dispatch for this target is in progress; retry shortly",
+            )
         conflict = blocking_run(await active_runs_for(**active_filter), playbook=playbook)
         if conflict is not None:
             raise HTTPException(

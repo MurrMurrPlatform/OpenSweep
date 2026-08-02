@@ -174,6 +174,14 @@ class Settings(BaseSettings):
     # generation for minutes without emitting an event.
     OPENSWEEP_RUN_LIVENESS_TIMEOUT_SECONDS: int = 900
 
+    # Deployment topology. True (default) = exactly one backend + one worker
+    # process, so a role's startup sweep can fail every run it owned instantly
+    # (the dispatch task died with the process). Set False when running 2+
+    # replicas of a role: the startup sweep then reaps a role's runs ONLY once
+    # their transcript has gone quiet, so a replica never kills a live sibling's
+    # in-flight run. See run_reconciliation.reconcile_orphaned_runs.
+    OPENSWEEP_SINGLE_REPLICA: bool = True
+
     # Schema migrations (migrations/ + infrastructure/migration_runner.py).
     # AUTO_ROLLBACK: when an older image boots against a database that newer
     # migrations already touched (Coolify deployment rollback), revert those

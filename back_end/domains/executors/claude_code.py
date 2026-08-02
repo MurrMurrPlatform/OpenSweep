@@ -55,7 +55,11 @@ from domains.runs.schemas import (
     Executor,
     RunStatus,
 )
-from domains.runs.services.run_events import append_event, publish_delta
+from domains.runs.services.run_events import (
+    append_event,
+    append_event_async,
+    publish_delta,
+)
 from domains.runs.services.turn_cli import extract_claude_meta
 from domains.llm_providers.schemas import effective_cli_template
 from domains.llm_providers.services.credentials import provider_secret
@@ -264,7 +268,8 @@ class ClaudeCodeAdapter(ExecutorAdapter):
                         for event in translator.translate(text):
                             if event.get("type") == "turn_end" and isinstance(event.get("usage"), dict):
                                 cli_usage.update(event["usage"])
-                            append_event(req.run_uid, event.pop("type"), **event)
+                            # Hot path: keep the per-line disk write off the loop.
+                            await append_event_async(req.run_uid, event.pop("type"), **event)
                     else:
                         parts.append(text)
                     await recorder.record_delta(

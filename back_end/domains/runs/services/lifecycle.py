@@ -57,6 +57,7 @@ from domains.run_policies.services.policy_resolver import (
     resolve as resolve_policy,
 )
 from infrastructure.audit import write_audit
+from infrastructure.dist_lock import dist_lock
 from infrastructure.kill_switch import KillSwitchActiveError, assert_runnable
 from infrastructure.process_role import WORKER, get_role
 from logging_config import logger
@@ -231,7 +232,6 @@ async def trigger_run(
         raise LifecycleError(
             "No LLM provider configured for this organization. An org admin must add one in Settings → LLM Providers and mark it active."
         )
-    chosen_executor = executor or _executor_for_provider(active_provider)
     # A normal run is read-only investigation work. Only write playbooks
     # (implement/fix, §6) pass an explicit execution_mode — and they must
     # bring their own write sandbox (made or deferred).
@@ -244,6 +244,24 @@ async def trigger_run(
         raise LifecycleError(
             f"execution_mode={chosen_mode.value} requires a prepared write sandbox"
         )
+    # A WRITE run whose executor is resolved from the provider (executor is None —
+    # how the delivery services dispatch since G1) MUST land on a write-capable
+    # executor. If the active/pinned provider is read-only (internal_llm/codex),
+    # re-select a write-capable one from the org chain so the run doesn't silently
+    # no-op at the write gate. An explicit `executor` (legacy callers) is trusted.
+    if (
+        chosen_mode != ExecutionMode.ANALYZE_ONLY
+        and executor is None
+        and _executor_for_provider(active_provider) not in _WRITE_CAPABLE_EXECUTORS
+    ):
+        write_provider = await _select_write_capable_provider(run_org_uid)
+        if write_provider is None:
+            raise LifecycleError(
+                "no write-capable LLM provider configured for this organization — "
+                "add a Claude subscription or an OpenCode provider to run write playbooks"
+            )
+        active_provider = write_provider
+    chosen_executor = executor or _executor_for_provider(active_provider)
 
     try:
         # Policy precedence: the explicit per-run run_policy_uid wins (agent
@@ -460,47 +478,74 @@ async def execute_queued_run(run_uid: str) -> dict:
     or already dispatched) is skipped. Only CLI/discovery runs reach here
     (worker dispatches never carry a prepared sandbox), so prepared_sandbox /
     sandbox_factory are always None — the CLI clone path recreates the
-    workspace."""
+    workspace.
+
+    Cross-process idempotent under `acks_late`: the row stays QUEUED across the
+    whole sandbox clone (RUNNING is only stamped in `_prepare_dispatch_and_finalize`
+    once the clone lands), so a redelivered `dispatch_run` task — worker crash or
+    visibility-timeout re-queue — would pass the QUEUED check and clone + dispatch
+    a SECOND agent onto the same run. A per-run `dist_lock` lets exactly one task
+    proceed; the redelivered one is skipped."""
     run = await Run.nodes.get_or_none(uid=run_uid)
     if run is None:
         return {"outcome": "missing"}
     if run.status != RunStatus.QUEUED.value:
         return {"outcome": "skipped", "status": run.status or ""}
-    usage = dict(run.usage or {})
-    input_blob = dict(usage.get("input") or {})
-    overrides = dict(usage.get("workflow_overrides") or {})
-    target = dict(input_blob.get("target") or run.target or {})
-    repo = await Repository.nodes.get_or_none(uid=run.repository_uid)
-    policy = None
-    if run.run_policy_uid:
-        from domains.run_policies.models import RunPolicy
 
-        policy = await RunPolicy.nodes.get_or_none(uid=run.run_policy_uid)
-    context = await _load_briefing(repository_uid=run.repository_uid, target=target)
-    chosen_executor = Executor(run.executor)
-    await _prepare_dispatch_and_finalize(
-        run_uid=run.uid,
-        repository_uid=run.repository_uid,
-        intent=str(input_blob.get("intent") or ""),
-        target=target,
-        repo=repo,
-        adapter=AdapterRegistry.get(chosen_executor),
-        chosen_executor=chosen_executor,
-        chosen_mode=ExecutionMode(run.execution_mode or ExecutionMode.ANALYZE_ONLY.value),
-        trigger=RunTrigger(run.trigger or RunTrigger.MANUAL.value),
-        triggered_by=run.triggered_by or "",
-        policy=policy,
-        warnings=list(usage.get("warnings") or []),
-        provider_uid=str(usage.get("provider_uid") or run.provider_uid or ""),
-        model_override=str(overrides.get("model") or ""),
-        max_wall_seconds_override=int(overrides.get("max_wall_seconds") or 0),
-        effort=run.effort or "",
-        reasoning=run.reasoning or "",
-        context=context,
-        prepared_sandbox=None,
-        sandbox_factory=None,
-    )
-    return {"outcome": "dispatched", "run_uid": run.uid}
+    from domains.runs.tasks.task_limits import limits_for_run
+
+    # Hold the run for the whole dispatch (clone + agent). TTL covers the wall
+    # ceiling + slack so a crashed holder's claim expires and reconciliation can
+    # re-drive the run rather than it being stranded QUEUED.
+    _soft, hard = await limits_for_run(run)
+    async with dist_lock(
+        f"run:{run_uid}", ttl_seconds=hard + 300, blocking=False
+    ) as claimed:
+        if not claimed:
+            # A redelivered dispatch_run task is already executing this run.
+            return {"outcome": "skipped", "reason": "in-flight"}
+        # Re-read under the claim: the in-flight task may have advanced it past
+        # QUEUED between the pre-claim check and here.
+        run = await Run.nodes.get_or_none(uid=run_uid)
+        if run is None:
+            return {"outcome": "missing"}
+        if run.status != RunStatus.QUEUED.value:
+            return {"outcome": "skipped", "status": run.status or ""}
+        usage = dict(run.usage or {})
+        input_blob = dict(usage.get("input") or {})
+        overrides = dict(usage.get("workflow_overrides") or {})
+        target = dict(input_blob.get("target") or run.target or {})
+        repo = await Repository.nodes.get_or_none(uid=run.repository_uid)
+        policy = None
+        if run.run_policy_uid:
+            from domains.run_policies.models import RunPolicy
+
+            policy = await RunPolicy.nodes.get_or_none(uid=run.run_policy_uid)
+        context = await _load_briefing(repository_uid=run.repository_uid, target=target)
+        chosen_executor = Executor(run.executor)
+        await _prepare_dispatch_and_finalize(
+            run_uid=run.uid,
+            repository_uid=run.repository_uid,
+            intent=str(input_blob.get("intent") or ""),
+            target=target,
+            repo=repo,
+            adapter=AdapterRegistry.get(chosen_executor),
+            chosen_executor=chosen_executor,
+            chosen_mode=ExecutionMode(run.execution_mode or ExecutionMode.ANALYZE_ONLY.value),
+            trigger=RunTrigger(run.trigger or RunTrigger.MANUAL.value),
+            triggered_by=run.triggered_by or "",
+            policy=policy,
+            warnings=list(usage.get("warnings") or []),
+            provider_uid=str(usage.get("provider_uid") or run.provider_uid or ""),
+            model_override=str(overrides.get("model") or ""),
+            max_wall_seconds_override=int(overrides.get("max_wall_seconds") or 0),
+            effort=run.effort or "",
+            reasoning=run.reasoning or "",
+            context=context,
+            prepared_sandbox=None,
+            sandbox_factory=None,
+        )
+        return {"outcome": "dispatched", "run_uid": run.uid}
 
 
 async def _prepare_dispatch_and_finalize(
@@ -1184,16 +1229,32 @@ def _executor_for_provider(provider: LLMProvider) -> Executor:
 
 
 # Executors whose adapters have a write surface (IMPLEMENT mode: edit, test,
-# commit in a write sandbox). claude_code is the only one: internal_llm is
-# HTTP + read tools, and the codex/opencode tracking adapters are deliberately
-# read/report only — the write playbooks (fix/implement) always dispatch with
-# Executor.CLAUDE_CODE.
-_WRITE_CAPABLE_EXECUTORS = frozenset({Executor.CLAUDE_CODE})
+# commit in a write sandbox). claude_code and opencode: opencode edits files
+# with its own tools in the sandbox clone under the write contract (G1 — the
+# local-LLM delivery loop), and the finalize path validates + pushes its commits
+# the same way. internal_llm is HTTP + read tools, and the codex tracking adapter
+# is deliberately read/report only.
+_WRITE_CAPABLE_EXECUTORS = frozenset({Executor.CLAUDE_CODE, Executor.OPENCODE})
 
 
 def _provider_supports_write(provider: LLMProvider) -> bool:
-    """Whether a run in IMPLEMENT mode may resume on this provider."""
+    """Whether a run in IMPLEMENT mode may run/resume on this provider."""
     try:
         return _executor_for_provider(provider) in _WRITE_CAPABLE_EXECUTORS
     except LifecycleError:
         return False
+
+
+async def _select_write_capable_provider(run_org_uid: str) -> LLMProvider | None:
+    """Pick a write-capable provider from the org's §8 fallback chain.
+
+    Excludes every provider whose executor has no write surface (internal_llm,
+    codex) so a WRITE run never lands on a read-only executor and silently no-ops
+    at the write gate. Returns None when the org has no write-capable provider.
+    """
+    exclude = {
+        (p.uid or "").strip()
+        for p in await LLMProvider.nodes.filter(org_uid=run_org_uid)
+        if not _provider_supports_write(p)
+    }
+    return await select_provider(org_uid=run_org_uid, exclude_uids=exclude)

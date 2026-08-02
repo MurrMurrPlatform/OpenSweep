@@ -37,7 +37,7 @@ from domains.delivery.services.resolution_service import ensure_merge_policy
 from domains.delivery.services.run_dispatch import dispatch_serialized
 from domains.findings.models import Finding
 from domains.runs.models import Run
-from domains.runs.schemas import Executor, Effort, RunTrigger
+from domains.runs.schemas import Effort, RunTrigger
 from domains.runs.services.lifecycle import trigger_run
 from domains.repositories.models import Repository
 from domains.repositories.services.workflow import guidance_section, stage_prompt_body
@@ -194,7 +194,9 @@ async def trigger_verification_run(
                 "finding_uids": [f["finding_uid"] for f in findings],
             },
             linked_pr_uid=pr.uid,
-            executor=Executor.CLAUDE_CODE,
+            # executor=None: read-only verification resolves to the repo's active
+            # provider (claude_code / opencode / internal_llm) — the local-LLM loop.
+            executor=None,
             run_policy_uid=run_policy.uid,
             effort=Effort.NORMAL.value,
             trigger=trigger,

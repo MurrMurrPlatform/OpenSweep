@@ -30,7 +30,11 @@ from domains.runs.schemas import Effort, normalize_effort
 from infrastructure.code_graph import CODE_GRAPH_PROMPT
 
 PromptKind = Literal[
-    "claude_code_read", "claude_code_write", "internal_llm", "cli_tracking"
+    "claude_code_read",
+    "claude_code_write",
+    "internal_llm",
+    "cli_tracking",
+    "cli_tracking_write",
 ]
 
 
@@ -210,6 +214,29 @@ non-compliant work:
 - NEVER touch paths matching the forbidden patterns listed in the intent.
 - Commit with clear conventional commit messages as instructed in the intent."""
 
+# The cli_tracking (OpenCode / local-LLM) write variant. Same contract as the
+# claude write run — edit + test + commit in the sandbox clone, the platform
+# validates and pushes — but the agent edits files with its OWN native tools and
+# reaches the platform surface as native `opensweep_*` MCP tools rather than the
+# read-only JSON envelope. An empty working copy is a failed write run.
+_WRITE_HARD_RULES_CLI = """You are a coding agent running inside OpenSweep on a WRITE run
+(implement or fix), driving a local / OpenCode-managed model. You work in a
+disposable sandbox clone with the correct work branch already checked out, and
+you edit files with your OWN native tools.
+
+Your job: make the minimal code change described in the intent, run the
+relevant tests, and COMMIT the result inside this working copy (`git commit`).
+
+Hard rules — the platform enforces these after the run and DISCARDS
+non-compliant work:
+- NEVER push. NEVER run `git push`, `git pull`, or `git fetch`. The platform
+  validates your commits and pushes with its own credentials.
+- NEVER switch branches, force anything, or rewrite history (no rebase,
+  no --amend on commits you did not create in this run, no reset --hard).
+- NEVER touch paths matching the forbidden patterns listed in the intent.
+- Commit with clear conventional commit messages as instructed in the intent.
+- You MUST leave at least one commit — an empty working copy is a failed run."""
+
 # Envelope output contracts — the ```json examples and their surrounding
 # instructions are preserved VERBATIM from the pre-consolidation prompts, so
 # `extract_envelope` keeps seeing exactly the shape it was tuned for.
@@ -387,11 +414,29 @@ def _cli_tracking() -> str:
     )
 
 
+def _cli_tracking_write() -> str:
+    return "\n\n".join(
+        [
+            _WRITE_HARD_RULES_CLI,
+            "OpenSweep's platform tools reach you as native MCP tools (`opensweep_*`):\n\n"
+            + render_tool_list(PLATFORM_WRITE_TOOLS)
+            + "\n\nCall them directly as you work — use the tool the intent names\n"
+            "(e.g. `opensweep_platform_attach_fix` on fix runs), and ALWAYS finish by\n"
+            "calling `opensweep_platform_complete_run` with your end-of-run report.",
+            _MCP_NAMING_NOTE,
+            MCP_STARTUP_NOTE,
+        ]
+    )
+    # CODE_GRAPH_PROMPT is appended by the adapter only when the graph is
+    # actually available for the workspace — same as the read (_cli_tracking) path.
+
+
 _KIND_BUILDERS = {
     "claude_code_read": _claude_code_read,
     "claude_code_write": _claude_code_write,
     "internal_llm": _internal_llm,
     "cli_tracking": _cli_tracking,
+    "cli_tracking_write": _cli_tracking_write,
 }
 
 

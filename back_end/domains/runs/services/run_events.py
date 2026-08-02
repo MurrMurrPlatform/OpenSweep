@@ -31,6 +31,7 @@ fallback-tick latency.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from datetime import UTC, datetime
@@ -59,12 +60,16 @@ _next_seq: dict[str, int] = {}
 # stale and would mint duplicate seqs, so a size mismatch forces a reseed.
 _expected_size: dict[str, int] = {}
 
-# Lazy sync Redis client for the fan-out publish. After a failure publishing
-# is paused for a cooldown so an unreachable Redis never turns every append
-# into a connect timeout.
+# Lazy sync Redis client for the fan-out publish from non-loop callers. After a
+# failure publishing is paused for a cooldown so an unreachable Redis never turns
+# every append into a connect timeout.
 _redis: Any = None
 _redis_down_until = 0.0
 _REDIS_RETRY_SECONDS = 30.0
+
+# Strong refs to in-flight background publish tasks so the loop doesn't GC them
+# mid-flight (asyncio only holds a weak ref to a bare create_task result).
+_pending_publishes: set[asyncio.Task] = set()
 
 
 def run_events_channel(run_uid: str) -> str:
@@ -72,10 +77,44 @@ def run_events_channel(run_uid: str) -> str:
 
 
 def _publish(run_uid: str, payload: str) -> None:
-    """Best-effort doorbell for live watchers. Silent on any failure."""
-    global _redis, _redis_down_until
+    """Best-effort doorbell for live watchers. Silent on any failure.
+
+    The hot caller is the executor's stdout pump — an async coroutine on the
+    event loop, hit once per streamed line. A synchronous Redis `publish` there
+    blocks the whole loop on the network (and up to the 0.5s socket timeout when
+    Redis is unreachable), stalling every other run/request in the process. So
+    when a running loop is present we fan out via an async client on a
+    fire-and-forget task; only genuinely synchronous callers (no running loop —
+    e.g. a Celery task body) take the blocking sync path.
+    """
     if time.monotonic() < _redis_down_until:
         return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is not None:
+        task = loop.create_task(_publish_async(run_uid, payload))
+        _pending_publishes.add(task)
+        task.add_done_callback(_pending_publishes.discard)
+        return
+    _publish_sync(run_uid, payload)
+
+
+async def _publish_async(run_uid: str, payload: str) -> None:
+    """Off-loop publish via the per-loop async Redis client (redis.asyncio)."""
+    global _redis_down_until
+    try:
+        from infrastructure.redis_client import get_async_redis
+
+        await get_async_redis().publish(run_events_channel(run_uid), payload)
+    except Exception:  # noqa: BLE001 — fan-out must never break a run
+        _redis_down_until = time.monotonic() + _REDIS_RETRY_SECONDS
+
+
+def _publish_sync(run_uid: str, payload: str) -> None:
+    """Blocking publish for synchronous callers (no event loop running)."""
+    global _redis, _redis_down_until
     try:
         if _redis is None:
             from redis import Redis
@@ -117,10 +156,17 @@ def _seed_seq(run_uid: str) -> int:
     return 1
 
 
-def append_event(run_uid: str, type: str, *, turn: int = 1, **payload: Any) -> None:
-    """Append one transcript event. Silent on any failure."""
+def _write_event_line(
+    run_uid: str, type: str, turn: int, payload: dict[str, Any]
+) -> tuple[dict[str, Any], str] | None:
+    """Seq + serialize + append one event to the file. Silent on any failure.
+
+    Returns (event, serialized_line) so the caller can publish the doorbell and
+    derive narration; None when nothing was written. The stat/seq/open/write here
+    are the blocking bits — `append_event_async` runs this in a thread so the
+    executor pump never touches the disk on the event loop."""
     if not run_uid or not type:
-        return
+        return None
     try:
         path = events_path(run_uid)
         try:
@@ -144,22 +190,55 @@ def append_event(run_uid: str, type: str, *, turn: int = 1, **payload: Any) -> N
             fh.write(line + "\n")
             _expected_size[run_uid] = fh.tell()
     except OSError:
+        return None
+    return event, line
+
+
+def _narration_payload(event: dict[str, Any]) -> dict[str, Any] | None:
+    """The narration sidecar for a tool_use event, or None.
+
+    Narration sidecar (unified dev flow): every tool_use gets a plain-language
+    `narration` line in the same stream, carrying covers_seq so the UI can expand
+    it into the raw call. Pure templates — never raises; non-tool_use events
+    (including narration itself) never narrate."""
+    if event.get("type") != "tool_use":
+        return None
+    try:
+        from domains.runs.services.narration import narration_for_event
+
+        return narration_for_event(event)
+    except Exception:  # noqa: BLE001 — narration must never break a run
+        return None
+
+
+def append_event(run_uid: str, type: str, *, turn: int = 1, **payload: Any) -> None:
+    """Append one transcript event. Silent on any failure. Synchronous — for
+    callers not on the event loop (or where a sub-ms local write is fine).
+    The executor stdout pump uses `append_event_async` instead."""
+    written = _write_event_line(run_uid, type, turn, payload)
+    if written is None:
         return
+    event, line = written
     _publish(run_uid, line)
+    narration = _narration_payload(event)
+    if narration is not None:
+        append_event(run_uid, "narration", turn=turn, **narration)
 
-    # Narration sidecar (unified dev flow): every tool_use gets a plain-
-    # language `narration` line in the same stream, carrying covers_seq so
-    # the UI can expand it into the raw call. Pure templates — never blocks,
-    # never raises; narration events themselves never narrate (guard below).
-    if type == "tool_use":
-        try:
-            from domains.runs.services.narration import narration_for_event
 
-            narration = narration_for_event(event)
-            if narration is not None:
-                append_event(run_uid, "narration", turn=turn, **narration)
-        except Exception:  # noqa: BLE001 — narration must never break a run
-            pass
+async def append_event_async(run_uid: str, type: str, *, turn: int = 1, **payload: Any) -> None:
+    """Loop-safe append for the hot path (executor pump, hit per streamed line).
+
+    The blocking stat/open/write runs in a thread so it never stalls the event
+    loop; the doorbell publish is off-loop-async via `_publish`. Ordering is
+    preserved because the pump awaits each append before reading the next line."""
+    written = await asyncio.to_thread(_write_event_line, run_uid, type, turn, payload)
+    if written is None:
+        return
+    event, line = written
+    _publish(run_uid, line)
+    narration = _narration_payload(event)
+    if narration is not None:
+        await append_event_async(run_uid, "narration", turn=turn, **narration)
 
 
 def publish_delta(run_uid: str, text: str, *, turn: int = 1) -> None:

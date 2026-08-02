@@ -178,6 +178,10 @@ class MergePolicy(AsyncStructuredNode):
     require_clean_round = BooleanProperty(default=True)
     max_fix_rounds = IntegerProperty(default=2)
 
+    # How the in-app merge button merges a converged PR: squash | merge | rebase.
+    # Squash by default — the delivery loop produces one logical change per PR.
+    merge_method = StringProperty(default="squash")
+
     # Write-path denylist (list of regex strings). None on pre-Phase-3 nodes
     # means "use DEFAULT_PATH_DENYLIST"; an explicit [] is an operator opt-out.
     path_denylist = JSONProperty(default=list(DEFAULT_PATH_DENYLIST))
