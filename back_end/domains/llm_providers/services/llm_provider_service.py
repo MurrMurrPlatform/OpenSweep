@@ -212,13 +212,6 @@ class LLMProviderService:
             if field == "credential_secret":
                 # Credentials are sealed at rest (infrastructure/secretbox.py).
                 value = sealed_secret(value or "")
-                # A re-paste clears any dead/uncertain state and bumps the
-                # credential revision, so a codex write-back still in flight
-                # from a prior turn loses its compare-and-swap and cannot
-                # clobber the credential the user just supplied.
-                n.needs_reauth = False
-                n.auth_state_uncertain = False
-                n.credential_revision = int(getattr(n, "credential_revision", 0) or 0) + 1
             setattr(n, field, value)
         if not (n.cli_command_template or "").strip():
             # Clearing the template (or switching kind without one) means
@@ -273,31 +266,28 @@ async def _probe(n: LLMProvider) -> tuple[LLMProviderHealth, str]:
     """Best-effort connectivity probe — never raises, never blocks the loop."""
     kind = n.kind
     try:
-        if kind in (LLMProviderKind.CLAUDE_SUBSCRIPTION.value, LLMProviderKind.CODEX_SUBSCRIPTION.value):
-            binary = "claude" if kind == LLMProviderKind.CLAUDE_SUBSCRIPTION.value else "codex"
-            path = shutil.which(binary)
+        if kind == LLMProviderKind.CLAUDE_SUBSCRIPTION.value:
+            path = shutil.which("claude")
             if not path:
-                return LLMProviderHealth.UNREACHABLE, f"{binary} CLI not on PATH"
-            return LLMProviderHealth.OK, f"{binary} found at {path}"
-        if kind == LLMProviderKind.CLAUDE_API.value or kind == LLMProviderKind.OPENAI_API.value:
-            if (n.credential_secret or "").strip():
-                return LLMProviderHealth.OK, "credential secret present"
-            env = n.api_key_env or ("ANTHROPIC_API_KEY" if kind == LLMProviderKind.CLAUDE_API.value else "OPENAI_API_KEY")
-            if not os.environ.get(env):
-                return LLMProviderHealth.UNREACHABLE, f"env {env} not set"
-            return LLMProviderHealth.OK, f"env {env} present"
-        if kind in (LLMProviderKind.MLX.value, LLMProviderKind.LMSTUDIO.value, LLMProviderKind.OLLAMA.value):
+                return LLMProviderHealth.UNREACHABLE, "claude CLI not on PATH"
+            return LLMProviderHealth.OK, f"claude found at {path}"
+        if kind == LLMProviderKind.OPENCODE.value:
+            path = shutil.which("opencode")
+            if not path:
+                return LLMProviderHealth.UNREACHABLE, "opencode CLI not on PATH"
             if not n.base_url:
                 return LLMProviderHealth.UNREACHABLE, "base_url is empty"
-            # OpenAI-compatible servers expose /models; Ollama exposes /api/tags natively
-            # but also /v1/models when called with the OpenAI shim path.
+            # OpenAI-compatible servers expose /models (Ollama also serves it
+            # under the /v1 shim). A hosted endpoint may answer 401/403 without
+            # a key — that is still REACHABLE (auth is checked at run time from
+            # the generated config); only 5xx / transport errors are down.
             probe_url = n.base_url.rstrip("/") + "/models"
             import httpx
             try:
                 async with httpx.AsyncClient(timeout=2) as client:
                     resp = await client.get(probe_url)
-                    # 4xx/5xx count as unreachable (urllib parity).
-                    resp.raise_for_status()
+                    if resp.status_code >= 500:
+                        return LLMProviderHealth.UNREACHABLE, f"{probe_url} -> {resp.status_code}"
                     return LLMProviderHealth.OK, f"{probe_url} -> {resp.status_code}"
             except Exception as exc:
                 return LLMProviderHealth.UNREACHABLE, f"{probe_url}: {str(exc)[:180]}"
@@ -325,8 +315,6 @@ def _to_dto(n: LLMProvider) -> LLMProviderDTO:
         ),
         notes=n.notes or "",
         has_credential_secret=bool((n.credential_secret or "").strip()),
-        needs_reauth=bool(getattr(n, "needs_reauth", False)),
-        auth_state_uncertain=bool(getattr(n, "auth_state_uncertain", False)),
         last_health_check_at=n.last_health_check_at,
         last_health_status=n.last_health_status or "unknown",
         last_health_detail=n.last_health_detail or "",

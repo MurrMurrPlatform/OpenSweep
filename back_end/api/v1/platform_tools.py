@@ -566,7 +566,7 @@ async def http_confirm_area_current(
     The tool was registered in the dispatcher and advertised in every executor
     prompt, but had no `opensweep_platform_*` route — so it worked over the
     envelope transport and silently did not exist for MCP executors
-    (claude_code, codex), which is most runs. The areas equivalent in
+    (claude_code, opencode), which is most runs. The areas equivalent in
     api/v1/areas.py is the HUMAN door: keyed by uid and gated on a maintainer
     role a run token does not have.
     """

@@ -1,6 +1,6 @@
 """Shared executor-adapter plumbing.
 
-Extracted from claude_code.py / cli_tracking.py / internal_llm.py (audit #33),
+Extracted from claude_code.py / cli_tracking.py (audit #33),
 which triplicated:
 
 - provider resolution (explicit provider_uid pick → active fallback)
@@ -54,7 +54,7 @@ async def resolve_provider(
     """The provider the lifecycle chose (if any), else the active provider.
 
     `kind` restricts acceptance to one provider kind (claude_code /
-    cli_tracking adapters); empty accepts anything (internal_llm).
+    cli_tracking adapters); empty accepts anything.
 
     Tenancy: both the explicit pick and the active fallback are restricted to
     the run's org's OWN providers (there is no shared/platform scope), so an

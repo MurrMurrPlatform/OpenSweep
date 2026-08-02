@@ -315,25 +315,18 @@ def _envelope_text(calls, summary="mapped the repo"):
     )
 
 
-async def _dispatch(monkeypatch, *, calls, tracked, app_server=False, agent_key="map-areas"):
-    """One full codex dispatch; returns (result, instructions each pass got)."""
-    provider = SimpleNamespace(uid="p1", kind="codex_subscription", model="",
-                               credential_revision=0, extra_args="", org_uid="org-a")
+async def _dispatch(monkeypatch, *, calls, tracked, agent_key="map-areas"):
+    """One full opencode dispatch; returns (result, instructions each pass got)."""
+    provider = SimpleNamespace(uid="p1", kind="opencode", model="",
+                               extra_args="", org_uid="org-a")
 
     async def _resolve(*a, **k):
         return provider
 
     monkeypatch.setattr(cli_tracking, "resolve_provider", _resolve)
-    monkeypatch.setattr(cli_tracking.codex_cli, "app_server_enabled", lambda p: app_server)
     monkeypatch.setattr(cli_tracking, "append_event", lambda *a, **k: None)
     monkeypatch.setattr(cli_tracking, "record_input", lambda *a, **k: _none())
     monkeypatch.setattr(cli_tracking.artifact_store, "put", lambda **kw: "artifact://raw")
-
-    @asynccontextmanager
-    async def _txn(_p):
-        yield
-
-    monkeypatch.setattr(cli_tracking.codex_credential, "codex_credential_txn", _txn)
 
     async def _exec_calls(*, calls, req, executor_value, deny_tools):
         return ([], [], {})
@@ -357,32 +350,13 @@ async def _dispatch(monkeypatch, *, calls, tracked, app_server=False, agent_key=
 
     from domains.llm_providers.services.llm_executor import LLMInvocation
 
-    if app_server:
-        async def fake_app_server(session, prov, *, system_prompt, instruction,
-                                  timeout_seconds=None, working_dir=None,
-                                  on_chunk=None, run_uid=""):
-            return LLMInvocation(raw_output=_next(instruction), exit_code=0,
-                                 transport="app-server")
+    async def fake_cli(prov, **kw):
+        return LLMInvocation(raw_output=_next(kw["instruction"]), exit_code=0,
+                             transport="cli")
 
-        session = SimpleNamespace(uid="p1", client=None)
+    monkeypatch.setattr(cli_tracking, "invoke_provider", fake_cli)
 
-        async def _acquire(p):
-            return session
-
-        async def _release(s):
-            return None
-
-        monkeypatch.setattr(cli_tracking.codex_cli, "acquire_app_server", _acquire)
-        monkeypatch.setattr(cli_tracking.codex_cli, "invoke_via_app_server", fake_app_server)
-        monkeypatch.setattr(cli_tracking.codex_cli, "release_app_server", _release)
-    else:
-        async def fake_cli(prov, **kw):
-            return LLMInvocation(raw_output=_next(kw["instruction"]), exit_code=0,
-                                 transport="cli")
-
-        monkeypatch.setattr(cli_tracking, "invoke_provider", fake_cli)
-
-    result = await cli_tracking.CodexAdapter().dispatch(_req())
+    result = await cli_tracking.OpenCodeAdapter().dispatch(_req())
     return result, prompts
 
 
@@ -433,39 +407,19 @@ async def test_a_finished_map_is_left_alone(monkeypatch):
     assert result.usage["continuation_pass"] is False
 
 
-async def test_both_transports_enforce_the_partition_identically(monkeypatch):
-    exec_result, exec_prompts = await _dispatch(
-        monkeypatch, calls=_HALF_MAP, tracked=_HALF_MAP_TREE, app_server=False
-    )
-    app_result, app_prompts = await _dispatch(
-        monkeypatch, calls=_HALF_MAP, tracked=_HALF_MAP_TREE, app_server=True
-    )
-
-    assert len(exec_prompts) == len(app_prompts) == 2
-    assert exec_prompts[1] == app_prompts[1]
-    assert exec_result.usage["continuation_reason"] == app_result.usage["continuation_reason"]
-
-
 async def test_the_policy_continuation_ban_still_wins(monkeypatch):
     """max_continuation_passes=0 is an operator decision — an incomplete axis is
     reported, never retried against policy."""
-    provider = SimpleNamespace(uid="p1", kind="codex_subscription", model="",
-                               credential_revision=0, extra_args="", org_uid="org-a")
+    provider = SimpleNamespace(uid="p1", kind="opencode", model="",
+                               extra_args="", org_uid="org-a")
 
     async def _resolve(*a, **k):
         return provider
 
     monkeypatch.setattr(cli_tracking, "resolve_provider", _resolve)
-    monkeypatch.setattr(cli_tracking.codex_cli, "app_server_enabled", lambda p: False)
     monkeypatch.setattr(cli_tracking, "append_event", lambda *a, **k: None)
     monkeypatch.setattr(cli_tracking, "record_input", lambda *a, **k: _none())
     monkeypatch.setattr(cli_tracking.artifact_store, "put", lambda **kw: "artifact://raw")
-
-    @asynccontextmanager
-    async def _txn(_p):
-        yield
-
-    monkeypatch.setattr(cli_tracking.codex_credential, "codex_credential_txn", _txn)
 
     async def _exec_calls(*, calls, req, executor_value, deny_tools):
         return ([], [], {})
@@ -493,7 +447,7 @@ async def test_the_policy_continuation_ban_still_wins(monkeypatch):
         max_wall_seconds=3600, max_tool_turns=200, max_files_touched=100,
         max_continuation_passes=0, warn_at_pct=80,
     )
-    result = await cli_tracking.CodexAdapter().dispatch(req)
+    result = await cli_tracking.OpenCodeAdapter().dispatch(req)
 
     assert len(prompts) == 1
     assert result.usage["continuation_pass"] is False

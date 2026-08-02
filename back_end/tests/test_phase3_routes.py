@@ -125,26 +125,6 @@ def test_probe_platform_mcp_reports_unreachable_backend(monkeypatch):
     assert detail
 
 
-def test_codex_turn_env_is_allowlisted_too():
-    """Same allowlist rule for the codex executor's turn env."""
-    from domains.runs.services.turn_cli import codex_turn_env
-
-    class _Provider:
-        credential_secret = ""
-        kind = "codex_subscription"
-        api_key_env = ""
-
-    with mock.patch.dict(
-        os.environ,
-        {"NEO4J_PASSWORD": "neo4j_secret", "OPENSWEEP_AUTH_TOKEN": "opensweep_secret"},
-    ):
-        env = codex_turn_env(_Provider(), run_uid="run-abc")
-    assert "NEO4J_PASSWORD" not in env
-    assert "OPENSWEEP_AUTH_TOKEN" not in env
-    assert env["OPENSWEEP_RUN_UID"] == "run-abc"
-    assert env["IS_SANDBOX"] == "1"
-
-
 def test_write_intents_never_mention_the_token():
     from domains.delivery.models import DEFAULT_PATH_DENYLIST, PullRequest
     from domains.delivery.services.fix_run_service import build_fix_intent

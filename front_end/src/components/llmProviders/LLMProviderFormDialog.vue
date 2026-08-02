@@ -114,10 +114,6 @@ function onSubmit() {
             How many runs may use this provider at once, across every campaign.
             Campaign dispatch stops at whichever is tighter — this or the
             campaign's own max parallel.
-            <span v-if="provider?.kind === 'codex_subscription'" class="text-warn">
-              Codex serializes to one run per subscription while the app-server
-              path is off, so values above 1 only park runs in paused_quota.
-            </span>
           </p>
         </div>
 
@@ -145,7 +141,7 @@ function onSubmit() {
           <Textarea
             v-model="form.credential_secret"
             :placeholder="provider?.has_credential_secret ? '— leave blank to keep current value —' : meta.credential_placeholder"
-            :rows="provider?.kind === 'codex_subscription' ? 6 : 2"
+            :rows="2"
             class="font-mono text-xs"
           />
 

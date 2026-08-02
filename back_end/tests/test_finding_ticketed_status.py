@@ -263,7 +263,5 @@ async def test_ticketed_is_processed_for_the_board_but_still_outstanding_work():
     silently drop the org's open-issue count.
     """
     from domains.metrics.services.metrics_service import _OPEN_FINDING_STATUSES
-    from domains.platform_tools.prior_findings import prior_findings
 
     assert "ticketed" in _OPEN_FINDING_STATUSES
-    assert "ticketed" in prior_findings.__kwdefaults__["statuses"]

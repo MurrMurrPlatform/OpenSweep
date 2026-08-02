@@ -43,7 +43,7 @@ class PolicyViolation(RuntimeError):
         super().__init__(f"[{code}] {message}")
 
 
-_CLOUD_EXECUTORS = {Executor.CLAUDE_CODE, Executor.CODEX}
+_CLOUD_EXECUTORS = {Executor.CLAUDE_CODE}
 
 
 async def resolve(

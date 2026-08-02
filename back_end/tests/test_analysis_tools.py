@@ -34,11 +34,15 @@ def test_tools_registered_as_mcp_operations():
         assert f"opensweep_platform_{t}" in OPENSWEEP_PLATFORM_TOOL_OPERATIONS
 
 
-def test_internal_llm_prompt_lists_the_tools():
-    from domains.executors.internal_llm import _SYSTEM_PROMPT
+def test_harness_prompts_list_the_tools():
+    # Deep-scan runs execute on the harness executors, so both read prompts
+    # must advertise the analysis tool surface.
+    from domains.executors.prompt_kit import system_prompt
 
-    for t in ANALYSIS_TOOLS:
-        assert t in _SYSTEM_PROMPT
+    for kind in ("claude_code_read", "cli_tracking"):
+        prompt = system_prompt(kind)
+        for t in ANALYSIS_TOOLS:
+            assert t in prompt, f"{t} missing from {kind} prompt"
 
 
 def test_http_routes_exist_for_each_tool():

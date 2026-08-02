@@ -271,7 +271,7 @@ async def trigger_review_run(
             },
             linked_pr_uid=pr.uid,
             # executor=None: read-only review resolves to the repo's active
-            # provider (claude_code / opencode / internal_llm) — the local-LLM loop.
+            # provider (claude_code / opencode) — the local-LLM loop.
             executor=None,
             run_policy_uid=run_policy.uid,
             effort=resolved_depth.value,

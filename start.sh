@@ -23,7 +23,7 @@ if [ ! -f .env ]; then
 fi
 
 # Host dirs used as bind mounts — create them before Docker does (root-owned).
-mkdir -p "$HOME/.opensweep/sandboxes" "$HOME/.codex"
+mkdir -p "$HOME/.opensweep/sandboxes"
 
 echo "→ starting containers (first run builds images; takes a few minutes)…"
 docker compose up -d --build

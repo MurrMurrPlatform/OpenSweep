@@ -1,7 +1,7 @@
 """Read tools (OpenSweep data): query existing Findings.
 
-Mirrors prior_findings but with the `opensweep_*` naming convention used by the
-new look-before-write contract. Exposed to BOTH internal_llm and delegated
+Uses the `opensweep_*` naming convention of the look-before-write contract.
+Exposed to envelope and delegated
 CLI executors via MCP.
 
 Use cases:

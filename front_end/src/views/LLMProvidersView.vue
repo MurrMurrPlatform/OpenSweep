@@ -148,7 +148,7 @@ function canManage(): boolean {
         v-else-if="!store.list.length"
         :icon="Cpu"
         title="No providers connected"
-        description="Connect the coding agent you already use — Claude Code, Codex, opencode, or a local model server."
+        description="Connect the coding agent you already use — Claude Code, or opencode for local model servers and OpenAI-compatible APIs."
         class="border-0"
       >
         <Button v-if="currentUser.isAdmin" @click="openCreate">

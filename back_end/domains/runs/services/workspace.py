@@ -59,7 +59,7 @@ async def live_workspace_path(run: Run) -> str | None:
 async def ensure_workspace(run: Run) -> str | None:
     """Return the run's workspace path, recreating it from workspace_spec if
     it was destroyed. Returns None for executors that need no working dir
-    (internal_llm with no recorded spec). Persists run field changes."""
+    (a run with no recorded spec). Persists run field changes."""
     path = await live_workspace_path(run)
     if path is not None:
         return path

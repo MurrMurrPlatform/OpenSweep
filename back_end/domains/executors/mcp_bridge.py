@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 
 from domains.executors.agent_env import build_agent_env
-from infrastructure.code_graph import code_graph_codex_overrides, code_graph_server_config
+from infrastructure.code_graph import code_graph_server_config
 from infrastructure.run_tokens import mint_run_token
 
 # Startup budget (ms) the claude CLI grants each MCP server before marking it
@@ -76,7 +76,7 @@ def mcp_remote_args(*, run_uid: str) -> list[str]:
     """`mcp-remote` argv (minus the leading npx) for the /mcp/platform bridge.
 
     The stdio fallback for CLIs that can't speak fastapi-mcp's Streamable HTTP
-    transport natively (opencode, codex) — claude connects direct-HTTP via
+    transport natively (opencode) — claude connects direct-HTTP via
     `write_claude_mcp_config` instead. mcp-remote negotiates HTTP first and
     falls back to SSE, so it rides the same URL. mcp-remote rejects non-HTTPS URLs
     unless --allow-http is set or the host is literal "localhost" — the
@@ -97,24 +97,6 @@ def mcp_remote_args(*, run_uid: str) -> list[str]:
     if run_token:
         args += ["--header", f"X-OpenSweep-Auth: {run_token}"]
     return args
-
-
-def codex_mcp_overrides(*, run_uid: str, workspace_path: str = "") -> list[str]:
-    """`codex -c key=value` TOML overrides registering the per-run MCP servers.
-
-    codex has no --mcp-config flag, so both servers ride in as config
-    overrides: opensweep platform tools through the mcp-remote stdio bridge, plus
-    the code graph when the workspace has one. json.dumps output is valid
-    TOML for plain strings and string arrays.
-    """
-    overrides: list[str] = []
-    if run_uid:
-        overrides += [
-            'mcp_servers.opensweep.command="npx"',
-            f"mcp_servers.opensweep.args={json.dumps(mcp_remote_args(run_uid=run_uid))}",
-        ]
-    overrides += code_graph_codex_overrides(workspace_path)
-    return overrides
 
 
 def write_claude_mcp_config(
@@ -165,24 +147,6 @@ def write_claude_mcp_config(
             payload["mcpServers"]["code-graph"] = graph
     config_path.write_text(json.dumps(payload, indent=2))
     return str(config_path)
-
-
-def codex_mcp_config_object(*, run_uid: str, workspace_path: str = "") -> dict:
-    """The per-run MCP servers as a nested config dict for app-server
-    `thread/start.config` — same servers as the exec path's `-c` overrides
-    (codex_mcp_overrides), just structured. Each override is a dotted-key TOML
-    line (`mcp_servers.opensweep.command="npx"`), so parse with tomllib — it
-    handles strings, arrays, AND inline tables (code-graph's env) correctly,
-    unlike json."""
-    import tomllib
-    cfg: dict = {}
-    for override in codex_mcp_overrides(run_uid=run_uid, workspace_path=workspace_path):
-        try:
-            parsed = tomllib.loads(override)
-        except tomllib.TOMLDecodeError:
-            continue  # a malformed override is skipped, not fatal (a run without one MCP beats no run)
-        _deep_merge(cfg, parsed)
-    return cfg
 
 
 def _deep_merge(dst: dict, src: dict) -> None:

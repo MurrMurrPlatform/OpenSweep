@@ -39,8 +39,8 @@ async def candidates_for_change(
     repository_uid: str,
     changed_paths: list[str],
     executors_to_estimate: tuple[Executor, ...] = (
-        Executor.INTERNAL_LLM,
         Executor.CLAUDE_CODE,
+        Executor.OPENCODE,
     ),
 ) -> list[TriggerCandidate]:
     """Find ScheduledAgents eligible to run after the given changes."""

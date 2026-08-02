@@ -98,16 +98,6 @@ def _baseline_providers() -> list[dict[str, Any]]:
             "enabled": True,
             "active": False,
         },
-        {
-            "slug": "claude-api",
-            "label": "Anthropic API",
-            "kind": "claude_api",
-            "base_url": "https://api.anthropic.com/v1",
-            "model": "claude-sonnet-4-6",
-            "api_key_env": "ANTHROPIC_API_KEY",
-            "enabled": False,
-            "active": False,
-        },
     ]
 
 

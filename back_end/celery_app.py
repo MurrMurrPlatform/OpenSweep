@@ -144,24 +144,6 @@ def init_worker(**_kwargs):
     set_role(WORKER)
 
 
-@worker_process_shutdown.connect
-def release_codex_subscriptions(**_kwargs):
-    """A prefork child exiting must hand back any codex subscription its
-    app-server holds — otherwise the lease sits until its TTL expires and the
-    next run on that subscription needlessly pauses. Inert when the app-server
-    path is off; best-effort by design (the TTL is the backstop)."""
-    try:
-        from domains.llm_providers.services.codex_app_server_registry import (
-            shutdown_all_blocking,
-        )
-
-        shutdown_all_blocking()
-    except Exception as exc:  # noqa: BLE001
-        from logging_config import logger
-
-        logger.warning(f"codex app-server release on shutdown skipped: {exc}")
-
-
 @worker_ready.connect
 def sweep_worker_orphans(**_kwargs):
     """A worker restart killed any dispatch task it was running — fail the

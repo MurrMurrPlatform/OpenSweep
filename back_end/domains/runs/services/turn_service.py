@@ -1,7 +1,7 @@
 """Follow-up turns on runs (PLATFORM_V3_DESIGN.md §6).
 
-One follow-up turn = one CLI subprocess (claude/codex) or one provider
-invocation (internal_llm/opencode) in the run's workspace. The runner is an
+One follow-up turn = one CLI subprocess (claude) or one provider
+invocation (opencode) in the run's workspace. The runner is an
 async generator of turn-boundary events ({"type": "status"|"error"|
 "message_complete", …}); the WebSocket forwards them as they arrive and the
 REST fallback (`POST /runs/{uid}/messages`) drains them and returns the
@@ -29,10 +29,9 @@ from datetime import UTC, datetime
 from fastapi import HTTPException
 
 from config import settings
-from domains.executors.mcp_bridge import claude_env, codex_mcp_overrides, write_claude_mcp_config
+from domains.executors.mcp_bridge import claude_env, write_claude_mcp_config
 from domains.executors.stream_events import ClaudeStreamTranslator, stream_event_delta
 from domains.llm_providers.models import LLMProvider
-from domains.llm_providers.services import codex_auth, codex_credential
 from domains.llm_providers.services.credentials import provider_secret
 from domains.runs.models import Run
 from domains.runs.schemas import FOLLOW_UP_STATUSES, RunStatus
@@ -45,11 +44,8 @@ from domains.runs.services.turn_cli import (
     INTERRUPT_GRACE_SECONDS,
     TURN_TIMEOUT_SECONDS,
     build_claude_turn_argv,
-    build_codex_prompt,
-    build_codex_turn_argv,
-    codex_turn_env,
+    build_transcript_prompt,
     extract_claude_meta,
-    parse_codex_deltas,
 )
 from infrastructure.audit import write_audit
 from infrastructure.code_graph import CODE_GRAPH_PROMPT, code_graph_available
@@ -59,7 +55,7 @@ from logging_config import logger
 _FOLLOW_UP_STATUS_VALUES = {s.value for s in FOLLOW_UP_STATUSES}
 
 # Executors that run follow-up turns as CLI subprocesses in the workspace.
-_SUBPROCESS_EXECUTORS = {"claude_code", "codex"}
+_SUBPROCESS_EXECUTORS = {"claude_code"}
 
 # First-message queueing: how long a held message waits for the chat run's
 # background workspace clone before giving up.
@@ -155,7 +151,7 @@ def ensure_can_send(status: str, in_flight: bool, *, playbook: str = "") -> None
 
 def transcript_entries(run_uid: str, *, limit: int = 200) -> list[dict]:
     """Conversation entries (role/content) from the run's event stream — the
-    codex/internal_llm reseed context and the workspace-recreation fallback."""
+    opencode reseed context and the workspace-recreation fallback."""
     entries: list[dict] = []
     for e in read_events(run_uid, 0, limit=10_000):
         if e.get("type") == "user_message":
@@ -214,19 +210,15 @@ class TurnService:
             if run.provider_uid
             else None
         )
-        # Codex subscriptions serialize per credential and durably persist any
-        # rotation codex performs during the turn (inert for every other
-        # provider — see codex_credential.codex_credential_txn).
         try:
-            async with codex_credential.codex_credential_txn(provider):
-                # aclosing guarantees the body (and its codex subprocess) is torn
-                # down BEFORE the transaction reads auth.json back for write-back.
-                async with aclosing(self._run_turn_body(uid, text, run, provider)) as _body:
-                    async for _ev in _body:
-                        yield _ev
+            # aclosing guarantees the body (and its subprocess) is torn down
+            # when the consumer vanishes mid-turn.
+            async with aclosing(self._run_turn_body(uid, text, run, provider)) as _body:
+                async for _ev in _body:
+                    yield _ev
         except HTTPException:
-            # Subscription lease unavailable (or another pre-spawn HTTP error):
-            # free the reserved turn slot so follow-ups don't 409 forever.
+            # Pre-spawn HTTP error: free the reserved turn slot so follow-ups
+            # don't 409 forever.
             if _RUNNING.get(uid) is _STARTING:
                 _RUNNING.pop(uid, None)
             raise
@@ -234,8 +226,7 @@ class TurnService:
     async def _run_turn_body(
         self, uid: str, text: str, run, provider
     ) -> AsyncGenerator[dict, None]:
-        """The turn body — workspace prep, subprocess spawn/stream, finalize —
-        wrapped by run_turn in the codex-subscription credential transaction."""
+        """The turn body — workspace prep, subprocess spawn/stream, finalize."""
         turn_no = int(run.turns or 0) + 1
         deltas: list[str] = []
         result_text: str | None = None
@@ -249,20 +240,14 @@ class TurnService:
         try:
             # Ensure the workspace BEFORE flipping to running — recreation is
             # a clone and can fail; the run must stay followable.
+            # (ensure_workspace returns None for runs without a workspace_spec,
+            # e.g. historical/manual runs, so this is safe for every executor.)
             cwd: str | None = None
-            if (run.executor or "") in _SUBPROCESS_EXECUTORS:
-                try:
-                    cwd = await workspace_service.ensure_workspace(run)
-                except workspace_service.WorkspaceError as exc:
-                    raise HTTPException(status_code=502, detail=str(exc)) from exc
-                run = await self.get_run(uid)  # recreation may have saved fields
-            elif (run.executor or "") not in {"internal_llm"}:
-                # opencode runs also work in a workspace when one exists.
-                try:
-                    cwd = await workspace_service.ensure_workspace(run)
-                except workspace_service.WorkspaceError as exc:
-                    raise HTTPException(status_code=502, detail=str(exc)) from exc
-                run = await self.get_run(uid)
+            try:
+                cwd = await workspace_service.ensure_workspace(run)
+            except workspace_service.WorkspaceError as exc:
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
+            run = await self.get_run(uid)  # recreation may have saved fields
 
             now = datetime.now(UTC)
             reopened = run.status == RunStatus.ENDED.value
@@ -315,15 +300,15 @@ class TurnService:
                 # No subprocess was spawned and the turn is over (setup raised
                 # — any executor — or a subprocess spawn failed): free the
                 # _STARTING reservation, or every follow-up would 409 forever.
-                # For internal_llm/opencode with successful setup the
-                # reservation stays: it is the busy marker for the provider
-                # turn below, popped in that block's own finally.
+                # For opencode with successful setup the reservation stays: it
+                # is the busy marker for the provider turn below, popped in
+                # that block's own finally.
                 if _RUNNING.get(uid) is _STARTING:
                     _RUNNING.pop(uid, None)
 
         if (run.executor or "") not in _SUBPROCESS_EXECUTORS:
-            # internal_llm / opencode: one provider invocation, no PTY stream.
-            # cwd is the ensured workspace for opencode, None for internal_llm.
+            # opencode (and historical executors): one provider invocation,
+            # no PTY stream. cwd is the ensured workspace when one exists.
             try:
                 content = await self._run_provider_turn(run, provider, text, cwd=cwd)
                 deltas.append(content)
@@ -333,7 +318,6 @@ class TurnService:
                 _RUNNING.pop(uid, None)
         elif proc is not None:
             translator = ClaudeStreamTranslator()
-            is_claude = (run.executor or "") == "claude_code"
 
             async def _drain_stderr() -> None:
                 assert proc is not None and proc.stderr is not None
@@ -357,27 +341,22 @@ class TurnService:
                         # including the socket that sent this message —
                         # through the run WS tailer, so yielding them too
                         # would double-render.
-                        if is_claude:
-                            partial = stream_event_delta(line)
-                            if partial is not None:
-                                # Ephemeral token delta — fan out, never store.
-                                if partial:
-                                    publish_delta(uid, partial, turn=turn_no)
-                                continue
-                            meta = extract_claude_meta(line)
-                            if meta.session_id:
-                                cli_session_id = meta.session_id
-                            if meta.is_result and meta.result_text is not None:
-                                result_text = meta.result_text
-                            for event in translator.translate(line):
-                                etype = event.pop("type")
-                                append_event(uid, etype, turn=turn_no, **event)
-                                if etype == "assistant_text":
-                                    deltas.append(event.get("text") or "")
-                        else:
-                            for delta in parse_codex_deltas(line):
-                                append_event(uid, "assistant_text", text=delta, turn=turn_no)
-                                deltas.append(delta)
+                        partial = stream_event_delta(line)
+                        if partial is not None:
+                            # Ephemeral token delta — fan out, never store.
+                            if partial:
+                                publish_delta(uid, partial, turn=turn_no)
+                            continue
+                        meta = extract_claude_meta(line)
+                        if meta.session_id:
+                            cli_session_id = meta.session_id
+                        if meta.is_result and meta.result_text is not None:
+                            result_text = meta.result_text
+                        for event in translator.translate(line):
+                            etype = event.pop("type")
+                            append_event(uid, etype, turn=turn_no, **event)
+                            if etype == "assistant_text":
+                                deltas.append(event.get("text") or "")
                     await proc.wait()
             except TimeoutError:
                 error_detail = f"turn timed out after {TURN_TIMEOUT_SECONDS}s"
@@ -420,21 +399,6 @@ class TurnService:
             stderr_tail = "".join(stderr_parts)[-2000:]
             program = argv[0] if argv else (run.executor or "agent")
             error_detail = f"{program} exited {exit_code}" + (f": {stderr_tail}" if stderr_tail else "")
-        # A codex subscription whose refresh token is permanently dead surfaces
-        # as a re-auth message in codex's output — flag the provider so the UI
-        # can prompt for a fresh ~/.codex/auth.json, and make the run error
-        # actionable rather than a raw exit code.
-        if (
-            error_detail
-            and (run.executor or "") == "codex"
-            and codex_credential.is_codex_managed(provider)
-            and codex_auth.looks_like_reauth(error_detail)
-        ):
-            await codex_credential.mark_needs_reauth(provider.uid)
-            error_detail = (
-                "Your Codex subscription needs re-authentication: run `codex login` "
-                "on your machine and re-paste ~/.codex/auth.json into the provider."
-            )
         if error_detail:
             yield {"type": "error", "detail": error_detail}
         yield {"type": "message_complete", "content": content, "interrupted": interrupted}
@@ -619,22 +583,11 @@ class TurnService:
         self, run: Run, provider, text: str, *, cwd: str | None = None
     ) -> tuple[list[str], dict[str, str]]:
         model = (getattr(provider, "model", "") or "") if provider is not None else ""
-        # The briefing must match the tools: both CLI paths below expose the
+        # The briefing must match the tools: the CLI path below exposes the
         # code-graph server exactly when the workspace + binary exist.
         has_code_graph = code_graph_available(cwd or "")
         context = await self._system_prompt(run, code_graph=has_code_graph)
-        if (run.executor or "") == "codex":
-            entries = transcript_entries(run.uid)
-            prompt = build_codex_prompt(text, entries, system_prompt=context)
-            argv = build_codex_turn_argv(
-                prompt=prompt,
-                model=model,
-                config_overrides=codex_mcp_overrides(run_uid=run.uid, workspace_path=cwd or ""),
-            )
-            env = codex_turn_env(provider, run_uid=run.uid)
-            return argv, env
-
-        # claude_code (default). workspace_path keeps the code-graph MCP
+        # claude_code. workspace_path keeps the code-graph MCP
         # server in the per-run mcp.json on EVERY turn — the config file is
         # shared across turns, so omitting it here would strip the server
         # the first turn exposed.
@@ -688,9 +641,9 @@ class TurnService:
         return context
 
     async def _run_provider_turn(self, run: Run, provider, text: str, *, cwd: str | None) -> str:
-        """internal_llm / opencode follow-up: one provider invocation seeded
-        with the transcript tail (no CLI resume). Deltas land in the
-        transcript via events; the reply returns whole."""
+        """opencode follow-up: one provider invocation seeded with the
+        transcript tail (no CLI resume). Deltas land in the transcript via
+        events; the reply returns whole."""
         from domains.llm_providers.services.llm_executor import invoke as invoke_provider
 
         if provider is None:
@@ -699,14 +652,13 @@ class TurnService:
                 detail="the run's provider is gone — activate a provider and retry",
             )
         # opencode's generated config registers the code-graph server when the
-        # invocation has a workspace (llm_executor._prepare_opencode_config);
-        # internal_llm runs with cwd=None and no tools, so the gate stays off.
+        # invocation has a workspace (llm_executor._prepare_opencode_config).
         has_code_graph = (
             (getattr(provider, "kind", "") or "").strip() == "opencode"
             and code_graph_available(cwd or "")
         )
         context = await self._system_prompt(run, code_graph=has_code_graph)
-        prompt = build_codex_prompt(text, transcript_entries(run.uid), system_prompt="")
+        prompt = build_transcript_prompt(text, transcript_entries(run.uid), system_prompt="")
         streamed_len = {"stdout": 0}
 
         async def _on_chunk(stream: str, chunk_text: str) -> None:
@@ -777,7 +729,9 @@ def run_to_dto(run: Run):
         playbook=_enum_or(Playbook, run.playbook, Playbook.ASK),
         title=run.title or "",
         scheduled_agent_uid=run.scheduled_agent_uid or "",
-        executor=_enum_or(Executor, run.executor, Executor.INTERNAL_LLM),
+        # Historical rows may carry removed executors (internal_llm, codex);
+        # they fall back to MANUAL for display.
+        executor=_enum_or(Executor, run.executor, Executor.MANUAL),
         execution_mode=_enum_or(ExecutionMode, run.execution_mode, ExecutionMode.ANALYZE_ONLY),
         run_policy_uid=run.run_policy_uid,
         effort=getattr(run, "effort", "") or "",

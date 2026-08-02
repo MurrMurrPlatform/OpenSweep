@@ -195,7 +195,7 @@ async def trigger_verification_run(
             },
             linked_pr_uid=pr.uid,
             # executor=None: read-only verification resolves to the repo's active
-            # provider (claude_code / opencode / internal_llm) — the local-LLM loop.
+            # provider (claude_code / opencode) — the local-LLM loop.
             executor=None,
             run_policy_uid=run_policy.uid,
             effort=Effort.NORMAL.value,

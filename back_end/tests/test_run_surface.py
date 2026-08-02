@@ -28,11 +28,11 @@ def test_surfaces_are_runs_comment_chat_slack():
 
 
 def test_dto_defaults_surface_to_runs():
-    assert RunDTO(uid="r", repository_uid="repo", executor="internal_llm").surface == "runs"
+    assert RunDTO(uid="r", repository_uid="repo", executor="manual").surface == "runs"
 
 
 def test_run_to_dto_maps_missing_surface_to_runs():
-    run = Run(uid="r1", repository_uid="repo1", executor="internal_llm")
+    run = Run(uid="r1", repository_uid="repo1", executor="manual")
     run.surface = None  # node predating the field
     assert run_to_dto(run).surface == "runs"
     run.surface = "comment"
@@ -43,7 +43,7 @@ def test_run_to_dto_maps_missing_surface_to_runs():
 
 
 def test_run_to_dto_maps_effort_and_reasoning():
-    run = Run(uid="r1", repository_uid="repo1", executor="internal_llm")
+    run = Run(uid="r1", repository_uid="repo1", executor="manual")
     run.effort = "deep"
     run.reasoning = "high"
     dto = run_to_dto(run)
@@ -52,7 +52,7 @@ def test_run_to_dto_maps_effort_and_reasoning():
 
 
 def test_run_to_dto_defaults_effort_and_reasoning_to_empty():
-    run = Run(uid="r1", repository_uid="repo1", executor="internal_llm")
+    run = Run(uid="r1", repository_uid="repo1", executor="manual")
     run.effort = None  # node predating the fields
     run.reasoning = None
     dto = run_to_dto(run)
@@ -192,7 +192,7 @@ def _user(role="maintainer", platform_admin=False, uid="u1"):
 def _node(uid, surface="runs", triggered_by="u1", repository_uid="repo1"):
     now = datetime.now(UTC)
     return Run(
-        uid=uid, repository_uid=repository_uid, executor="internal_llm",
+        uid=uid, repository_uid=repository_uid, executor="manual",
         surface=surface, triggered_by=triggered_by, status="ended",
         last_activity_at=now, started_at=now, created_at=now,
     )
@@ -351,7 +351,7 @@ async def test_create_chat_resolves_repo_from_context_subject(monkeypatch):
 
     async def fake_chat(req, *, actor_uid, org_uid):
         seen["req_repo"] = req.repository_uid
-        return Run(uid="r1", repository_uid=req.repository_uid, executor="internal_llm")
+        return Run(uid="r1", repository_uid=req.repository_uid, executor="manual")
 
     monkeypatch.setattr(subjects, "get_subject", fake_get_subject)
     monkeypatch.setattr(runs_module, "require_repo_in_org", fake_require)

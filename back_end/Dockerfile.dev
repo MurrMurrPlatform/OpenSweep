@@ -10,16 +10,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Node.js 20 + headless coding-agent CLIs:
 #   - @anthropic-ai/claude-code  (claude CLI, reads ~/.claude / OAuth token env)
-#   - @openai/codex              (codex CLI, reads ~/.codex/auth.json)
 #   - opencode-ai                (sst/opencode, reads ~/.config/opencode/opencode.json)
-# All three are bind-mounted from the host's config dirs in docker-compose so the
-# in-container CLIs reuse the user's host-side subscription / model config.
+# claude is bind-mounted from the host's config dir in docker-compose so the
+# in-container CLI reuses the user's host-side subscription config.
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g \
         @anthropic-ai/claude-code \
-        @openai/codex@0.145.0 \
         opencode-ai \
         mcp-remote \
     && npm cache clean --force
@@ -28,9 +26,6 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 # compatibility issues with SSE; using mcp-remote as a stdio bridge sidesteps
 # the problem.
 
-# aider (Python-based coding agent). Pinned loosely; aider iterates fast but the
-# CLI flags we use (--message, --no-auto-commits, --yes-always, --model) are stable.
-RUN pip install --no-cache-dir aider-chat
 
 # codebase-memory-mcp — per-workspace code-graph MCP server for coding agents
 # (KNOWLEDGE_V3_CODE_GRAPH.md). Pinned release; single static binary, verified

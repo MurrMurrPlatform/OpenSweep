@@ -1,6 +1,6 @@
 """Process-group spawn/kill for agent CLI subprocesses.
 
-Agent CLIs (claude/codex/opencode) spawn their own children: `npx`/
+Agent CLIs (claude/opencode) spawn their own children: `npx`/
 `mcp-remote` stdio↔SSE bridges, `codebase-memory-mcp`, and whatever the
 agent's Bash tool starts. Signalling only the direct child (proc.kill())
 orphans that tree — and orphaned MCP bridges keep (re)connecting to the

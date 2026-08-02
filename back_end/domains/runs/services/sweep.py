@@ -843,7 +843,7 @@ async def run_deep_scan(
     run whose intent tells the agent to survey the whole repo, plan its own
     scan, and work module by module — filing Findings as it goes and closing
     with one synthesis Finding. It runs on whatever executor the org's active
-    provider selects (CLI providers get a git clone; internal_llm uses the
+    provider selects (CLI providers get a git clone; manual uses the
     read tools), gets analyzer candidates (ask playbook, §E), and should be
     dispatched under a `deep` effort policy for a generous wall ceiling.
 

@@ -11,8 +11,8 @@ how subscription CLIs meter usage):
   claude's own resume state) survives. Workspace recreation clears the
   resume token — the next turn reseeds from the transcript tail.
 
-- codex: `codex exec` has no resume, so each turn re-sends a capped
-  (~8k chars) transcript tail as inline context.
+- opencode: `opencode run` has no resume, so each turn re-sends a capped
+  (~8k chars) transcript tail as inline context (build_transcript_prompt).
 
 Everything here is pure (argv/prompt builders, line meta extraction) so it
 stays unit-testable without subprocesses or Neo4j; spawning lives in
@@ -24,9 +24,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from domains.llm_providers.services import codex_cli
-
-CODEX_CONTEXT_CAP = 8_000  # chars of transcript tail per codex turn
+TRANSCRIPT_CONTEXT_CAP = 8_000  # chars of transcript tail per no-resume turn
 
 # Interrupt: SIGTERM first, SIGKILL after this grace period.
 INTERRUPT_GRACE_SECONDS = 5.0
@@ -80,10 +78,10 @@ def build_claude_turn_argv(
     return argv
 
 
-def build_codex_prompt(
-    text: str, entries: list[dict], cap: int = CODEX_CONTEXT_CAP, system_prompt: str = ""
+def build_transcript_prompt(
+    text: str, entries: list[dict], cap: int = TRANSCRIPT_CONTEXT_CAP, system_prompt: str = ""
 ) -> str:
-    """codex has no --resume: prepend the briefing + a capped transcript tail."""
+    """No-resume CLIs (opencode): prepend the briefing + a capped transcript tail."""
     preamble = f"{system_prompt.strip()}\n\n" if system_prompt.strip() else ""
     if not entries:
         return f"{preamble}User message:\n{text}" if preamble else text
@@ -100,23 +98,6 @@ def build_codex_prompt(
         f"{context}\n\n"
         f"User message:\n{text}"
     )
-
-
-def build_codex_turn_argv(
-    *, prompt: str, model: str = "", config_overrides: list[str] | None = None
-) -> list[str]:
-    """`config_overrides` are `-c key=value` TOML overrides — how per-run MCP
-    servers (the code graph) reach codex, which has no --mcp-config flag.
-
-    Argv is assembled through the shared codex adapter (codex_cli), so the turn
-    and run paths build codex the same way — including the sandbox/approval
-    bypass OpenSweep needs (its own isolation replaces codex's OS sandbox)."""
-    argv = codex_cli.with_sandbox_bypass(codex_cli.base_exec_argv())
-    for override in config_overrides or []:
-        argv += ["-c", override]
-    argv = codex_cli.with_model(argv, model=model)
-    argv.append(prompt)
-    return argv
 
 
 # ── Stream meta extraction ───────────────────────────────────────────────────
@@ -152,25 +133,3 @@ def extract_claude_meta(line: str) -> StreamMeta:
         if isinstance(result, str):
             meta.result_text = result
     return meta
-
-
-# Codex `exec --json` agent-message parsing lives in the shared codex adapter;
-# re-exported here under its historical name for existing import sites.
-parse_codex_deltas = codex_cli.parse_deltas
-
-
-# ── Env composition ──────────────────────────────────────────────────────────
-
-
-def codex_turn_env(provider, *, run_uid: str = "") -> dict[str, str]:
-    """Env for a codex turn: the explicit allowlist (same rule as
-    `mcp_bridge.claude_env` — platform secrets like GITHUB_TOKEN,
-    NEO4J_PASSWORD, OPENSWEEP_AUTH_TOKEN must never reach the agent), plus the
-    provider's runtime credential plumbing (worker-private CODEX_HOME when a
-    UI-stored auth.json exists)."""
-    from domains.executors.agent_env import build_agent_env
-    from domains.llm_providers.services.runtime_env import apply_runtime_to_env, build_runtime
-
-    runtime = build_runtime(provider)
-    env = build_agent_env(run_uid=run_uid, extra=runtime.env_vars)
-    return apply_runtime_to_env(runtime, env)

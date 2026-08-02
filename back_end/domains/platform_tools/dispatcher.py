@@ -3,7 +3,7 @@
 Single in-process entry point for executors that wish to invoke any of
 the tracking-safe platform tools by name. Used by:
 - the HTTP transport (`api/v1/platform_tools.py`) for non-Python executors
-- the `internal_llm` adapter to call tools synchronously
+- envelope executors (cli_tracking) to call tools synchronously
 - the MCP bridge in the `claude_code` adapter to route MCP tool calls
 
 Each registry entry carries a one-line description used by the executor

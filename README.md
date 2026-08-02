@@ -46,8 +46,9 @@ clone of any repo, streamed straight to your browser.
   <img alt="OpenSweep Ask — live agent chat in a sandboxed repo clone" src="front_end/src/public/OpenSweep/OpenSweepAskLight.png">
 </picture>
 
-Bring your own agent: Claude Code, OpenAI Codex, any OpenAI/Anthropic-compatible
-API, or fully local models (MLX, LM Studio, Ollama, OpenCode).
+Bring your own agent: Claude Code on your subscription, or OpenCode driving
+fully local models (OMLX/MLX, LM Studio, Ollama) and any OpenAI-compatible
+API (Azure AI Foundry, OpenRouter, …).
 
 ## Quickstart
 
