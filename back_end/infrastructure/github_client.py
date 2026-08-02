@@ -267,6 +267,51 @@ class GitHubClient:
                 f"{errors[0].get('message', 'unknown GraphQL error')}"
             )
 
+    async def merge_pull_request(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        *,
+        method: str = "squash",
+        commit_title: str = "",
+        commit_message: str = "",
+    ) -> dict[str, Any]:
+        """PUT /repos/{owner}/{repo}/pulls/{number}/merge.
+
+        Returns {"merged", "sha", "message"}. GitHub answers a refused merge with
+        405 (not mergeable) / 409 (head moved) and a message — surfaced as
+        merged=False rather than raised, so the caller can 409 with the reason.
+        """
+        if not self.is_active:
+            raise RuntimeError("GitHubClient is not active (GITHUB_TOKEN unset)")
+        payload: dict[str, Any] = {"merge_method": method}
+        if commit_title:
+            payload["commit_title"] = commit_title
+        if commit_message:
+            payload["commit_message"] = commit_message
+        r = await self._client.put(
+            f"/repos/{owner}/{repo}/pulls/{number}/merge",
+            json=payload,
+            headers=await self._request_headers(),
+        )
+        try:
+            data = r.json()
+        except Exception:  # noqa: BLE001 — non-JSON error body
+            data = {}
+        if r.status_code == 200 and data.get("merged"):
+            return {"merged": True, "sha": data.get("sha", ""), "message": data.get("message", "")}
+        logger.warning(
+            f"GitHub merge {owner}/{repo}#{number} → {r.status_code} {str(data.get('message') or r.text)[:200]}",
+            extra={"tag": "github"},
+        )
+        return {
+            "merged": False,
+            "sha": "",
+            "status": r.status_code,
+            "message": str(data.get("message") or r.text[:200] or f"HTTP {r.status_code}"),
+        }
+
     async def create_commit_status(
         self,
         owner: str,

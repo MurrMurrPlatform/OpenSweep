@@ -89,6 +89,21 @@ class GitProviderClient(Protocol):
         """Flip a draft PR to ready-for-review; no-op when already ready."""
         ...
 
+    async def merge_pull_request(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        *,
+        method: str = "squash",
+        commit_title: str = "",
+        commit_message: str = "",
+    ) -> dict[str, Any]:
+        """Merge a PR. Returns {"merged": bool, "sha": str, "message": str}; when
+        the provider refuses (not mergeable / head moved) "merged" is False and
+        "message" carries the reason — callers surface it, never raise raw."""
+        ...
+
     async def check_write_access(self, owner: str, repo: str) -> bool | None:
         """Whether the bound credential may push. True/False, or None when the
         provider cannot tell — callers block only on an explicit False.

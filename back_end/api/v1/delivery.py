@@ -156,6 +156,36 @@ async def recompute_convergence(uid: str, user: UserDTO = Depends(require_role("
     return await service.recompute_and_publish(pr)
 
 
+class MergeRequest(BaseModel):
+    # squash (default) | merge | rebase — omit to use the repo's MergePolicy.
+    method: str | None = None
+    # Maintainer escape hatch: merge a PR that has NOT converged.
+    override: bool = False
+
+
+@router.post(
+    "/pull-requests/{uid}/merge",
+    response_model=PullRequestDTO,
+    operation_id="opensweep_merge_pull_request",
+)
+async def merge_pull_request(
+    uid: str,
+    req: MergeRequest | None = None,
+    user: UserDTO = Depends(require_role("maintainer")),
+) -> PullRequestDTO:
+    """Merge a converged PR (README's second human action). 409 when the PR has
+    not converged unless `override` is set."""
+    service = PullRequestService()
+    pr = await service.get_node(uid)
+    await require_repo_in_org(pr.repository_uid, user.org_uid)
+    return await service.merge(
+        pr,
+        actor_uid=user.uid,
+        method=(req.method if req else None) or "",
+        override=bool(req.override) if req else False,
+    )
+
+
 class TriggerReviewRequest(BaseModel):
     # Recall/precision dial: quick = top-5 blocking-only, deep = exhaustive
     # multi-lens. Applies to this run only; auto reviews use the workflow config.

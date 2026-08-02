@@ -7,6 +7,7 @@ import {
   ExternalLink,
   FileDiff,
   Gavel,
+  GitMerge,
   Link2,
   ListChecks,
   MessagesSquare,
@@ -88,6 +89,7 @@ const error = ref<string | null>(null)
 const syncing = ref(false)
 const recomputing = ref(false)
 const reviewing = ref(false)
+const merging = ref(false)
 const fixing = ref(false)
 const resettingFixRounds = ref(false)
 const linkTicketOpen = ref(false)
@@ -365,6 +367,22 @@ async function recompute() {
   }
 }
 
+async function merge(override = false) {
+  if (!pr.value || merging.value) return
+  merging.value = true
+  try {
+    pr.value = await delivery.mergePullRequest(pr.value.uid, override ? { override: true } : undefined)
+    toast.success('Merged', `PR #${pr.value.github_number} merged — the linked ticket is done.`)
+  } catch (e) {
+    // 409 = not converged (or GitHub refused). Surface the reason; the override
+    // path lives in the More-actions menu for maintainers.
+    const msg = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
+    toast.error('Couldn’t merge', msg)
+  } finally {
+    merging.value = false
+  }
+}
+
 function openReviewDialog() {
   if (!pr.value || reviewing.value || reviewInFlight.value) return
   reviewDialogOpen.value = true
@@ -503,6 +521,21 @@ async function onResolutionUpdated(updated: FindingResolutionDTO) {
         >
           <Search /> Request review
         </Button>
+        <Button
+          size="sm"
+          :loading="merging"
+          :disabled="pr.state !== 'open' || !pr.converged"
+          :title="
+            pr.state !== 'open'
+              ? `PR is ${pr.state}`
+              : !pr.converged
+                ? 'PR has not converged yet — resolve the blockers below first'
+                : 'Squash-merge and complete the linked ticket'
+          "
+          @click="merge(false)"
+        >
+          <GitMerge /> Merge
+        </Button>
         <TestLocallyButton :branch="pr.head_ref" :pr-number="pr.github_number" />
         <Button variant="ghost" size="sm" :loading="discussing" @click="discussInRun">
           <MessagesSquare /> Discuss
@@ -537,6 +570,14 @@ async function onResolutionUpdated(updated: FindingResolutionDTO) {
             </DropdownMenuItem>
             <DropdownMenuItem :disabled="recomputing" @select="recompute">
               <Target /> Recompute convergence
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              v-if="pr.state === 'open' && !pr.converged"
+              :disabled="merging"
+              class="text-destructive focus:text-destructive"
+              @select="merge(true)"
+            >
+              <GitMerge /> Merge without convergence
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

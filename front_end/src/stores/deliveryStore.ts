@@ -112,6 +112,21 @@ export const useDeliveryStore = defineStore('delivery', () => {
     )
   }
 
+  /** Close the loop: merge a CONVERGED PR (README's second human action).
+   *  409 when the PR hasn't converged unless `override` is set. `method`
+   *  omitted falls back to the repo's MergePolicy (squash by default). */
+  async function mergePullRequest(
+    uid: string,
+    opts?: { method?: 'squash' | 'merge' | 'rebase'; override?: boolean },
+  ): Promise<PullRequestDTO> {
+    const pr = await apiPost<PullRequestDTO>(`/delivery/pull-requests/${uid}/merge`, {
+      method: opts?.method ?? null,
+      override: opts?.override ?? false,
+    })
+    upsertPr(pr)
+    return pr
+  }
+
   // ── Resolutions (the per-PR findings ledger) ──────────────────────────────
 
   async function fetchResolutions(pullRequestUid: string): Promise<FindingResolutionDTO[]> {
@@ -188,6 +203,7 @@ export const useDeliveryStore = defineStore('delivery', () => {
     submitVerdict,
     resetFixRounds,
     triggerFix,
+    mergePullRequest,
     fetchResolutions,
     attachFix,
     verifyResolution,

@@ -453,6 +453,103 @@ class PullRequestService:
             await self._publish_status(repo, pr, state)
         return state
 
+    _MERGE_METHODS = frozenset({"squash", "merge", "rebase"})
+
+    async def merge(
+        self,
+        pr: PullRequest,
+        *,
+        actor_uid: str,
+        method: str = "",
+        override: bool = False,
+    ) -> PullRequestDTO:
+        """Merge a PR via the git provider once it has CONVERGED (§5, §7).
+
+        The README's second promised human action ("approve tickets and merge
+        PRs"). Recomputes convergence at head FIRST and refuses (409) unless
+        converged — a maintainer may `override` to merge a non-converged PR. On
+        success: mirror → merged, complete the linked ticket (Gate-2), note the
+        thread, audit `delivery.pr_merged`. GitHub remains the source of truth;
+        the push webhook re-syncs and re-runs the same follow-through idempotently.
+        """
+        if pr.state != "open":
+            raise HTTPException(
+                status_code=409, detail=f"PR is {pr.state}; only open PRs can be merged"
+            )
+        repo, client = await self._repo_and_client(pr.repository_uid)
+        if not client.is_active or not (repo.github_owner and repo.github_repo):
+            raise HTTPException(
+                status_code=400, detail="repository has no active GitHub client"
+            )
+
+        # Convergence is head-derived — recompute now so a merge can never ride a
+        # stale snapshot from before the last push.
+        state = await self.recompute(pr)
+        if not state.converged and not override:
+            reason = "; ".join(state.reasons) or "not converged"
+            raise HTTPException(
+                status_code=409,
+                detail=f"PR has not converged — merge blocked ({reason}). "
+                "Resolve the blockers or merge with override.",
+            )
+
+        policy = await ensure_merge_policy(pr.repository_uid)
+        merge_method = (method or policy.merge_method or "squash").strip().lower()
+        if merge_method not in self._MERGE_METHODS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"invalid merge method {merge_method!r} (squash | merge | rebase)",
+            )
+
+        result = await client.merge_pull_request(
+            repo.github_owner,
+            repo.github_repo,
+            int(pr.github_number),
+            method=merge_method,
+        )
+        if not result.get("merged"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"GitHub refused the merge: {result.get('message') or 'not mergeable'}",
+            )
+
+        pr.state = "merged"
+        pr.updated_at = datetime.now(UTC)
+        await pr.save()
+
+        # Gate-2 follow-through — idempotent (the webhook re-runs the same path);
+        # best-effort so ticket/thread bookkeeping never fails the merge itself.
+        try:
+            if pr.ticket_uid:
+                from domains.tickets.services.ticket_service import TicketService
+
+                await TicketService().mark_done_via_merge(
+                    pr.ticket_uid, pull_request_uid=pr.uid
+                )
+            from domains.threads.services.hooks import note_pr_merged
+
+            await note_pr_merged(pr.uid)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                f"merge follow-through failed for PR {pr.uid}: {exc}",
+                extra={"tag": "delivery"},
+            )
+
+        await write_audit(
+            kind="delivery.pr_merged",
+            subject_uid=pr.uid,
+            subject_type="PullRequest",
+            actor_uid=actor_uid,
+            payload={
+                "github_number": int(pr.github_number),
+                "merge_method": merge_method,
+                "merge_commit_sha": result.get("sha", ""),
+                "override": bool(override),
+                "ticket_uid": pr.ticket_uid or "",
+            },
+        )
+        return pull_request_to_dto(pr)
+
     async def _publish_status(self, repo: Repository, pr: PullRequest, state: ConvergenceState) -> None:
         """Post the single `opensweep/converged` commit status at head (§5)."""
         if pr.state != "open" or not pr.head_sha:
