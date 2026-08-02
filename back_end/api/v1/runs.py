@@ -316,7 +316,7 @@ async def list_runs(
     linked_ticket_uid: str | None = Query(None),
     linked_finding_uid: str | None = Query(None),
     surface: str | None = Query(None),
-    limit: int = Query(100, le=500),
+    limit: int = Query(100, ge=0, le=500),
     offset: int = Query(0, ge=0),
     user: UserDTO = Depends(get_current_user),
 ):

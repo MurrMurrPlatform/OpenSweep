@@ -280,3 +280,50 @@ def test_page_params_defaults_to_no_window():
 
 def test_max_limit_is_bounded():
     assert 0 < MAX_LIMIT <= 1000
+
+
+# The list routes this change paginates. Their `limit` reaches either a
+# Cypher window (/audit) or `paginate`, so each needs a declared lower bound.
+_PAGINATED_PATHS = [
+    "/api/v1/findings",
+    "/api/v1/tickets",
+    "/api/v1/epic-proposals",
+    "/api/v1/delivery/pull-requests",
+    "/api/v1/news",
+    "/api/v1/analyses",
+    "/api/v1/runs",
+    "/api/v1/audit",
+]
+
+
+def test_a_negative_limit_is_rejected_at_the_edge():
+    """A negative limit must 422, never reach the database.
+
+    While the limit was a Python slice, `limit=-1` merely dropped the last
+    row. /api/v1/audit now puts the window in Cypher, and Neo4j rejects a
+    negative LIMIT with a client error — a 500 for what should be a 422.
+
+    `limit=0` stays legal on the two routes that always had a limit: it was
+    an empty page before and Cypher `LIMIT 0` is valid, so the bound is
+    ge=0 there and ge=1 only on the newly added, optional `page_params`.
+    """
+    import os
+
+    os.environ.setdefault("ZITADEL_ISSUER", "http://localhost:8300")
+    os.environ.setdefault("ZITADEL_CLIENT_ID", "test")
+    os.environ.setdefault("OPENSWEEP_AUTH_TOKEN", "test")
+    from app import app
+
+    paths = app.openapi()["paths"]
+    unbounded = []
+    for path in _PAGINATED_PATHS:
+        schema = next(
+            p["schema"]
+            for p in paths[path]["get"]["parameters"]
+            if p["name"] == "limit"
+        )
+        # Optional params render as anyOf[integer, null]; required ones inline.
+        variants = schema.get("anyOf", [schema])
+        if not any("minimum" in v for v in variants):
+            unbounded.append(path)
+    assert unbounded == [], f"limit with no lower bound: {unbounded}"

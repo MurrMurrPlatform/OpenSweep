@@ -72,7 +72,10 @@ async def list_events(
     kind: Optional[str] = Query(None),
     actor_uid: Optional[str] = Query(None),
     repository_uid: Optional[str] = Query(None),
-    limit: int = Query(100, le=500),
+    # ge=0, not ge=1: limit=0 was always a legal (empty) page, but a negative
+    # limit used to be a harmless Python slice and now goes into Cypher, which
+    # rejects it outright.
+    limit: int = Query(100, ge=0, le=500),
     offset: int = Query(0, ge=0),
     user: UserDTO = Depends(get_current_user),
 ):
