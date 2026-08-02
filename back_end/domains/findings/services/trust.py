@@ -35,10 +35,16 @@ _TOOL_CONFIRMED_BONUS = 0.15
 
 #: The skeptic pass is the strongest signal either way — it is a second agent
 #: specifically trying to refute the finding with evidence.
+#:
+#: Keys are the stored vocabulary (delivery.models.VERIFICATION_RESULTS), which
+#: is HYPHENATED. This dict used to key "needs_human" with an underscore, so
+#: even once a caller supplied a verification status the needs-human case fell
+#: through to 0.0 — a silent no-op inside a signal documented as the strongest
+#: one available. test_finding_trust pins the two vocabularies together.
 _VERIFICATION_DELTA = {
     "confirmed": 0.20,
     "refuted": -0.50,
-    "needs_human": -0.05,
+    "needs-human": -0.05,
 }
 
 #: Outcome feedback: what happened to the finding after it was filed. A human

@@ -49,6 +49,23 @@ def test_confirmed_by_the_skeptic_pass_raises_it():
     assert trust_score(confidence=0.6, verification_status="confirmed") > 0.6
 
 
+def test_needs_human_lowers_it_slightly():
+    """The delta dict keyed `needs_human` with an underscore while the stored
+    vocabulary is hyphenated, so this case silently scored 0.0 — inside the
+    signal the module docstring calls the strongest one available."""
+    undecided = trust_score(confidence=0.7, verification_status="needs-human")
+    assert undecided < trust_score(confidence=0.7)
+
+
+def test_every_verification_result_the_platform_stores_has_a_delta():
+    """Pins the two vocabularies together — a new VERIFICATION_RESULTS member
+    with no delta is a signal that silently does nothing."""
+    from domains.delivery.models import VERIFICATION_RESULTS
+    from domains.findings.services.trust import _VERIFICATION_DELTA
+
+    assert set(_VERIFICATION_DELTA) == set(VERIFICATION_RESULTS)
+
+
 def test_score_stays_within_bounds():
     hot = trust_score(
         confidence=1.0,

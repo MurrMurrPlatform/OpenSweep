@@ -52,8 +52,19 @@ PLATFORM_WRITE_TOOLS = (
     "complete_run",
 )
 
-# Platform-state read tools.
-PLATFORM_READ_TOOLS = ("list_docs", "read_doc", "search_memory")
+# Platform-state read tools — the look-before-write surface. The findings
+# three are load-bearing: _intent_helpers makes them MANDATORY before
+# create_finding, so leaving them unadvertised (while the contract named
+# them under spellings that never resolved) made every audit run blind to
+# what earlier runs had already filed.
+PLATFORM_READ_TOOLS = (
+    "list_docs",
+    "read_doc",
+    "search_memory",
+    "list_findings",
+    "search_findings",
+    "get_finding",
+)
 
 # Deep-scan Analysis authoring — ignored on runs whose intent doesn't ask
 # for a whole-repo report.
@@ -215,7 +226,8 @@ prompts as `opensweep_platform_create_finding`); the same naming applies to
 every platform tool listed above. Platform READ tools additionally carry a
 `read` segment: `list_news_items` appears as
 `opensweep_platform_read_list_news_items` (same for `list_interests`,
-`list_docs`, `search_memory`; `read_doc` is `opensweep_platform_read_doc`)."""
+`list_docs`, `search_memory`, `list_findings`, `search_findings`,
+`get_finding`; `read_doc` is `opensweep_platform_read_doc`)."""
 
 _WRITE_HARD_RULES = """You are a Claude Code agent running inside OpenSweep on a WRITE run
 (implement or fix). You are working in a disposable sandbox clone with the
@@ -364,13 +376,22 @@ def _claude_code_write() -> str:
 
 
 def _cli_tracking() -> str:
+    # The read-tool list and the naming note are NOT optional here: this
+    # prompt carries LOOK_BEFORE_WRITE, which makes a read call mandatory
+    # before every write, and it used to advertise the write tools only. An
+    # agent was told to search before filing while being shown nothing to
+    # search with, under names it could not have guessed.
     return "\n\n".join(
         [
             IDENTITY_TRACKING,
             "You may inspect code and run read-only commands. Platform tools you may\n"
             "call (through the envelope below, or natively when they appear as\n"
-            "`opensweep_*` MCP tools):\n\n" + render_tool_list(PLATFORM_WRITE_TOOLS),
+            "`opensweep_*` MCP tools):\n\n"
+            + render_tool_list(PLATFORM_WRITE_TOOLS)
+            + "\n\nand read tools for platform state:\n\n"
+            + render_tool_list(PLATFORM_READ_TOOLS),
             _specialised_intent_tools(),
+            _MCP_NAMING_NOTE,
             READ_ONLY_RULE,
             LOOK_BEFORE_WRITE,
             INVESTIGATION_ETHOS,

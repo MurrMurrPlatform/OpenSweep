@@ -394,10 +394,35 @@ async def _plan_parts(
     lenses = await _enabled_lenses(kind, lens_keys)
 
     if kind == "global":
-        # A global sweep needs no partition — one part per global lens.
-        parts = planner.build_plan_by_kind("global", [], lenses)
-        source = "global"
+        # A global sweep needs no partition — one part per global lens. The
+        # ONE exception is a prefix-scoped campaign: the sweep agent stays
+        # whole-repo, but part_dispatch steers it with the union of the
+        # covered areas' scopes, so those areas have to be resolved here.
+        # Without this the steer degraded to the bare prefix string —
+        # part_dispatch read `scope_hint` and nothing ever wrote it.
+        scope_hint: list[str] = []
         degraded_reason = ""
+        if coverage_keys:
+            (
+                all_areas,
+                degraded_reason,
+                _total,
+                _source,
+                _features,
+                _health,
+                _stats,
+            ) = await _plan_areas(repository_uid, repo)
+            scope_hint = sorted(
+                {
+                    p
+                    for a in planner.filter_by_keys(all_areas, coverage_keys)
+                    for p in (a.get("scope_paths") or [])
+                }
+            )
+        parts = planner.build_plan_by_kind(
+            "global", [], lenses, scope_hint=scope_hint
+        )
+        source = "global"
         map_stats = _map_stats(None)
         areas: list[dict] = []
     else:

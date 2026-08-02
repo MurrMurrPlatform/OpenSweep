@@ -300,17 +300,22 @@ async def tick_campaigns() -> dict:
 
         for c in await Campaign.nodes.filter(status="running"):
             ticked += 1
-            # Batch parents own no parts — they roll their children up instead
-            # of dispatching. aggregate_batch is a no-op until all children
-            # are terminal, then it finalizes the parent.
+            # Batch parents own no parts — they advance and roll up their
+            # children instead of dispatching. advance_batch releases the
+            # deferred global child once its siblings are terminal, so its
+            # escalation digest sees the whole batch's findings;
+            # aggregate_batch is a no-op until EVERY child is terminal
+            # (a child still in `planning` is not), then finalizes the parent.
             if str(getattr(c, "kind", "") or "") == "batch":
                 try:
+                    dispatched += await batch.advance_batch(c)
                     if await batch.aggregate_batch(c):
                         finalized += 1
                 except Exception as exc:  # noqa: BLE001 — one batch never stalls the rest
                     errors += 1
                     logger.warning(
-                        f"campaign {c.uid}: batch aggregate failed: {type(exc).__name__}: {exc}",
+                        f"campaign {c.uid}: batch advance/aggregate failed: "
+                        f"{type(exc).__name__}: {exc}",
                         extra={"tag": "campaigns"},
                     )
                 continue

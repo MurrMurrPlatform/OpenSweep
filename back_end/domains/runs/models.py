@@ -129,7 +129,22 @@ RUN_STATUSES = {
     "paused_quota",
 }
 
-PLAYBOOKS = {"chat", "ask", "review", "fix", "implement", "verify", "document", "thread"}
+# The single source of truth for the playbook vocabulary — services.playbooks
+# re-exports this rather than keeping a second copy. The two DID drift: this
+# set omitted "refine" while the service set (the one lifecycle validates
+# against) carried it, so the model's own vocabulary disagreed with what the
+# platform would actually dispatch.
+PLAYBOOKS = {
+    "chat",
+    "ask",
+    "review",
+    "fix",
+    "implement",
+    "verify",
+    "document",
+    "refine",
+    "thread",
+}
 
 RUN_SURFACES = {"runs", "comment", "chat", "slack"}
 

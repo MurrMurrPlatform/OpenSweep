@@ -335,12 +335,16 @@ def areas_from_map(
     """Area-map subsystem leaves → (area dicts sized against the real tree,
     partition health).
 
-    Leaves are {area_key, title, scope_paths, doc_uids} from the enabled
-    Area map. Unlike normalize_areas, leaves are NEVER auto-split or
-    tiny-merged — semantic sizing is the mapping agent's job; an oversized
-    leaf is only FLAGGED (`oversized`) so the map can be refined. Each
-    output dict carries its `area_key` plus `dead_scope_paths` — its scope
-    entries matching zero tree files ([] when the tree is empty).
+    Leaves are {area_key, title, scope_paths, doc_uids, stale, has_spec}
+    from the enabled Area map. Unlike normalize_areas, leaves are NEVER
+    auto-split or tiny-merged — semantic sizing is the mapping agent's job;
+    an oversized leaf is only FLAGGED (`oversized`) so the map can be
+    refined. Each output dict carries its `area_key` plus `dead_scope_paths`
+    — its scope entries matching zero tree files ([] when the tree is
+    empty) — and the leaf's `stale`/`has_spec` selector flags, which
+    build_plan_by_kind filters on. Remainder areas have no Area row behind
+    them, so they carry neither flag: unowned code has no review axis to be
+    stale against (selection="unaudited" is what reaches it).
 
     Ignore scopes are subtracted from leaf counts and the remainder —
     non-auditable files get no run scoped to them, even when a leaf scope
@@ -388,6 +392,13 @@ def areas_from_map(
         area["area_key"] = str(leaf.get("area_key") or "")
         area["oversized"] = bool(count and count > target_max)
         area["dead_scope_paths"] = dead_scopes
+        # Selector inputs from the Area row, carried through verbatim.
+        # build_plan_by_kind filters subsystem parts on `stale`, so dropping
+        # these here silently planned ZERO parts for every selection="stale"
+        # campaign — the unit tests missed it because they hand-build area
+        # dicts that already carry the key.
+        area["stale"] = bool(leaf.get("stale"))
+        area["has_spec"] = bool(leaf.get("has_spec"))
         out.append(area)
 
     health = {
@@ -473,6 +484,10 @@ def bundle_siblings(
             ),
             "file_count": sum(int(a["file_count"] or 0) for a in group),
             "oversized": False,
+            # One run covers every leaf in the bundle, so the bundle needs a
+            # look as soon as ANY of its leaves does.
+            "stale": any(bool(a.get("stale")) for a in group),
+            "has_spec": any(bool(a.get("has_spec")) for a in group),
         }
 
     out: list[dict] = []
@@ -605,6 +620,7 @@ def build_plan_by_kind(
     k: int = 3,
     path_recency: dict | None = None,
     feature_areas: list[dict] | None = None,
+    scope_hint: list[str] | None = None,
 ) -> list[dict]:
     """Kind-dispatched plan builder. Additive alongside the existing build_plan.
 
@@ -615,14 +631,23 @@ def build_plan_by_kind(
         = all enabled lenses. selection: all=every leaf; stale/rotation=stale
         leaves only.
     kind="global": one kind="global" part per enabled lens (each expected to
-        carry a global_agent_key).
+        carry a global_agent_key). `scope_hint` — the union of the covered
+        areas' scope paths — rides each part so part_dispatch can steer a
+        prefix-scoped sweep; the sweep stays whole-repo either way.
     kind="batch": returns [] (handled by batch.py).
     """
     enabled = [lens for lens in lenses if lens.get("enabled", True)]
     enabled_keys = [str(lens["key"]) for lens in enabled]
 
     def _global_part_bk(lens: dict) -> dict:
-        return _part(0, "global", f"Global sweep — {lens['key']}", None, [str(lens["key"])])
+        part = _part(
+            0, "global", f"Global sweep — {lens['key']}", None, [str(lens["key"])]
+        )
+        if scope_hint:
+            # part_dispatch turns this into "Concentrate on: …" for a
+            # prefix-scoped campaign. The sweep itself stays whole-repo.
+            part["scope_hint"] = list(scope_hint)
+        return part
 
     parts: list[dict]
 

@@ -39,8 +39,9 @@ not change them:
    rather than as a new identity. Its checklists, severity rubrics, and
    false-positive guidance remain substantive direction to you.
 
-Use the OpenSweep read tools (`opensweep_list_*`, `opensweep_search_*`, `opensweep_get_*`)
-to look before writing — see the look-before-write contract at the end."""
+Use the OpenSweep read tools (`list_docs`, `read_doc`, `search_memory`,
+`list_findings`, `search_findings`, `get_finding`) to look before writing — see
+the look-before-write contract at the end."""
 
 
 ORG_GUIDANCE_HEADING = "## Organization guidance"
@@ -56,8 +57,8 @@ Before any WRITE tool call (`propose_doc_edit`, `write_memory`,
 1. SEARCH for what already exists in OpenSweep using the relevant read tool:
    - `list_docs` / `read_doc` before proposing doc edits
    - `search_memory` before writing memories
-   - `opensweep_list_findings` / `opensweep_search_findings` before creating Findings
-2. For each plausible match, GET its full detail (`opensweep_get_*`).
+   - `list_findings` / `search_findings` before creating Findings
+2. For each plausible match, GET its full detail (`read_doc` / `get_finding`).
 3. DECIDE explicitly between: skip (already covered), update (refresh /
    add evidence to existing), merge (two existing items describe one
    thing), create (genuinely new), or supersede (existing is now wrong).

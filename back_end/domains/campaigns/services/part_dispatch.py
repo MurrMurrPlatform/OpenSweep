@@ -30,6 +30,10 @@ from logging_config import logger
 # How many escalated findings a global sweep's digest carries.
 _MAX_ESCALATIONS = 20
 
+# Evidence key recording which runs have already been handed this escalation.
+# See `_escalation_digest` for why delivery is ranked rather than consumed.
+_DELIVERED_KEY = "escalation_delivered_to"
+
 
 def _campaign_trigger(campaign) -> RunTrigger:
     provenance = campaign.trigger_provenance or ""
@@ -74,21 +78,68 @@ def _target(campaign, part: dict, **extra: Any) -> dict[str, Any]:
     }
 
 
-async def _escalation_digest(repository_uid: str, lens_key: str) -> list[str]:
-    """Open findings the area runs escalated to this lens, as digest lines."""
+async def _escalation_digest(repository_uid: str, lens_key: str) -> tuple[list[str], list]:
+    """Open findings the area runs escalated to this lens → (digest lines, rows).
+
+    Ranks NEVER-DELIVERED escalations first, then previously-delivered ones
+    oldest-delivery-first, and only then by age. The queue was sorted purely
+    newest-first and truncated at _MAX_ESCALATIONS with nothing ever marking
+    an item handled, so on a repo with more than 20 open escalations the same
+    newest 20 rode every sweep forever and items 21+ were never seen at all.
+
+    Delivery is RANKED, not consumed — the same argument
+    `audit_selection.coverage_recency_for` makes about coverage stamps. A
+    hard "consumed" flag would drop an escalation permanently the first time
+    a sweep was handed it, including when that sweep then failed; ranking
+    rotates the queue without ever losing an item. The digest is built at
+    dispatch, so delivery is exactly what we can honestly claim.
+    """
     from domains.findings.models import Finding
 
+    _EPOCH = datetime.min.replace(tzinfo=UTC)
     tag = f"escalate:{lens_key}"
     rows = [
         f
         for f in await Finding.nodes.filter(repository_uid=repository_uid)
         if (f.status or "") == "open" and tag in (f.tags or [])
     ]
-    rows.sort(key=lambda f: f.created_at or datetime.min.replace(tzinfo=UTC), reverse=True)
-    return [
-        f"- {f.title} ({(list(f.affected_paths or []) or [''])[0]})"
-        for f in rows[:_MAX_ESCALATIONS]
+
+    def _delivery_count(f) -> int:
+        return len(((f.evidence or {}).get(_DELIVERED_KEY)) or [])
+
+    rows.sort(key=lambda f: (_delivery_count(f), -(f.created_at or _EPOCH).timestamp()))
+    selected = rows[:_MAX_ESCALATIONS]
+    lines = [
+        f"- {f.title} ({(list(f.affected_paths or []) or [''])[0]})" for f in selected
     ]
+    if len(rows) > len(selected):
+        logger.info(
+            f"escalation digest for lens {lens_key!r} truncated: "
+            f"{len(selected)} of {len(rows)} open escalations carried "
+            f"(least-recently-delivered first)",
+            extra={"tag": "campaigns"},
+        )
+    return lines, selected
+
+
+async def _mark_escalations_delivered(rows: list, run_uid: str) -> None:
+    """Record that these escalations rode a sweep's digest. Best-effort: a
+    failure here costs rotation fairness, never the run."""
+    for f in rows:
+        try:
+            evidence = dict(f.evidence or {})
+            delivered = [str(u) for u in (evidence.get(_DELIVERED_KEY) or [])]
+            if run_uid in delivered:
+                continue
+            evidence[_DELIVERED_KEY] = [*delivered, run_uid]
+            f.evidence = evidence
+            await f.save()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                f"could not stamp escalation delivery on finding "
+                f"{getattr(f, 'uid', '?')}: {type(exc).__name__}: {exc}",
+                extra={"tag": "campaigns"},
+            )
 
 
 async def _dispatch_area(campaign, part: dict, *, spec_block: str = "") -> str:
@@ -212,7 +263,7 @@ async def _dispatch_global(campaign, part: dict) -> str:
             f"no seeded variant agent for global lens {lens.key!r} "
             f"(slug {lens.global_agent_key or lens.key!r})"
         )
-    digest = await _escalation_digest(campaign.repository_uid, lens.key)
+    digest, escalated = await _escalation_digest(campaign.repository_uid, lens.key)
     structural_extra = ""
     if digest:
         structural_extra = (
@@ -243,6 +294,9 @@ async def _dispatch_global(campaign, part: dict) -> str:
         title=f"Campaign: {part.get('title') or lens.key}",
         structural_extra=structural_extra,
     )
+    # Stamp AFTER dispatch: an escalation that never reached a sweep must not
+    # be pushed down the queue.
+    await _mark_escalations_delivered(escalated, run.uid)
     return run.uid
 
 
