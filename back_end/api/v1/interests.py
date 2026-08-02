@@ -21,7 +21,7 @@ async def list_interests(
     user: UserDTO = Depends(get_current_user),
 ):
     await require_repo_in_org(repository_uid, user.org_uid)
-    return await InterestService().list(repository_uid=repository_uid)
+    return await InterestService().list(repository_uids=[repository_uid])
 
 
 @router.post("", response_model=InterestDTO, operation_id="opensweep_create_interest")

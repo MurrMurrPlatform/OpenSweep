@@ -7,11 +7,12 @@ waive, defer (→ ticket), blocking-override (not-important / escalate).
 
 from datetime import UTC
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field, field_validator
 
 from api.dependencies import get_current_user, require_role
-from domains.tenancy import org_repo_uids, require_repo_in_org
+from domains.pagination import Page, page_params, paginate
+from domains.tenancy import repo_scope, require_repo_in_org
 from domains.delivery.schemas import (
     AttachFixRequest,
     BlockingOverrideRequest,
@@ -48,16 +49,20 @@ router = APIRouter(prefix="/api/v1/delivery", tags=["delivery"])
 
 @router.get("/pull-requests", response_model=list[PullRequestDTO], operation_id="opensweep_list_pull_requests")
 async def list_pull_requests(
+    response: Response,
     repository_uid: str | None = Query(None),
     state: str | None = Query(None),
+    page: Page = Depends(page_params),
     user: UserDTO = Depends(get_current_user),
 ):
     if repository_uid is not None:
         await require_repo_in_org(repository_uid, user.org_uid)
-    prs = await PullRequestService().list(repository_uid=repository_uid, state=state)
-    if repository_uid is None:
-        allowed = await org_repo_uids(user.org_uid)
-        prs = [pr for pr in prs if pr.repository_uid in allowed]
+    prs = await PullRequestService().list(
+        repository_uids=await repo_scope(repository_uid, user.org_uid), state=state
+    )
+    # Page first: the waive-count query is one round trip per response, so it
+    # should cover the PRs actually being returned, not the whole set.
+    prs = paginate(prs, page, response)
     await _attach_waive_requested_counts(prs)
     return prs
 

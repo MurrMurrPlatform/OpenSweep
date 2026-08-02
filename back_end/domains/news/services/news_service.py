@@ -54,23 +54,23 @@ class NewsService:
     async def list(
         self,
         *,
-        repository_uid: str | None = None,
+        repository_uids: list[str],
         category: str | None = None,
         status: str | None = None,
         source_run_uid: str | None = None,
     ) -> list[NewsItemDTO]:
-        nodes = await NewsItem.nodes.all()
-        out = []
-        for n in nodes:
-            if repository_uid and n.repository_uid != repository_uid:
-                continue
-            if category and n.category != category:
-                continue
-            if status and n.status != status:
-                continue
-            if source_run_uid and n.source_run_uid != source_run_uid:
-                continue
-            out.append(news_item_to_dto(n))
+        """News items in ``repository_uids`` — the caller's tenancy scope, so
+        an empty list means an empty result, never "every item"."""
+        if not repository_uids:
+            return []
+        filters: dict = {"repository_uid__in": repository_uids}
+        if category:
+            filters["category"] = category
+        if status:
+            filters["status"] = status
+        if source_run_uid:
+            filters["source_run_uid"] = source_run_uid
+        out = [news_item_to_dto(n) for n in await NewsItem.nodes.filter(**filters)]
         out.sort(
             key=lambda n: n.updated_at
             or n.created_at

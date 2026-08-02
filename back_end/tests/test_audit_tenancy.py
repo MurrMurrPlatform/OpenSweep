@@ -75,36 +75,64 @@ def _seed(uid, repo):
     _EVENTS.append(_Event(uid, repo))
 
 
-async def test_org_admin_cannot_see_platform_level_events():
-    _seed("plat-1", "")        # platform-level (no repository)
-    _seed("mine-1", "repo-a")  # my org's repo
-    listed = await audit_mod.list_events(
-        subject_type=None, subject_uid=None, kind=None, actor_uid=None,
-        repository_uid=None, limit=100, user=_user(platform=False))
-    uids = {e.uid for e in listed}
-    assert uids == {"mine-1"}  # the platform-level event must NOT appear
+# The list query no longer scans the Event label and filters in Python — it
+# asks Neo4j for the visible window directly. So the tenancy rule is pinned
+# on `visibility_scope`, which is what the WHERE clause is built from, plus
+# one check that a caller denied everything never reaches the database.
+
+def _scope(*, platform, repository_uid=None, allowed=frozenset({"repo-a"})):
+    return audit_mod.visibility_scope(
+        allowed_repos=set(allowed),
+        is_platform_admin=platform,
+        repository_uid=repository_uid,
+    )
 
 
-async def test_platform_admin_sees_platform_level_events():
-    _seed("plat-1", "")
-    listed = await audit_mod.list_events(
-        subject_type=None, subject_uid=None, kind=None, actor_uid=None,
-        repository_uid=None, limit=100, user=_user(platform=True))
-    assert {e.uid for e in listed} == {"plat-1"}
+def test_org_admin_cannot_see_platform_level_events():
+    repos, platform_events = _scope(platform=False)
+    assert repos == ["repo-a"]
+    assert platform_events is False  # events with no repository stay hidden
 
 
-async def test_repository_uid_filter_scopes_the_list():
-    _seed("mine-1", "repo-a")
-    _seed("mine-2", "repo-a")
-    # org_repo_uids is faked to {"repo-a"}; a second repo in the org would
-    # also be visible, so the filter (not tenancy) must do the narrowing.
+def test_platform_admin_sees_platform_level_events():
+    repos, platform_events = _scope(platform=True)
+    assert repos == ["repo-a"]
+    assert platform_events is True
+
+
+def test_repository_uid_filter_scopes_the_list():
+    # allowed_repos is {"repo-a"}; a second repo in the org would also be
+    # visible, so the filter (not tenancy) must do the narrowing.
+    assert _scope(platform=False, repository_uid="repo-a") == (["repo-a"], False)
+    # A repo outside the org narrows to nothing rather than falling back.
+    assert _scope(platform=False, repository_uid="repo-b") == ([], False)
+    # Even for a platform admin, naming a repo excludes platform-level events.
+    assert _scope(platform=True, repository_uid="repo-a") == (["repo-a"], False)
+
+
+def test_an_empty_repository_uid_is_not_a_repo_filter():
+    """`?repository_uid=` binds "", which has always meant "no filter".
+
+    Treating "" as a named repo narrows to a repository uid that cannot
+    exist (uid is required and unique), so the caller silently gets nothing
+    instead of their whole org.
+    """
+    assert _scope(platform=False, repository_uid="") == (["repo-a"], False)
+    assert _scope(platform=True, repository_uid="") == (["repo-a"], True)
+
+
+async def test_a_caller_with_no_visible_repos_never_queries(monkeypatch):
+    async def no_repos(org_uid):
+        return set()
+
+    def boom(*a, **kw):
+        raise AssertionError("queried the audit log with nothing visible")
+
+    monkeypatch.setattr(audit_mod, "org_repo_uids", no_repos)
+    monkeypatch.setattr(audit_mod.adb, "cypher_query", boom)
     listed = await audit_mod.list_events(
         subject_type=None, subject_uid=None, kind=None, actor_uid=None,
-        repository_uid="repo-a", limit=100, user=_user(platform=False))
-    assert {e.uid for e in listed} == {"mine-1", "mine-2"}
-    listed = await audit_mod.list_events(
-        subject_type=None, subject_uid=None, kind=None, actor_uid=None,
-        repository_uid="repo-b", limit=100, user=_user(platform=False))
+        repository_uid=None, limit=100, offset=0, user=_user(platform=False))
     assert listed == []
 
 

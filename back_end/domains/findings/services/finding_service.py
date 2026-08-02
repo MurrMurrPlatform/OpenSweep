@@ -113,7 +113,7 @@ class FindingService:
     async def list(
         self,
         *,
-        repository_uid: str | None = None,
+        repository_uids: list[str],
         source_run_uid: str | None = None,
         tag: str | None = None,
         kind: str | None = None,
@@ -125,33 +125,40 @@ class FindingService:
         sort_by: str = "updated_at",
         sort_dir: str = "desc",
     ) -> list[FindingDTO]:
-        nodes = (
-            await Finding.nodes.filter(repository_uid=repository_uid)
-            if repository_uid
-            # intentional: repository_uid is optional here; without it this is a
-            # deliberate cross-repo listing (admin surfaces), no tenant column to push.
-            else await Finding.nodes.all()
-        )
+        """Findings in ``repository_uids`` — the caller's tenancy scope, so an
+        empty list means an empty result, never "every finding"."""
+        if not repository_uids:
+            return []
+        query: dict[str, object] = {"repository_uid__in": repository_uids}
+        # Only predicates whose stored value is authoritative go into Cypher.
+        # severity/size default a missing value to "medium" and "processed" is
+        # a pseudo-status, so those stay in Python below (see each comment).
+        if source_run_uid:
+            query["source_run_uid"] = source_run_uid
+        if kind:
+            query["kind"] = kind
+        if status and status != STATUS_PROCESSED:
+            query["status"] = status
+        if detected_by_tool:
+            query["detected_by_tool"] = detected_by_tool
+        if severity and severity != "medium":
+            query["severity"] = severity
+        if size and size != "medium":
+            query["size"] = size
         out = []
-        for f in nodes:
-            if source_run_uid and f.source_run_uid != source_run_uid:
-                continue
+        for f in await Finding.nodes.filter(**query):
             if tag and tag not in (f.tags or []):
                 continue
-            if kind and f.kind != kind:
-                continue
+            # kind__ne would drop findings with no kind at all (Cypher null
+            # comparison), so exclusion stays here.
             if exclude_kind and f.kind == exclude_kind:
                 continue
-            if status == STATUS_PROCESSED:
-                if (f.status or "open") == "open":
-                    continue
-            elif status and f.status != status:
+            if status == STATUS_PROCESSED and (f.status or "open") == "open":
                 continue
-            if severity and (f.severity or "medium") != severity:
+            # A stored null reads as "medium", which no equality filter matches.
+            if severity == "medium" and (f.severity or "medium") != severity:
                 continue
-            if size and (f.size or "medium") != size:
-                continue
-            if detected_by_tool and (f.detected_by_tool or "") != detected_by_tool:
+            if size == "medium" and (f.size or "medium") != size:
                 continue
             out.append(finding_to_dto(f))
         return sort_findings(out, sort_by=sort_by, sort_dir=sort_dir)

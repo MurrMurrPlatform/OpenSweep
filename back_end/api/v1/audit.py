@@ -12,10 +12,17 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from neomodel import adb
 
 from api.dependencies import get_current_user
 from domains.events.models import Event
 from domains.events.schemas import EventDTO
+from domains.events.visibility import (
+    event_is_visible,
+    newest_first,
+    visibility_scope,
+    visible_clause,
+)
 from domains.tenancy import org_repo_uids
 from domains.users.schemas import UserDTO
 
@@ -34,13 +41,6 @@ def _to_dto(e: Event) -> EventDTO:
     )
 
 
-def _visible(e: Event, allowed_repos: set[str], is_admin: bool) -> bool:
-    repo = e.repository_uid or ""
-    if repo:
-        return repo in allowed_repos
-    return is_admin  # platform-level event
-
-
 @router.get("", response_model=list[EventDTO], operation_id="opensweep_list_audit_events")
 async def list_events(
     subject_type: Optional[str] = Query(None),
@@ -48,41 +48,51 @@ async def list_events(
     kind: Optional[str] = Query(None),
     actor_uid: Optional[str] = Query(None),
     repository_uid: Optional[str] = Query(None),
-    limit: int = Query(100, le=500),
+    # ge=0, not ge=1: limit=0 was always a legal (empty) page, but a negative
+    # limit used to be a harmless Python slice and now goes into Cypher, which
+    # rejects it outright.
+    limit: int = Query(100, ge=0, le=500),
+    offset: int = Query(0, ge=0),
     user: UserDTO = Depends(get_current_user),
 ):
     """Return the most recent Events in the caller's org, newest first.
 
     Filters are AND-combined. Platform-level events (no repository) appear
     for admins only.
+
+    Visibility, ordering and the window are all one Cypher query: the audit
+    log is the fastest-growing label in the graph, and reading it whole to
+    hand back 100 rows got slower with every run the instance ever did.
+
+    Unlike the other list routes this one sends no X-Total-Count: counting
+    the matches means scanning them, which is the cost this route exists to
+    avoid. Page until you get a short page.
     """
-    allowed = await org_repo_uids(user.org_uid)
-    # Platform-level events (no repository) are instance-operator-only. This
-    # MUST be is_platform_admin, not the in-ORG capability role (F3): every
-    # personal-org owner is role="admin", so role_at_least would expose
-    # instance-wide events to any tenant.
-    is_admin = user.is_platform_admin
-    nodes = await Event.nodes.all()
-    out: list[EventDTO] = []
-    for e in nodes:
-        if not _visible(e, allowed, is_admin):
-            continue
-        if subject_type and e.subject_type != subject_type:
-            continue
-        if subject_uid and e.subject_uid != subject_uid:
-            continue
-        if kind and e.kind != kind:
-            continue
-        if actor_uid and e.actor_uid != actor_uid:
-            continue
-        if repository_uid and (e.repository_uid or "") != repository_uid:
-            continue
-        out.append(_to_dto(e))
-    out.sort(
-        key=lambda x: x.occurred_at or datetime.min.replace(tzinfo=timezone.utc),
-        reverse=True,
+    repos, platform_events = visibility_scope(
+        allowed_repos=await org_repo_uids(user.org_uid),
+        is_platform_admin=user.is_platform_admin,
+        repository_uid=repository_uid,
     )
-    return out[:limit]
+    if not repos and not platform_events:
+        return []
+
+    where = [visible_clause(platform_events=platform_events)]
+    params: dict = {"repos": repos, "limit": limit, "offset": offset}
+    for field, value in (
+        ("subject_type", subject_type),
+        ("subject_uid", subject_uid),
+        ("kind", kind),
+        ("actor_uid", actor_uid),
+    ):
+        if value:
+            where.append(f"e.{field} = ${field}")
+            params[field] = value
+    rows, _ = await adb.cypher_query(
+        f"MATCH (e:Event) WHERE {' AND '.join(where)} "
+        f"RETURN e {newest_first()} SKIP $offset LIMIT $limit",
+        params,
+    )
+    return [_to_dto(Event.inflate(row[0])) for row in rows]
 
 
 @router.get("/{uid}", response_model=EventDTO, operation_id="opensweep_get_audit_event")
@@ -91,6 +101,6 @@ async def get_event(uid: str, user: UserDTO = Depends(get_current_user)):
     if e is None:
         raise HTTPException(status_code=404, detail=f"Event {uid} not found")
     allowed = await org_repo_uids(user.org_uid)
-    if not _visible(e, allowed, user.is_platform_admin):  # is_platform_admin, not org role (F3)
+    if not event_is_visible(e, allowed, user.is_platform_admin):  # not the org role (F3)
         raise HTTPException(status_code=404, detail="not found")
     return _to_dto(e)

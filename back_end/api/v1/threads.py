@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from api.dependencies import get_current_user, require_role
-from domains.tenancy import require_repo_in_org
+from domains.tenancy import repo_scope, require_repo_in_org
 from domains.threads.schemas import (
     CreateThreadRequest,
     ThreadDetailDTO,
@@ -31,14 +31,9 @@ async def list_threads(
     if repository_uid is not None:
         await require_repo_in_org(repository_uid, user.org_uid)
     threads = await ThreadService().list(
-        repository_uid=repository_uid or "",
+        repository_uids=await repo_scope(repository_uid, user.org_uid),
         subject_ticket_uid=subject_ticket_uid or "",
     )
-    if repository_uid is None:
-        from domains.tenancy import org_repo_uids
-
-        allowed = await org_repo_uids(user.org_uid)
-        threads = [t for t in threads if t.repository_uid in allowed]
     return [thread_to_dto(t) for t in threads]
 
 

@@ -51,11 +51,15 @@ def _nodes_for(store_key: str):
             return None
 
         async def filter(self, **kw):
-            return [
-                n
-                for n in _STORE.get(store_key, [])
-                if all(getattr(n, k, None) == v for k, v in kw.items())
-            ]
+            def matches(n) -> bool:
+                for key, want in kw.items():
+                    field, _, op = key.partition("__")
+                    got = getattr(n, field, None)
+                    if got not in want if op == "in" else got != want:
+                        return False
+                return True
+
+            return [n for n in _STORE.get(store_key, []) if matches(n)]
 
         async def all(self):
             return list(_STORE.get(store_key, []))
@@ -227,21 +231,21 @@ async def test_processed_returns_everything_except_open():
     # "processed" is the only way to see it — pin that it is included.
     _seed_finding("acc1", status="accepted")
 
-    got = await FindingService().list(repository_uid="repo-a", status=STATUS_PROCESSED)
+    got = await FindingService().list(repository_uids=["repo-a"], status=STATUS_PROCESSED)
     assert {f.uid for f in got} == {"t1", "ack1", "acc1"}
 
 
 async def test_an_exact_status_still_filters_exactly():
     _seed_finding("t1", status="ticketed")
     _seed_finding("ack1", status="acknowledged")
-    got = await FindingService().list(repository_uid="repo-a", status="ticketed")
+    got = await FindingService().list(repository_uids=["repo-a"], status="ticketed")
     assert {f.uid for f in got} == {"t1"}
 
 
 async def test_no_status_filter_returns_open_and_processed_alike():
     _seed_finding("open1")
     _seed_finding("t1", status="ticketed")
-    got = await FindingService().list(repository_uid="repo-a")
+    got = await FindingService().list(repository_uids=["repo-a"])
     assert {f.uid for f in got} == {"open1", "t1"}
 
 

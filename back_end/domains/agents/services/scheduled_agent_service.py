@@ -92,14 +92,21 @@ async def to_dto(s: ScheduledAgent, *, agent: Agent | None = None) -> ScheduledA
     )
 
 
-async def list_scheduled_agents(
-    *, repository_uid: str | None = None
-) -> list[ScheduledAgentDTO]:
-    rows = await ScheduledAgent.nodes.all()
-    if repository_uid:
-        rows = [s for s in rows if s.repository_uid == repository_uid]
+async def list_scheduled_agents(*, repository_uids: list[str]) -> list[ScheduledAgentDTO]:
+    """Scheduled agents in ``repository_uids`` — the caller's tenancy scope, so
+    an empty list means an empty result, never "every scheduled agent"."""
+    if not repository_uids:
+        return []
+    rows = list(await ScheduledAgent.nodes.filter(repository_uid__in=repository_uids))
     rows.sort(key=lambda s: ((s.provenance or "") != "system", (s.title or "").lower()))
-    agents = {a.uid: a for a in await Agent.nodes.all()}
+    # One fetch for the agents these rows actually reference, rather than the
+    # whole Agent label.
+    wanted = {s.agent_uid for s in rows if s.agent_uid}
+    agents = (
+        {a.uid: a for a in await Agent.nodes.filter(uid__in=sorted(wanted))}
+        if wanted
+        else {}
+    )
     return [await to_dto(s, agent=agents.get(s.agent_uid)) for s in rows]
 
 

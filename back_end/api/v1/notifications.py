@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from api.dependencies import get_current_user
 from domains.events.models import Event
+from domains.events.visibility import event_is_visible
 from domains.notifications import service as notification_service
 from domains.notifications.catalog import CATEGORIES
 from domains.notifications.schemas import NotificationCountsDTO, NotificationDTO
@@ -40,7 +41,7 @@ async def _require_visible_event(uid: str, user: UserDTO) -> Event:
     if event is None:
         raise HTTPException(status_code=404, detail="not found")
     allowed = await org_repo_uids(user.org_uid)
-    if not notification_service._visible(event, allowed, user.is_platform_admin):
+    if not event_is_visible(event, allowed, user.is_platform_admin):
         raise HTTPException(status_code=404, detail="not found")
     return event
 

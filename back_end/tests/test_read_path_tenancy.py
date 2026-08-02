@@ -46,9 +46,6 @@ async def test_get_run_foreign_org_raises_404(monkeypatch):
         calls.append((repo, org))
         raise HTTPException(status_code=404, detail="not found")
 
-    async def fake_reconcile():
-        pass
-
     class _FakeNodes:
         async def get_or_none(self, **kwargs):
             return _fake_run()
@@ -56,8 +53,11 @@ async def test_get_run_foreign_org_raises_404(monkeypatch):
     async def boom_run_to_dto(r):
         raise AssertionError("run_to_dto reached despite cross-org repo")
 
+    async def boom_reconcile(runs_, **kwargs):
+        raise AssertionError("reconcile reached despite cross-org repo")
+
     monkeypatch.setattr(runs, "require_repo_in_org", fake_require)
-    monkeypatch.setattr(runs, "reconcile_stale_runs", fake_reconcile)
+    monkeypatch.setattr(runs, "reconcile_runs", boom_reconcile)
     monkeypatch.setattr(runs.Run, "nodes", _FakeNodes())
     monkeypatch.setattr(runs, "run_to_dto", boom_run_to_dto)
 

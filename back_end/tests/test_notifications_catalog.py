@@ -118,3 +118,62 @@ def test_notification_read_constraint_is_bootstrapped():
 
     assert any("NotificationRead" in c and "n.key IS UNIQUE" in c for c in _CONSTRAINTS)
     assert any("NotificationRead" in i and "n.user_uid" in i for i in _INDEXES)
+
+
+# ── kinds_for_category vs the real categoriser ───────────────────────────────
+
+
+def test_kinds_for_category_never_omits_a_kind_that_can_land_there():
+    """The category filter narrows the feed query; a miss silently loses items.
+
+    `kinds_for_category` is derived separately from the payload promotions in
+    `event_types_for` (see _PAYLOAD_CONDITIONAL), so the two can drift. This
+    replays every kind through the real categoriser — with and without the
+    needs-human payload that promotes a verdict to attention — and demands
+    the resulting category be claimed for that kind.
+    """
+    from domains.notifications.catalog import (
+        CATEGORIES,
+        RELEVANT_AUDIT_KINDS,
+        category_for,
+        event_types_for,
+        kinds_for_category,
+    )
+
+    claimed = {c: kinds_for_category(c) for c in CATEGORIES}
+    for kind in RELEVANT_AUDIT_KINDS:
+        for payload in ({}, {"result": "needs_human"}):
+            types = event_types_for(kind, payload)
+            if not types:
+                continue
+            category = category_for(types)
+            assert kind in claimed[category], (
+                f"{kind} resolves to {category!r} with payload {payload} "
+                f"but kinds_for_category({category!r}) omits it"
+            )
+
+
+def test_kinds_for_category_covers_every_relevant_kind():
+    # Union over categories must lose nothing: an unfiltered feed and the
+    # three filtered ones should between them reach every relevant kind.
+    from domains.notifications.catalog import (
+        CATEGORIES,
+        RELEVANT_AUDIT_KINDS,
+        kinds_for_category,
+    )
+
+    covered = set().union(*(kinds_for_category(c) for c in CATEGORIES))
+    assert covered == set(RELEVANT_AUDIT_KINDS)
+
+
+def test_a_needs_human_verdict_is_reachable_from_both_categories():
+    # The one payload-dependent kind: it must be claimed by attention (so the
+    # attention tab shows it) AND activity (it is still a completed review).
+    from domains.notifications.catalog import (
+        CATEGORY_ACTIVITY,
+        CATEGORY_ATTENTION,
+        kinds_for_category,
+    )
+
+    assert "verdict.submitted" in kinds_for_category(CATEGORY_ATTENTION)
+    assert "verdict.submitted" in kinds_for_category(CATEGORY_ACTIVITY)

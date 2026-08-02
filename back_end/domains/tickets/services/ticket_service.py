@@ -162,16 +162,18 @@ class TicketService:
     async def list(
         self,
         *,
-        repository_uid: str | None = None,
+        repository_uids: list[str],
         status: str | None = None,
         origin: str | None = None,
         parent_ticket_uid: str | None = None,
         assignee_uid: str | None = None,
         archived: bool = False,
     ) -> list[TicketDTO]:
-        filters: dict = {}
-        if repository_uid:
-            filters["repository_uid"] = repository_uid
+        """Tickets in ``repository_uids`` — the caller's tenancy scope, so an
+        empty list means an empty result, never "every ticket"."""
+        if not repository_uids:
+            return []
+        filters: dict = {"repository_uid__in": repository_uids}
         if status:
             filters["status"] = status
         if origin:
@@ -180,7 +182,7 @@ class TicketService:
             filters["parent_ticket_uid"] = parent_ticket_uid
         if assignee_uid:
             filters["assignee_uid"] = assignee_uid
-        nodes = await (Ticket.nodes.filter(**filters) if filters else Ticket.nodes.all())
+        nodes = await Ticket.nodes.filter(**filters)
         # Python-side, not Cypher: pre-m0021 nodes read None for `archived`,
         # which must count as not-archived. Default False silently fixes every
         # list caller (board, suggest-epics, MCP) to active-only; True is the

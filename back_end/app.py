@@ -576,7 +576,9 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["x-request-id"],
+    # x-total-count carries the full size of a paginated list; unexposed, the
+    # browser hides it from fetch() and a paging client cannot read it.
+    expose_headers=["x-request-id", "x-total-count"],
 )
 app.add_middleware(NeomodelAsyncDriverMiddleware)
 app.add_middleware(RequestIDMiddleware)

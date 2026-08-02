@@ -40,14 +40,15 @@ from domains.runs.services.run_events import (
     read_events_from,
     run_events_channel,
 )
-from domains.runs.services.run_reconciliation import reconcile_stale_runs
+from domains.runs.services.run_reconciliation import reconcile_runs
 from domains.runs.services.turn_service import TurnService, run_to_dto
 from domains.runs.services.workspace import (
     WorkspaceError,
     recreate_workspace,
 )
 from domains.repositories.services.repository_service import RepositoryService
-from domains.tenancy import org_repo_uids, require_repo_in_org
+from domains.pagination import Page, paginate
+from domains.tenancy import repo_scope, require_repo_in_org
 from domains.users.schemas import UserDTO
 from logging_config import logger
 from redis_config import get_redis_url
@@ -306,6 +307,7 @@ async def _create_chat_run(req: CreateRunRequest, *, actor_uid: str, org_uid: st
 
 @router.get("", response_model=list[RunDTO], operation_id="opensweep_list_runs")
 async def list_runs(
+    response: Response,
     repository_uid: str | None = Query(None),
     executor: str | None = Query(None),
     status: str | None = Query(None),
@@ -314,7 +316,8 @@ async def list_runs(
     linked_ticket_uid: str | None = Query(None),
     linked_finding_uid: str | None = Query(None),
     surface: str | None = Query(None),
-    limit: int = Query(100, le=500),
+    limit: int = Query(100, ge=0, le=500),
+    offset: int = Query(0, ge=0),
     user: UserDTO = Depends(get_current_user),
 ):
     """List runs. Only surface="runs" is returned by default — @opensweep comment
@@ -329,12 +332,29 @@ async def list_runs(
         )
     if repository_uid:
         await require_repo_in_org(repository_uid, user.org_uid)
-    allowed = await org_repo_uids(user.org_uid)
-    await reconcile_stale_runs()
-    # Scope the scan to the org's repos in Neo4j (empty => no runs visible).
-    nodes = (
-        await Run.nodes.filter(repository_uid__in=list(allowed)) if allowed else []
-    )
+    scope = await repo_scope(repository_uid, user.org_uid)
+    if not scope:
+        return []
+    # Every predicate stored verbatim on the node goes to Neo4j. `surface`
+    # cannot: it defaults a stored null to "runs" (legacy rows) and the chat
+    # case also keys off the caller, so it stays in Python below.
+    query: dict[str, object] = {"repository_uid__in": scope}
+    for field, value in (
+        ("executor", executor),
+        ("status", status),
+        ("playbook", playbook),
+        ("linked_pr_uid", linked_pr_uid),
+        ("linked_ticket_uid", linked_ticket_uid),
+        ("linked_finding_uid", linked_finding_uid),
+    ):
+        if value:
+            query[field] = value
+    nodes = await Run.nodes.filter(**query)
+    # Repair the rows this request already holds, so the list does not show a
+    # run as queued/running when its dispatching process is long dead. Bounded
+    # by the caller's own in-flight runs — the graph-wide sweep stays on the
+    # beat tick (domains/runs/services/run_reconciliation.py).
+    await reconcile_runs(nodes)
     out: list[RunDTO] = []
     for r in nodes:
         r_surface = r.surface or "runs"
@@ -348,19 +368,10 @@ async def list_runs(
                 continue
         elif surface != "all" and r_surface != surface:
             continue
-        if repository_uid and r.repository_uid != repository_uid:
-            continue
-        if executor and r.executor != executor:
-            continue
+        # Re-check the status the query already filtered on: reconcile_runs
+        # may have just moved a row to "failed", and ?status=running must not
+        # come back holding one.
         if status and r.status != status:
-            continue
-        if playbook and (r.playbook or "") != playbook:
-            continue
-        if linked_pr_uid and (r.linked_pr_uid or "") != linked_pr_uid:
-            continue
-        if linked_ticket_uid and (r.linked_ticket_uid or "") != linked_ticket_uid:
-            continue
-        if linked_finding_uid and (r.linked_finding_uid or "") != linked_finding_uid:
             continue
         out.append(run_to_dto(r))
     out.sort(
@@ -370,7 +381,7 @@ async def list_runs(
         or datetime.min.replace(tzinfo=UTC),
         reverse=True,
     )
-    return out[:limit]
+    return paginate(out, Page(limit=limit, offset=offset), response)
 
 
 class ActiveRunDTO(BaseModel):
@@ -403,14 +414,13 @@ async def list_active_runs(
     point at what is in flight."""
     if repository_uid:
         await require_repo_in_org(repository_uid, user.org_uid)
-    allowed = await org_repo_uids(user.org_uid)
-    await reconcile_stale_runs()
     runs = await active_runs_for(
         repository_uid=repository_uid,
         pull_request_uid=pull_request_uid,
         ticket_uid=ticket_uid,
         finding_uid=finding_uid,
         playbooks=[playbook] if playbook else None,
+        repository_uids=await repo_scope(repository_uid, user.org_uid),
     )
     out = [
         ActiveRunDTO(
@@ -425,7 +435,7 @@ async def list_active_runs(
         for r in runs
         # Hidden surfaces (comment replies, chat sessions) never toast or
         # count as "already running" — their own UIs track them live.
-        if r.repository_uid in allowed and (r.surface or "runs") == "runs"
+        if (r.surface or "runs") == "runs"
     ]
     out.sort(
         key=lambda x: x.started_at or datetime.min.replace(tzinfo=UTC),
@@ -496,11 +506,13 @@ async def get_run_changes(uid: str, user: UserDTO = Depends(get_current_user)):
 
 @router.get("/{uid}", response_model=RunDTO, operation_id="opensweep_get_run")
 async def get_run(uid: str, user: UserDTO = Depends(get_current_user)):
-    await reconcile_stale_runs()
     r = await Run.nodes.get_or_none(uid=uid)
     if r is None:
         raise HTTPException(status_code=404, detail=f"Run {uid} not found")
     await require_repo_in_org(r.repository_uid, user.org_uid)
+    # The run-detail page is where a stuck row is most visible, so repair
+    # this one row (cheap) rather than sweeping the graph on every poll.
+    await reconcile_runs([r])
     return run_to_dto(r)
 
 

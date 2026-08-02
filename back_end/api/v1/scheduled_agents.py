@@ -18,7 +18,7 @@ from domains.agents.schemas import (
 )
 from domains.agents.services import scheduled_agent_service
 from domains.runs.schemas import RunDTO, RunTrigger
-from domains.tenancy import org_repo_uids, require_repo_in_org
+from domains.tenancy import repo_scope, require_repo_in_org
 from domains.users.schemas import UserDTO
 
 router = APIRouter(prefix="/api/v1/scheduled-agents", tags=["scheduled-agents"])
@@ -35,12 +35,9 @@ async def list_scheduled_agents(
 ):
     if repository_uid:
         await require_repo_in_org(repository_uid, user.org_uid)
-        return await scheduled_agent_service.list_scheduled_agents(
-            repository_uid=repository_uid
-        )
-    allowed = await org_repo_uids(user.org_uid)
-    rows = await scheduled_agent_service.list_scheduled_agents()
-    return [s for s in rows if s.repository_uid in allowed]
+    return await scheduled_agent_service.list_scheduled_agents(
+        repository_uids=await repo_scope(repository_uid, user.org_uid)
+    )
 
 
 @router.get(
@@ -130,14 +127,16 @@ async def trigger_scheduled_agent_run(
 @router.get("/{uid}/runs", response_model=list[RunDTO])
 async def list_runs(uid: str, user: UserDTO = Depends(get_current_user)):
     from domains.runs.models import Run
-    from domains.runs.services.run_reconciliation import reconcile_stale_runs
+    from domains.runs.services.run_reconciliation import reconcile_runs
     from domains.runs.services.turn_service import run_to_dto
 
     s = await scheduled_agent_service.get_scheduled_agent_model(uid)
     await require_repo_in_org(s.repository_uid, user.org_uid)
-    await reconcile_stale_runs()
-    nodes = await Run.nodes.all()
-    out = [run_to_dto(r) for r in nodes if r.scheduled_agent_uid == uid]
+    nodes = await Run.nodes.filter(scheduled_agent_uid=uid)
+    # Repair this agent's own rows before reporting them — a run orphaned by a
+    # process restart must not sit here reading "running" until the beat tick.
+    await reconcile_runs(nodes)
+    out = [run_to_dto(r) for r in nodes]
     out.sort(
         key=lambda x: x.started_at
         or x.created_at

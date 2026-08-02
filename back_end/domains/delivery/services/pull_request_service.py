@@ -229,15 +229,16 @@ class PullRequestService:
         return pr
 
     async def list(
-        self, *, repository_uid: str | None = None, state: str | None = None
+        self, *, repository_uids: list[str], state: str | None = None
     ) -> list[PullRequestDTO]:
-        nodes = await PullRequest.nodes.all()
-        out = [
-            pull_request_to_dto(pr)
-            for pr in nodes
-            if (not repository_uid or pr.repository_uid == repository_uid)
-            and (not state or pr.state == state)
-        ]
+        """Pull requests in ``repository_uids`` — the caller's tenancy scope,
+        so an empty list means an empty result, never "every PR"."""
+        if not repository_uids:
+            return []
+        filters: dict = {"repository_uid__in": repository_uids}
+        if state:
+            filters["state"] = state
+        out = [pull_request_to_dto(pr) for pr in await PullRequest.nodes.filter(**filters)]
         out.sort(
             key=lambda d: d.updated_at or d.created_at or datetime.min.replace(tzinfo=UTC),
             reverse=True,

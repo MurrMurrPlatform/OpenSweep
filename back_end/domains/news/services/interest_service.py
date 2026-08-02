@@ -30,13 +30,14 @@ def interest_to_dto(i: Interest) -> InterestDTO:
 
 class InterestService:
     async def list(
-        self, *, repository_uid: str | None = None, enabled_only: bool = False
+        self, *, repository_uids: list[str], enabled_only: bool = False
     ) -> list[InterestDTO]:
-        nodes = await Interest.nodes.all()
+        """Interests in ``repository_uids`` — the caller's tenancy scope, so an
+        empty list means an empty result, never "every interest"."""
+        if not repository_uids:
+            return []
         out = []
-        for i in nodes:
-            if repository_uid and i.repository_uid != repository_uid:
-                continue
+        for i in await Interest.nodes.filter(repository_uid__in=repository_uids):
             if enabled_only and not i.enabled:
                 continue
             out.append(interest_to_dto(i))

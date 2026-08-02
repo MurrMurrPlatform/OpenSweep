@@ -6,10 +6,11 @@ materializes the parent ticket and re-parents the members — mirroring the
 Gate-1 contract, agents can never apply their own groupings.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from api.dependencies import get_current_user, require_role
-from domains.tenancy import org_repo_uids, require_repo_in_org
+from domains.pagination import Page, page_params, paginate
+from domains.tenancy import repo_scope, require_repo_in_org
 from domains.tickets.models import EPIC_PROPOSAL_STATUSES
 from domains.tickets.schemas import BulkApproveRequest, EpicProposalDTO
 from domains.tickets.services.epic_service import EpicService
@@ -24,8 +25,10 @@ router = APIRouter(prefix="/api/v1/epic-proposals", tags=["tickets"])
     operation_id="opensweep_epic_proposal_list",
 )
 async def list_group_proposals(
+    response: Response,
     repository_uid: str | None = Query(None),
     status: str | None = Query(None),
+    page: Page = Depends(page_params),
     user: UserDTO = Depends(get_current_user),
 ):
     if status is not None and status not in EPIC_PROPOSAL_STATUSES:
@@ -35,11 +38,10 @@ async def list_group_proposals(
         )
     if repository_uid is not None:
         await require_repo_in_org(repository_uid, user.org_uid)
-    items = await EpicService().list(repository_uid=repository_uid, status=status)
-    if repository_uid is None:
-        allowed = await org_repo_uids(user.org_uid)
-        items = [p for p in items if p.repository_uid in allowed]
-    return items
+    items = await EpicService().list(
+        repository_uids=await repo_scope(repository_uid, user.org_uid), status=status
+    )
+    return paginate(items, page, response)
 
 
 @router.post("/bulk-approve", operation_id="opensweep_epic_proposal_bulk_approve")

@@ -194,13 +194,25 @@ class ThreadService:
         return t
 
     async def list(
-        self, *, repository_uid: str = "", subject_ticket_uid: str = ""
+        self,
+        *,
+        repository_uids: list[str] | None = None,
+        subject_ticket_uid: str = "",
     ) -> list[Thread]:
-        qs = Thread.nodes
-        if repository_uid:
-            qs = qs.filter(repository_uid=repository_uid)
+        """Threads, optionally narrowed to a tenancy scope.
+
+        `repository_uids=None` is unscoped, for internal callers that already
+        key off a subject. An empty list means an empty result — never "no
+        filter".
+        """
+        filters: dict = {}
+        if repository_uids is not None:
+            if not repository_uids:
+                return []
+            filters["repository_uid__in"] = repository_uids
         if subject_ticket_uid:
-            qs = qs.filter(subject_ticket_uid=subject_ticket_uid)
+            filters["subject_ticket_uid"] = subject_ticket_uid
+        qs = Thread.nodes.filter(**filters) if filters else Thread.nodes
         return list(await qs.all())
 
     async def record_event(self, thread: Thread, type: str, **payload) -> None:

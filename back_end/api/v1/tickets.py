@@ -12,7 +12,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 from api.dependencies import get_current_user, require_role
-from domains.tenancy import org_repo_uids, require_repo_in_org
+from domains.pagination import Page, page_params, paginate
+from domains.tenancy import repo_scope, require_repo_in_org
 from domains.tickets.schemas import (
     CreateEpicRequest,
     CreateTicketRequest,
@@ -42,29 +43,28 @@ router = APIRouter(prefix="/api/v1/tickets", tags=["tickets"])
 
 @router.get("", response_model=list[TicketDTO], operation_id="opensweep_ticket_list")
 async def list_tickets(
+    response: Response,
     repository_uid: str | None = Query(None),
     status: str | None = Query(None),
     origin: str | None = Query(None),
     parent_ticket_uid: str | None = Query(None),
     assignee_uid: str | None = Query(None),
     archived: bool = Query(False, description="true = archived tickets only"),
+    page: Page = Depends(page_params),
     user: UserDTO = Depends(get_current_user),
 ):
     """Priority desc, then updated_at desc."""
     if repository_uid is not None:
         await require_repo_in_org(repository_uid, user.org_uid)
     tickets = await TicketService().list(
-        repository_uid=repository_uid,
+        repository_uids=await repo_scope(repository_uid, user.org_uid),
         status=status,
         origin=origin,
         parent_ticket_uid=parent_ticket_uid,
         assignee_uid=assignee_uid,
         archived=archived,
     )
-    if repository_uid is None:
-        allowed = await org_repo_uids(user.org_uid)
-        tickets = [t for t in tickets if t.repository_uid in allowed]
-    return tickets
+    return paginate(tickets, page, response)
 
 
 # ── Grouping — epic related tickets under one parent ───────────────────────

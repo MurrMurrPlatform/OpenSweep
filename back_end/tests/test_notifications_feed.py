@@ -43,8 +43,16 @@ def harness(monkeypatch):
     events: list[Event] = []
     states: dict[str, SimpleNamespace] = {}
 
-    async def fake_recent_events(limit=feed.FEED_WINDOW):
-        return list(events)[:limit]
+    async def fake_recent_events(*, repos, platform_events, kinds, limit=feed.FEED_WINDOW):
+        """In-memory stand-in for the Cypher window, applying the predicates
+        the query applies — so these tests still pin that `list_feed` hands
+        down the right scope, now that the filtering happens in the DB."""
+
+        def visible(e: Event) -> bool:
+            repo = e.repository_uid or ""
+            return repo in repos if repo else platform_events
+
+        return [e for e in events if e.kind in kinds and visible(e)][:limit]
 
     async def fake_read_states(user_uid, event_uids):
         return {k: v for k, v in states.items() if k in event_uids}

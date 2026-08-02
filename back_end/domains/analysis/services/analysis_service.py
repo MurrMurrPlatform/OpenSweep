@@ -164,18 +164,20 @@ class AnalysisService:
     async def list(
         self,
         *,
-        repository_uid: str | None = None,
+        repository_uids: list[str],
         status: str | None = None,
         include_superseded: bool = True,
     ) -> list[AnalysisDTO]:
-        # Filter by tenant at the DB when scoped; the remaining predicates
-        # (status/superseded) stay in Python (agent-authored default handling).
-        if repository_uid:
-            nodes = await Analysis.nodes.filter(repository_uid=repository_uid)
-        else:
-            nodes = await Analysis.nodes.all()
+        """Analyses in ``repository_uids`` — the caller's tenancy scope, so an
+        empty list means an empty result, never "every analysis".
+
+        Tenancy goes to the DB; the remaining predicates (status/superseded)
+        stay in Python because a stored null reads as "no status".
+        """
+        if not repository_uids:
+            return []
         out: list[AnalysisDTO] = []
-        for a in nodes:
+        for a in await Analysis.nodes.filter(repository_uid__in=repository_uids):
             if status and (a.status or "") != status:
                 continue
             if not include_superseded and (a.status or "") == "superseded":
@@ -301,7 +303,7 @@ class AnalysisService:
         they carry no grade, so a killed scan never becomes the repo's health
         surface. Superseded analyses are excluded too."""
         candidates = await self.list(
-            repository_uid=repository_uid, include_superseded=False
+            repository_uids=[repository_uid], include_superseded=False
         )
         current = next(
             (c for c in candidates if c.status != AnalysisStatus.INCOMPLETE), None

@@ -170,3 +170,28 @@ def test_unstamped_quiet_or_signalless_run_is_orphaned():
         now=NOW,
         recent_activity_grace_seconds=120,
     )
+
+
+# --- read paths must not sweep the graph ------------------------------------
+
+
+def test_read_endpoints_do_not_sweep():
+    """The graph-wide sweep belongs to the Celery beat tick.
+
+    reconcile_stale_runs() scans every queued/running Run across every
+    tenant. It used to be called inline from the runs list, the run detail
+    and the scheduled-agent runs list, so one page load cost a full
+    cross-tenant scan. Request handlers repair only rows they already hold
+    (reconcile_runs); nothing on a request path may call the sweep again.
+    """
+    import ast
+    import pathlib
+
+    api = pathlib.Path(__file__).resolve().parents[1] / "api"
+    offenders = [
+        f"{path.relative_to(api.parent)}:{node.lineno}"
+        for path in api.rglob("*.py")
+        for node in ast.walk(ast.parse(path.read_text()))
+        if isinstance(node, ast.Name) and node.id == "reconcile_stale_runs"
+    ]
+    assert offenders == [], f"graph-wide run sweep on a request path: {offenders}"

@@ -6,7 +6,7 @@ from api.dependencies import get_current_user, get_sandbox_service
 from domains.execution.models import Sandbox
 from domains.execution.schemas import SandboxDTO
 from domains.execution.services.sandbox_service import SandboxService
-from domains.tenancy import org_repo_uids, require_repo_in_org
+from domains.tenancy import repo_scope, require_repo_in_org
 from domains.users.schemas import UserDTO
 
 router = APIRouter(prefix="/api/v1/sandboxes", tags=["sandboxes"])
@@ -17,8 +17,7 @@ async def list_sandboxes(
     svc: SandboxService = Depends(get_sandbox_service),
     user: UserDTO = Depends(get_current_user),
 ):
-    allowed = await org_repo_uids(user.org_uid)
-    return [s for s in await svc.list_active() if s.repository_uid in allowed]
+    return await svc.list_active(repository_uids=await repo_scope(None, user.org_uid))
 
 
 @router.delete("/{uid}", response_model=SandboxDTO)
