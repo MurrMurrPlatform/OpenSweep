@@ -71,7 +71,7 @@ async def create_agent(
 async def update_agent(
     uid: str,
     req: UpdateAgentRequest,
-    user: UserDTO = Depends(get_current_user),
+    user: UserDTO = Depends(require_role("maintainer")),
 ):
     return await agent_service.update_agent(
         uid,
@@ -95,7 +95,7 @@ async def delete_agent(uid: str, user: UserDTO = Depends(require_role("maintaine
 async def save_override(
     uid: str,
     req: SaveOverrideRequest,
-    user: UserDTO = Depends(get_current_user),
+    user: UserDTO = Depends(require_role("maintainer")),
 ):
     return await agent_service.save_override(
         agent_uid=uid,
@@ -108,7 +108,7 @@ async def save_override(
 
 
 @router.delete("/{uid}/override", status_code=204)
-async def delete_override(uid: str, user: UserDTO = Depends(get_current_user)):
+async def delete_override(uid: str, user: UserDTO = Depends(require_role("maintainer"))):
     await agent_service.delete_override(
         agent_uid=uid, org_uid=user.org_uid or "", actor_uid=user.uid
     )
@@ -123,7 +123,7 @@ async def list_revisions(uid: str, user: UserDTO = Depends(get_current_user)):
 async def revert_override(
     uid: str,
     req: RevertRequest,
-    user: UserDTO = Depends(get_current_user),
+    user: UserDTO = Depends(require_role("maintainer")),
 ):
     return await agent_service.revert_override(
         agent_uid=uid, org_uid=user.org_uid or "", rev=req.rev, actor_uid=user.uid

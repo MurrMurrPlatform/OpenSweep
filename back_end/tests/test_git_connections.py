@@ -102,7 +102,7 @@ def test_token_fingerprint_stable_and_opaque():
 
 def test_connection_token_roundtrip_sealed(secrets_key):
     conn = SimpleNamespace(uid="c1", token_sealed=svc._seal("ghp_x"))
-    assert conn.token_sealed.startswith("enc:v1:")
+    assert conn.token_sealed.startswith("enc:v2:")
     assert svc.connection_token(conn) == "ghp_x"
 
 

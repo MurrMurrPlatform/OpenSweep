@@ -333,10 +333,19 @@ class ClaudeCodeAdapter(ExecutorAdapter):
                         session_id = meta.session_id
                 if timed_out:
                     break
-                if detect_quota_exhaustion(exit_code, pass_stdout, pass_stderr):
+                completed = await _completed_via_mcp(req.run_uid)
+                # Quota is decided from stdout/stderr TEXT, so an agent SUCCESS
+                # — exit 0 with a completed tool flow (here: it called
+                # complete_run over MCP) — is never quota, even if its own
+                # output discusses quotas/rate-limits (e.g. a review of
+                # rate-limiting code). Mirrors the post-loop completed_tool_flow
+                # exemption; without it the run ends early with no verdict.
+                if not (exit_code == 0 and completed) and detect_quota_exhaustion(
+                    exit_code, pass_stdout, pass_stderr
+                ):
                     quota_hit = True
                     break
-                if await _completed_via_mcp(req.run_uid):
+                if completed:
                     break
                 if turn_cap and turns_used >= turn_cap:
                     break

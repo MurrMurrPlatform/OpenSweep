@@ -270,12 +270,21 @@ async def update_agent(
 ) -> AgentDTO:
     a = await get_agent_model(uid, org_uid=org_uid)
     data = req.model_dump(exclude_unset=True)
-    if (a.provenance or "") == "system" and not platform_admin:
+    # Write-ownership gate: only the owning org may edit an agent IN PLACE. A
+    # shared agent (org_uid="" — every system/imported agent) or another org's
+    # agent is visible for reference but not editable here; customize it via an
+    # org-scoped override (PUT /agents/{uid}/override). Without this, any tenant
+    # could rewrite a globally-shared agent's prompt and it would stay shared —
+    # a cross-tenant tamper of a write-capable agent. Operators bypass (they
+    # curate the shared library). Provenance is a re-import marker, not an
+    # authorization signal, so it is not the gate.
+    owned_by_caller = bool(org_uid) and (a.org_uid or "") == org_uid
+    if not owned_by_caller and not platform_admin:
         raise HTTPException(
             status_code=403,
             detail=(
-                "system agents are shared — customize them for your org via "
-                "PUT /agents/{uid}/override instead"
+                "this agent is not owned by your org — customize it for your org "
+                "via PUT /agents/{uid}/override instead of editing it in place"
             ),
         )
     if "produces" in data:

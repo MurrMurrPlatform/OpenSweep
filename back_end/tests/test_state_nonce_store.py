@@ -206,7 +206,7 @@ async def test_redis_token_sealed_at_rest_when_key_configured(isolated_app_store
 
         t1 = await github_app.get_installation_token(6)
         raw = fake.store["opensweep:ghapp:inst_token:6"]
-        assert raw.startswith("enc:v1:")
+        assert raw.startswith("enc:v2:")
         assert "ghs_tok1" not in raw
 
         github_app._token_cache.clear()

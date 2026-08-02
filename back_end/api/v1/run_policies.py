@@ -50,7 +50,13 @@ def _to_dto(p: RunPolicy) -> RunPolicyDTO:
 @router.get("", response_model=list[RunPolicyDTO], operation_id="opensweep_list_run_policies")
 async def list_run_policies(
     name: Optional[str] = Query(None),
-    user: UserDTO = Depends(get_current_user),
+    # Operator-only, matching create/update/delete. Run policies are global
+    # platform config (no org_uid — every one is created by a platform admin),
+    # so listing them all is an operator action; a plain get_current_user gate
+    # let any authenticated tenant enumerate the instance's cost ceilings and
+    # model routing. get_run_policy stays open: a run's detail view resolves the
+    # single policy its own run used (and degrades to null on refusal).
+    user: UserDTO = Depends(require_platform_admin),
 ):
     nodes = await RunPolicy.nodes.all()
     out = [_to_dto(p) for p in nodes if not name or (p.name or "") == name]

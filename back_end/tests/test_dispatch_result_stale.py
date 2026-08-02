@@ -35,3 +35,22 @@ def test_other_non_running_states_stay_stale():
     assert dispatch_result_is_stale(RunStatus.QUEUED.value) is True
     assert dispatch_result_is_stale(RunStatus.LIMIT_EXCEEDED.value) is True
     assert dispatch_result_is_stale(RunStatus.PAUSED_QUOTA.value) is True
+
+
+def test_agent_self_completed_terminal_status_is_not_stale():
+    # complete_run(final_status="failed"/"ended"/"limit_exceeded") records
+    # self_reported_status; that is the agent finishing this turn, so finalize
+    # must run (its commit still needs the write-gate push).
+    for s in (RunStatus.FAILED.value, RunStatus.ENDED.value, RunStatus.LIMIT_EXCEEDED.value):
+        assert dispatch_result_is_stale(s, self_reported_status=s) is False
+
+
+def test_outside_kill_with_stale_self_report_is_still_stale():
+    # An outside cancel while usage still carries a PRIOR turn's self-report
+    # ("awaiting_input") must NOT be mistaken for an agent self-completion.
+    assert (
+        dispatch_result_is_stale(
+            RunStatus.CANCELLED.value, self_reported_status=RunStatus.AWAITING_INPUT.value
+        )
+        is True
+    )

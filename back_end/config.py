@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     OPENSWEEP_SECRETS_KEY: str = ""
     # Comma-separated previous keys kept decryptable during rotation.
     OPENSWEEP_SECRETS_KEY_FALLBACKS: str = ""
+    # Salt for the secrets KDF (enc:v2:, scrypt). Part of the key material —
+    # changing it makes existing enc:v2: secrets undecryptable, exactly like
+    # changing OPENSWEEP_SECRETS_KEY. Empty uses a fixed application default
+    # (still scrypt-hardened + domain-separated); set it for per-deployment salt.
+    OPENSWEEP_SECRETS_SALT: str = ""
     # SSRF escape hatch: extra hostnames (comma-separated) allowed as an LLM
     # provider base_url even though they resolve to a private/loopback address.
     # `host.docker.internal` (the standard local-model bridge) is always

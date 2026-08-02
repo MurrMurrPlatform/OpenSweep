@@ -349,10 +349,12 @@ class _Conn:
 def scope_module(monkeypatch):
     import api.platform_scope as mod
 
-    async def fake_run_repo(run_uid: str) -> str:
-        return {"run-1": "repo-1"}.get(run_uid, "")
+    async def fake_run_repo(run_uid: str) -> tuple[str, str]:
+        # (repository_uid, status) — "running" so the run-token isn't rejected
+        # as a spent (failed/cancelled) token.
+        return ({"run-1": "repo-1"}.get(run_uid, ""), "running")
 
-    monkeypatch.setattr(mod, "_run_repository_uid", fake_run_repo)
+    monkeypatch.setattr(mod, "_run_repo_and_status", fake_run_repo)
 
     calls: list[tuple] = []
 

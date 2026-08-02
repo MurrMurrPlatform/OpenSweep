@@ -73,7 +73,7 @@ class LifecycleError(RuntimeError):
 _CLI_SANDBOXED_EXECUTORS = {Executor.CLAUDE_CODE, Executor.CODEX, Executor.OPENCODE}
 
 
-def dispatch_result_is_stale(run_status: str) -> bool:
+def dispatch_result_is_stale(run_status: str, self_reported_status: str = "") -> bool:
     """Should a first-turn adapter's late result be DISCARDED rather than
     finalized? (Pure decision so the discard rule is unit-testable.)
 
@@ -87,11 +87,21 @@ def dispatch_result_is_stale(run_status: str) -> bool:
     write-gate push + draft PR that on_turn_complete performs, stranding the
     agent's commit in the sandbox. `running` (adapter finished without a
     self-report) is likewise not stale.
+
+    An agent can ALSO self-complete with a terminal status — `complete_run`
+    accepts final_status in {ended, failed, limit_exceeded} — and records it as
+    `usage["self_reported_status"]`. That is the agent finishing this turn, not
+    an outside kill, so its finalize must still run. Without this, an agent that
+    commits then calls complete_run(final_status="failed") has its write-gate
+    push + draft PR silently skipped and its commit stranded. The discard only
+    applies when the terminal status has NO matching self-report (the outside
+    actor set it).
     """
-    return run_status not in {
-        RunStatus.RUNNING.value,
-        RunStatus.AWAITING_INPUT.value,
-    }
+    if run_status in {RunStatus.RUNNING.value, RunStatus.AWAITING_INPUT.value}:
+        return False
+    if self_reported_status and self_reported_status == run_status:
+        return False
+    return True
 
 
 async def trigger_run(
@@ -778,7 +788,9 @@ async def _dispatch_and_finalize(
     fresh = await Run.nodes.get_or_none(uid=req.run_uid)
     if fresh is None:
         return
-    if dispatch_result_is_stale(fresh.status):
+    if dispatch_result_is_stale(
+        fresh.status, (fresh.usage or {}).get("self_reported_status", "")
+    ):
         logger.info(
             f"run {req.run_uid}: dispatch result discarded — run was terminated "
             f"mid-flight (status={fresh.status})",

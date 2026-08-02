@@ -22,11 +22,22 @@ def _run_token_uid(connection: HTTPConnection) -> str:
     return (connection.scope.get("state") or {}).get("run_token_uid", "")
 
 
-async def _run_repository_uid(run_uid: str) -> str:
+# Definitively-dead run states: no re-dispatch is possible, so the run's token
+# is spent. (awaiting_input / ended / limit_exceeded / paused_quota are all
+# resumable under the same run_uid, so their tokens MUST stay valid.) Rejecting
+# a spent token narrows the window a leaked osrt_ token stays usable — the token
+# is otherwise stateless and never expires. A leaked token from a run that is
+# still resumable is not fully closed here; that needs per-run token rotation.
+_DEAD_RUN_STATUSES = frozenset({"failed", "cancelled"})
+
+
+async def _run_repo_and_status(run_uid: str) -> tuple[str, str]:
     from domains.runs.models import Run
 
     run = await Run.nodes.get_or_none(uid=run_uid)
-    return run.repository_uid if run else ""
+    if run is None:
+        return "", ""
+    return (run.repository_uid or ""), (run.status or "")
 
 
 async def require_tool_repo_access(
@@ -35,8 +46,10 @@ async def require_tool_repo_access(
     """Gate a platform-tool call that targets a repository."""
     token_run = _run_token_uid(connection)
     if token_run:
-        run_repo = await _run_repository_uid(token_run)
+        run_repo, run_status = await _run_repo_and_status(token_run)
         if not run_repo or (repository_uid or "") != run_repo:
+            raise HTTPException(status_code=404, detail="not found")
+        if run_status in _DEAD_RUN_STATUSES:
             raise HTTPException(status_code=404, detail="not found")
         return
     await require_repo_in_org(repository_uid, user.org_uid)
@@ -50,6 +63,9 @@ async def require_tool_run_access(
     if token_run:
         if run_uid != token_run:
             raise HTTPException(status_code=404, detail="not found")
+        _, run_status = await _run_repo_and_status(token_run)
+        if run_status in _DEAD_RUN_STATUSES:
+            raise HTTPException(status_code=404, detail="not found")
         return
-    repo = await _run_repository_uid(run_uid)
+    repo, _ = await _run_repo_and_status(run_uid)
     await require_repo_in_org(repo, user.org_uid)

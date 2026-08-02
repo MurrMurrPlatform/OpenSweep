@@ -32,10 +32,10 @@ def test_roundtrip(monkeypatch):
     assert secretbox.unseal(sealed) == "sk-super-secret"
 
 
-def test_sealed_values_carry_v1_prefix(monkeypatch):
+def test_sealed_values_carry_v2_prefix(monkeypatch):
     _with_key(monkeypatch)
     sealed = secretbox.seal("x")
-    assert sealed.startswith("enc:v1:")
+    assert sealed.startswith("enc:v2:")  # new seals use the scrypt KDF
     assert secretbox.is_sealed(sealed)
     assert not secretbox.is_sealed("x")
     assert not secretbox.is_sealed("")
@@ -107,8 +107,21 @@ def test_rotate_reseals_under_primary(monkeypatch):
 def test_rotate_seals_plaintext(monkeypatch):
     _with_key(monkeypatch)
     out = secretbox.rotate("plain")
-    assert out.startswith("enc:v1:")
+    assert out.startswith("enc:v2:")
     assert secretbox.unseal(out) == "plain"
+
+
+def test_v1_ciphertext_still_decrypts_and_upgrades_to_v2(monkeypatch):
+    _with_key(monkeypatch)
+    # Forge a legacy enc:v1: token with the old unsalted-SHA-256 derivation.
+    v1_fernet = secretbox._derive_v1(KEY)
+    v1 = "enc:v1:" + v1_fernet.encrypt(b"legacy-secret").decode()
+    # Old ciphertext still loads...
+    assert secretbox.unseal(v1) == "legacy-secret"
+    # ...and rotate upgrades it to v2 (scrypt), still decryptable.
+    rotated = secretbox.rotate(v1)
+    assert rotated.startswith("enc:v2:")
+    assert secretbox.unseal(rotated) == "legacy-secret"
 
 
 def test_unknown_version_prefix_raises(monkeypatch):

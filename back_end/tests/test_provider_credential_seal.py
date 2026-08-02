@@ -47,7 +47,7 @@ def test_plaintext_credential_passes_through(secrets_key):
 
 def test_sealed_credential_roundtrips(secrets_key):
     provider = SimpleNamespace(credential_secret=sealed_secret("sk-abc123"))
-    assert provider.credential_secret.startswith("enc:v1:")
+    assert provider.credential_secret.startswith("enc:v2:")
     assert provider_secret(provider) == "sk-abc123"
 
 

@@ -24,22 +24,43 @@ import hashlib
 import logging
 
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 logger = logging.getLogger(__name__)
 
-PREFIX = "enc:v1:"
+# enc:v2: derives the Fernet key with scrypt (salted, work-factored) instead of
+# a bare unsalted SHA-256 (enc:v1:), which was trivially brute-forceable offline
+# for a passphrase-shaped key. New seals are v2; v1 stays decryptable so old
+# ciphertext loads and can be rotated up.
+PREFIX = "enc:v2:"
+PREFIX_V1 = "enc:v1:"
+_SEALED_PREFIXES = (PREFIX, PREFIX_V1)
 _MIN_KEY_LEN = 16
+
+# Fixed application salt used when OPENSWEEP_SECRETS_SALT is unset — still gives
+# scrypt's work factor + domain separation; a configured salt adds per-deploy
+# uniqueness. scrypt params: ~64 MiB, a fraction of a second (derivations are
+# cached, so this runs a handful of times, not per unseal).
+_DEFAULT_SALT = b"opensweep.secretbox.v2"
+_SCRYPT_N = 2**14
+_SCRYPT_R = 8
+_SCRYPT_P = 1
 
 
 class SecretBoxError(RuntimeError):
     """A sealed secret could not be decrypted — fail closed."""
 
 
-def _derive(raw: str) -> Fernet:
+def _derive_v1(raw: str) -> Fernet:
     return Fernet(base64.urlsafe_b64encode(hashlib.sha256(raw.encode()).digest()))
 
 
-def _current_keys() -> tuple[str, tuple[str, ...]]:
+def _derive_v2(raw: str, salt: bytes) -> Fernet:
+    kdf = Scrypt(salt=salt, length=32, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P)
+    return Fernet(base64.urlsafe_b64encode(kdf.derive(raw.encode())))
+
+
+def _current_keys() -> tuple[str, tuple[str, ...], bytes]:
     """Read settings lazily each call so tests can monkeypatch them."""
     from config import settings
 
@@ -49,12 +70,14 @@ def _current_keys() -> tuple[str, tuple[str, ...]]:
         for k in (getattr(settings, "OPENSWEEP_SECRETS_KEY_FALLBACKS", "") or "").split(",")
         if k.strip()
     )
-    return primary, fallbacks
+    raw_salt = (getattr(settings, "OPENSWEEP_SECRETS_SALT", "") or "").strip()
+    salt = raw_salt.encode() if raw_salt else _DEFAULT_SALT
+    return primary, fallbacks, salt
 
 
-# (primary, fallbacks) → (MultiFernet, primary Fernet). One entry: keys only
-# change on config edits (or test monkeypatching — a changed tuple rebuilds).
-_cache: dict[tuple[str, tuple[str, ...]], tuple[MultiFernet, Fernet]] = {}
+# (primary, fallbacks, salt) → (MultiFernet, primary v2 Fernet). One entry: keys
+# only change on config edits (or test monkeypatching — a changed tuple rebuilds).
+_cache: dict[tuple[str, tuple[str, ...], bytes], tuple[MultiFernet, Fernet]] = {}
 
 
 def _reset_cache() -> None:
@@ -62,8 +85,13 @@ def _reset_cache() -> None:
 
 
 def _boxes() -> tuple[MultiFernet, Fernet] | None:
-    """The (MultiFernet, primary Fernet) pair, or None when unconfigured."""
-    primary, fallbacks = _current_keys()
+    """The (decrypt MultiFernet, encrypt Fernet) pair, or None when unconfigured.
+
+    Encryption uses the v2 (scrypt) key. The MultiFernet holds BOTH the v2 and
+    v1 derivations of the primary and every fallback, so any historical
+    ciphertext (v1 or v2, primary or rotated) still decrypts and can be upgraded.
+    """
+    primary, fallbacks, salt = _current_keys()
     if not primary:
         return None
     if len(primary) < _MIN_KEY_LEN:
@@ -72,13 +100,18 @@ def _boxes() -> tuple[MultiFernet, Fernet] | None:
             "secrets encryption stays OFF"
         )
         return None
-    key = (primary, fallbacks)
+    key = (primary, fallbacks, salt)
     cached = _cache.get(key)
     if cached is not None:
         return cached
-    primary_fernet = _derive(primary)
-    fernets = [primary_fernet] + [_derive(f) for f in fallbacks if len(f) >= _MIN_KEY_LEN]
-    entry = (MultiFernet(fernets), primary_fernet)
+    encrypt_fernet = _derive_v2(primary, salt)
+    usable = [primary] + [f for f in fallbacks if len(f) >= _MIN_KEY_LEN]
+    # v2 first (the common case now), then v1 for legacy ciphertext. MultiFernet
+    # tries each in order until one decrypts.
+    fernets = [encrypt_fernet]
+    fernets += [_derive_v2(f, salt) for f in usable[1:]]
+    fernets += [_derive_v1(k) for k in usable]
+    entry = (MultiFernet(fernets), encrypt_fernet)
     _cache.clear()
     _cache[key] = entry
     return entry
@@ -90,7 +123,15 @@ def configured() -> bool:
 
 
 def is_sealed(value: str) -> bool:
-    return (value or "").startswith(PREFIX)
+    return (value or "").startswith(_SEALED_PREFIXES)
+
+
+def _strip_prefix(value: str) -> str:
+    """The Fernet token after a known enc:vN: prefix (both are 7 chars)."""
+    for p in _SEALED_PREFIXES:
+        if value.startswith(p):
+            return value[len(p):]
+    return value
 
 
 def seal(plaintext: str) -> str:
@@ -126,21 +167,21 @@ def unseal(value: str) -> str:
     value = value or ""
     if not value.startswith("enc:"):
         return value
-    if not value.startswith(PREFIX):
+    if not is_sealed(value):
         raise SecretBoxError(
             f"sealed secret has an unknown format version ({value.split(':', 2)[:2]}) — "
-            "this OpenSweep build only understands enc:v1:. Upgrade the deployment."
+            "this OpenSweep build understands enc:v1: / enc:v2:. Upgrade the deployment."
         )
     boxes = _boxes()
     if boxes is None:
         raise SecretBoxError(
-            "found an encrypted secret (enc:v1:) but OPENSWEEP_SECRETS_KEY is not "
+            "found an encrypted secret (enc:) but OPENSWEEP_SECRETS_KEY is not "
             "configured — set OPENSWEEP_SECRETS_KEY to the key it was sealed with "
             "(and OPENSWEEP_SECRETS_KEY_FALLBACKS for any previous keys)."
         )
     multi, _ = boxes
     try:
-        return multi.decrypt(value[len(PREFIX):].encode()).decode()
+        return multi.decrypt(_strip_prefix(value).encode()).decode()
     except InvalidToken as exc:
         raise SecretBoxError(
             "failed to decrypt a sealed secret: OPENSWEEP_SECRETS_KEY (and every "
@@ -163,12 +204,15 @@ def rotate(value: str) -> str:
             "cannot rotate a sealed secret without OPENSWEEP_SECRETS_KEY configured"
         )
     multi, primary = boxes
-    token = value[len(PREFIX):].encode()
-    try:
-        primary.decrypt(token)
-        return value  # already under the primary key
-    except InvalidToken:
-        pass
+    token = _strip_prefix(value).encode()
+    # Already v2 under the primary key → no churn. A v1 token (even under the
+    # current key) is upgraded to v2 below, so it is NOT short-circuited here.
+    if value.startswith(PREFIX):
+        try:
+            primary.decrypt(token)
+            return value
+        except InvalidToken:
+            pass
     try:
         return PREFIX + multi.rotate(token).decode()
     except InvalidToken as exc:
