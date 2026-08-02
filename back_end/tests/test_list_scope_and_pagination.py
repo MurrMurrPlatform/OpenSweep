@@ -203,6 +203,49 @@ def test_the_scope_is_required(name, module_path, dotted):
     assert param.default is inspect.Parameter.empty, f"{name} has a default scope"
 
 
+# ── routes must vet the repo they scope to ───────────────────────────────────
+
+
+def test_every_route_scoping_to_a_named_repo_checks_the_org_first():
+    """`repo_scope(repository_uid, org)` returns [repository_uid] as-is.
+
+    It does NOT check that the repo belongs to the org — that is
+    require_repo_in_org's job, and it must already have run. A route that
+    passes a caller-supplied repository_uid to repo_scope without it reads
+    another tenant's rows on request.
+    """
+    import ast
+    import pathlib
+
+    api_v1 = pathlib.Path(__file__).resolve().parents[1] / "api" / "v1"
+    offenders = []
+    for path in sorted(api_v1.glob("*.py")):
+        tree = ast.parse(path.read_text())
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            called = {
+                node.func.id
+                for node in ast.walk(fn)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            }
+            if "repo_scope" not in called:
+                continue
+            # A literal first argument (e.g. repo_scope(None, org)) is the
+            # org-wide form and needs no per-repo check.
+            scopes_a_variable = any(
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "repo_scope"
+                and node.args
+                and not isinstance(node.args[0], ast.Constant)
+                for node in ast.walk(fn)
+            )
+            if scopes_a_variable and "require_repo_in_org" not in called:
+                offenders.append(f"{path.name}:{fn.lineno} {fn.name}")
+    assert offenders == [], f"repo_scope on an unvetted repository_uid: {offenders}"
+
+
 # ── paginate ─────────────────────────────────────────────────────────────────
 
 
