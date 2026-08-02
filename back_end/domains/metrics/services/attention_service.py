@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 
 from neomodel import adb
 
+from domains.freshness import STALE_WHERE
 from domains.metrics.schemas import AttentionItem, RepoAttention
 from domains.metrics.services.metrics_service import (
     _HIGH_SEVERITY,
@@ -336,12 +337,13 @@ class AttentionService:
                 count=high_sev,
             ))
 
-        # Mirrors areas.models.area_is_stale: code changed under scope_paths
-        # since the area was last reviewed (never-changed areas are not stale).
+        # The Cypher half of domains.freshness.is_stale — interpolated rather
+        # than retyped, so the rule cannot drift from the Python predicate.
+        # `enabled` is a caller-side filter: staleness itself says nothing
+        # about whether an area is in the partition.
         stale = await count(
             "MATCH (a:Area {repository_uid: $u, enabled: true}) "
-            "WHERE a.code_changed_at IS NOT NULL "
-            "AND (a.last_reviewed_at IS NULL OR a.code_changed_at > a.last_reviewed_at) "
+            f"WHERE {STALE_WHERE.format(n='a')} "
             "RETURN count(a)",
             {"u": u},
         )

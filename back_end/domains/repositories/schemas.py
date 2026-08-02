@@ -49,6 +49,13 @@ class RepositoryDTO(BaseModel):
     # status transitions, including Gate-1 approval).
     agent_autonomy: bool = False
 
+    # Freshness honesty. Staleness for BOTH Docs and Areas is marked in one
+    # pass off the same cursor, so when that pass cannot see everything the
+    # Documentation page is as wrong as the Areas board — it just had no way to
+    # say so, because these only ever reached the areas-health response.
+    freshness_synced_at: datetime | None = None
+    freshness_degraded_reason: str = ""
+
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

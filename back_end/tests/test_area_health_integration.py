@@ -200,7 +200,53 @@ async def test_summary_counts_only_auditable_leaves():
     s = (await area_health(repo)).summary
     assert s.total == 2  # the two subsystem leaves only
     assert s.stale == 1
-    assert s.never_audited == 2
+    # backend/api is stale AND unaudited; it belongs to exactly one tile.
+    assert s.never_audited == 1
+    assert s.fresh == 0
+    assert s.untracked == 0
+    assert s.untracked + s.stale + s.never_audited + s.fresh == s.total
+
+
+async def test_summary_tiles_partition_every_auditable_leaf():
+    """The four state tiles must sum to total — they used to double-count a
+    leaf that was both stale and never audited, and drop one that was
+    neither."""
+    repo = _repo_uid()
+    await _make_repo(repo)
+    now = datetime.now(UTC)
+    # stale + never audited (the cell that used to be counted twice)
+    await _make_area(
+        repo, "a", ["src/a"],
+        last_reviewed_at=now - timedelta(days=1), code_changed_at=now,
+    )
+    # tracked, fresh, never audited (the cell that used to be counted in none)
+    await _make_area(repo, "b", ["src/b"])
+    # untracked leaf — no scope_paths at all
+    await _make_area(repo, "c", [])
+
+    s = (await area_health(repo)).summary
+    assert s.total == 3
+    assert s.stale == 1
+    assert s.never_audited == 1
+    assert s.untracked == 1
+    assert s.fresh == 0
+    assert s.untracked + s.stale + s.never_audited + s.fresh == s.total
+
+
+async def test_unscoped_leaf_is_untracked_not_fresh():
+    """A leaf with no scope_paths can never be marked stale and can never
+    receive coverage — the webhook has nothing to match it against. Counting
+    it as fresh put the map's most broken rows in its healthiest tile."""
+    repo = _repo_uid()
+    await _make_repo(repo)
+    await _make_area(repo, "orphan", [])
+
+    health = await area_health(repo)
+    row = _row(health, "orphan")
+    assert row.tracked is False
+    assert row.stale is False  # nothing can mark it — that is the whole point
+    assert health.summary.untracked == 1
+    assert health.summary.fresh == 0
 
 
 async def test_rollup_is_scoped_to_one_repository():

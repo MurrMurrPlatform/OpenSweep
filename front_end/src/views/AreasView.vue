@@ -174,6 +174,26 @@ const healthByUid = computed<Map<string, AreaHealthRowDTO>>(
   () => new Map((health.value?.rows ?? []).map((r) => [r.uid, r])),
 )
 
+/** Stale leaves under every key PREFIX, including synthetic group headers.
+ *
+ *  The backend's per-row `stale_descendants` only exists for keys that are
+ *  real Area nodes, and group headers are emitted precisely when no area owns
+ *  that prefix — so reading the row field directly returns 0 for exactly the
+ *  rows that need the number. Rolled up once per health load instead of
+ *  rescanning every row on every render. */
+const staleByPrefix = computed<Map<string, number>>(() => {
+  const out = new Map<string, number>()
+  for (const r of health.value?.rows ?? []) {
+    if (!r.stale) continue
+    const parts = r.key.split('/')
+    for (let i = 1; i < parts.length; i++) {
+      const prefix = parts.slice(0, i).join('/')
+      out.set(prefix, (out.get(prefix) ?? 0) + 1)
+    }
+  }
+  return out
+})
+
 function healthFor(uid: string): AreaHealthRowDTO | null {
   return healthByUid.value.get(uid) ?? null
 }
@@ -181,11 +201,7 @@ function healthFor(uid: string): AreaHealthRowDTO | null {
 /** Stale leaves under a key — what a grouping row reports instead of its own
  *  staleness (a grouping owns no paths, so it can never itself be stale). */
 function staleUnder(key: string): number {
-  let total = 0
-  for (const r of health.value?.rows ?? []) {
-    if (r.stale && r.key.startsWith(key + '/')) total++
-  }
-  return total
+  return staleByPrefix.value.get(key) ?? 0
 }
 
 function outcomeVariant(outcome: string): BadgeVariants['variant'] {
@@ -196,7 +212,14 @@ function outcomeVariant(outcome: string): BadgeVariants['variant'] {
 }
 
 const summary = computed(
-  () => health.value?.summary ?? { total: 0, stale: 0, never_audited: 0, fresh: 0 },
+  () =>
+    health.value?.summary ?? {
+      total: 0,
+      untracked: 0,
+      stale: 0,
+      never_audited: 0,
+      fresh: 0,
+    },
 )
 
 /** Confirm-current: clear stale after eyeballing an area, without inventing a
@@ -899,7 +922,9 @@ async function confirmResolveAll() {
 
     <template v-else>
       <!-- ── Upkeep tiles, over auditable leaves (groupings own no files) ── -->
-      <section v-if="health && summary.total" class="grid grid-cols-2 gap-3 text-sm lg:grid-cols-4">
+      <!-- The five tiles partition `total`: every auditable leaf is in exactly
+           one. They used to overlap, so they summed to more than Areas. -->
+      <section v-if="health && summary.total" class="grid grid-cols-2 gap-3 text-sm lg:grid-cols-5">
         <Card>
           <CardContent class="p-3">
             <div class="text-xs uppercase tracking-wide text-muted-foreground">Areas</div>
@@ -920,8 +945,27 @@ async function confirmResolveAll() {
         </Card>
         <Card>
           <CardContent class="p-3">
-            <div class="text-xs uppercase tracking-wide text-muted-foreground">Never audited</div>
+            <div
+              class="text-xs uppercase tracking-wide text-muted-foreground"
+              title="Tracked and current, but no audit has ever covered them. A leaf that is also stale counts under Stale — each area appears in exactly one tile."
+            >
+              Never audited
+            </div>
             <div class="mt-1 text-xl font-semibold tabular-nums text-muted-foreground"><AnimatedNumber :value="summary.never_audited" /></div>
+          </CardContent>
+        </Card>
+        <Card :class="summary.untracked ? 'border-warn/40' : ''">
+          <CardContent class="p-3">
+            <div
+              class="text-xs uppercase tracking-wide text-muted-foreground"
+              title="Leaves with no scope paths — nothing can mark them stale and no audit can cover them"
+            >
+              Untracked
+            </div>
+            <div
+              class="mt-1 text-xl font-semibold tabular-nums"
+              :class="summary.untracked ? 'text-warn' : 'text-muted-foreground'"
+            ><AnimatedNumber :value="summary.untracked" /></div>
           </CardContent>
         </Card>
       </section>

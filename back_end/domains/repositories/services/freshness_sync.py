@@ -127,6 +127,30 @@ async def _stamp_cursor(repo, head_sha: str, degraded_reason: str) -> None:
         )
 
 
+async def _stamp_degraded(repo, degraded_reason: str) -> None:
+    """Persist WHY a pass could not see everything, without touching the cursor.
+
+    A pass that bails before `_stamp_cursor` used to leave
+    `freshness_degraded_reason` at its last value — usually "" — while
+    `freshness_synced_at` still held the last SUCCESSFUL pass's time. The board
+    then rendered "Staleness current as of <date>" for a repo whose cursor had
+    not moved in days: the loud failure mode (truncation) stamped, and the
+    total one did not. `freshness_synced_at` is deliberately NOT advanced here
+    — nothing was synced.
+    """
+    try:
+        if (repo.freshness_degraded_reason or "") == degraded_reason:
+            return
+        repo.freshness_degraded_reason = degraded_reason
+        await repo.save()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            f"freshness sync: degraded-reason save failed for {repo.uid}: "
+            f"{type(exc).__name__}: {exc}",
+            extra={"tag": "freshness"},
+        )
+
+
 async def sync_push_freshness(repo, payload: dict) -> FreshnessSyncResult:
     """Handle one `push` webhook payload for one repository.
 
@@ -182,12 +206,19 @@ async def reconcile_repository_freshness(repo) -> FreshnessSyncResult:
     """
     from infrastructure.git_providers import get_provider_client
 
+    # Every bail below persists its reason. Each one leaves the cursor where it
+    # was — correct, so the next tick retries — but a repo that can no longer
+    # reach its provider (revoked token, deleted repo, renamed default branch)
+    # would otherwise sit at "Staleness current as of <the last good sync>"
+    # indefinitely while nothing was being marked.
     branch = repo.default_branch or "main"
     try:
         client = get_provider_client(repo)
         if not (client.is_active and repo.github_owner and repo.github_repo):
+            reason = "no active git provider connection"
+            await _stamp_degraded(repo, reason)
             return FreshnessSyncResult(
-                repository_uid=repo.uid, reason="no active git provider connection"
+                repository_uid=repo.uid, reason=reason, degraded_reason=reason
             )
         head = await client.get_branch_head_sha(
             repo.github_owner, repo.github_repo, branch
@@ -198,17 +229,27 @@ async def reconcile_repository_freshness(repo) -> FreshnessSyncResult:
             f"{type(exc).__name__}: {exc}",
             extra={"tag": "freshness"},
         )
+        reason = f"head unavailable ({type(exc).__name__})"
+        await _stamp_degraded(repo, reason)
         return FreshnessSyncResult(
-            repository_uid=repo.uid, reason=f"head unavailable ({type(exc).__name__})"
+            repository_uid=repo.uid, reason=reason, degraded_reason=reason
         )
 
     if not head:
+        reason = f"no head sha for branch {branch}"
+        await _stamp_degraded(repo, reason)
         return FreshnessSyncResult(
-            repository_uid=repo.uid, reason=f"no head sha for branch {branch}"
+            repository_uid=repo.uid, reason=reason, degraded_reason=reason
         )
 
     cursor = (repo.freshness_synced_sha or "").strip()
     if cursor == head:
+        # Clear any reason a previous failed tick left behind: we just proved
+        # we can reach the provider and the cursor is current. Every other
+        # terminal path writes the reason (including "") — without this one a
+        # transient blip pinned the warn banner on a quiet repo until its next
+        # push, which is exactly the "board lies" failure inverted.
+        await _stamp_degraded(repo, "")
         return FreshnessSyncResult(
             repository_uid=repo.uid, head_sha=head, reason="already at head"
         )
@@ -225,12 +266,15 @@ async def reconcile_repository_freshness(repo) -> FreshnessSyncResult:
     paths, degraded = await _resolve_range_paths(repo, cursor, head)
     if not paths and degraded:
         # Do NOT advance the cursor on a failed compare — leaving it behind is
-        # what lets the next tick retry the same range.
+        # what lets the next tick retry the same range. But DO persist why, or
+        # a permanently wedged cursor (force-push + GC, repo transfer, revoked
+        # token) reads as a confidently fresh board forever.
         logger.warning(
             f"freshness reconcile: {repo.uid} could not resolve {cursor[:7]}.."
             f"{head[:7]}: {degraded}",
             extra={"tag": "freshness"},
         )
+        await _stamp_degraded(repo, degraded)
         return FreshnessSyncResult(
             repository_uid=repo.uid, head_sha=head, reason=degraded,
             degraded_reason=degraded,
@@ -261,6 +305,7 @@ async def reconcile_all_repositories() -> dict:
     applied = 0
     docs = 0
     areas = 0
+    degraded = 0
     for repo in repos:
         try:
             result = await reconcile_repository_freshness(repo)
@@ -268,15 +313,22 @@ async def reconcile_all_repositories() -> dict:
                 applied += 1
                 docs += result.docs_marked
                 areas += result.areas_marked
+            if result.degraded_reason:
+                degraded += 1
         except Exception as exc:  # noqa: BLE001
+            degraded += 1
             logger.warning(
                 f"freshness reconcile: {getattr(repo, 'uid', '?')} failed: "
                 f"{type(exc).__name__}: {exc}",
                 extra={"tag": "freshness"},
             )
+    # `degraded` is the difference between a quiet fleet and a wedged one:
+    # without it the sweep summary of every repo failing is indistinguishable
+    # from every repo being up to date ({"applied": 0, "areas_marked": 0}).
     return {
         "repositories": len(repos),
         "applied": applied,
         "docs_marked": docs,
         "areas_marked": areas,
+        "degraded": degraded,
     }

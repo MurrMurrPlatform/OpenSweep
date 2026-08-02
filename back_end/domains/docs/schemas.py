@@ -24,6 +24,9 @@ class DocDTO(BaseModel):
     archived: bool = False
     watch_paths: list[str] = []
     # Derived: code changed under watch_paths since last review.
+    # False = no watch_paths at all: the webhook has nothing to match, so
+    # `stale` can never become True. That is untracked, not current.
+    tracked: bool = True
     stale: bool = False
     stale_paths: list[str] = []
     code_changed_at: datetime | None = None

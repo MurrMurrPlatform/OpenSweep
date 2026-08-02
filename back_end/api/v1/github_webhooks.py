@@ -542,7 +542,13 @@ async def _delivery_follow_through(
     # the payload's commit array (capped at 20, merge commits list no files).
     # The write-run finalize does the same off its own changed paths, so the
     # underlying helper is idempotent across both. Never fails the webhook.
-    if event == "push":
+    # Inactive repos are skipped here to match reconcile_all_repositories, which
+    # only sweeps is_active=True. Without the guard an inactive repo takes
+    # webhook staleness and cursor advances with no backstop behind them, so on
+    # reactivation the reconcile replays only from wherever the last delivered
+    # webhook left the cursor — permanently skipping every commit whose delivery
+    # was dropped while inactive.
+    if event == "push" and getattr(repo, "is_active", True):
         from domains.repositories.services.freshness_sync import sync_push_freshness
 
         try:

@@ -7,7 +7,8 @@ machine.
 
 Slugs are path-like ("backend/queue-workers"); folders are derived from
 slug prefixes, never stored. A human edit or accepted DocEdit counts as a
-review: it stamps last_reviewed_at and clears stale_paths (§9).
+review — but only when it changes the BODY or watch_paths, and only when the
+page is not being retired: see _earns_review (§9).
 """
 
 from __future__ import annotations
@@ -18,8 +19,15 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
-from domains.docs.models import CONVENTIONS_SLUG, Doc, DocEdit, doc_is_stale
+from domains.docs.models import (
+    CONVENTIONS_SLUG,
+    Doc,
+    DocEdit,
+    doc_is_stale,
+    doc_is_tracked,
+)
 from domains.docs.schemas import DocDTO, DocEditDTO, DocEditStatus
+from domains.freshness import mark_reviewed, review_snapshot
 from infrastructure.audit import write_audit
 
 
@@ -34,6 +42,7 @@ def doc_to_dto(d: Doc, *, pending_edits: int = 0) -> DocDTO:
         pinned=bool(d.pinned),
         archived=bool(d.archived),
         watch_paths=list(d.watch_paths or []),
+        tracked=doc_is_tracked(d),
         stale=doc_is_stale(d),
         stale_paths=list(d.stale_paths or []),
         code_changed_at=d.code_changed_at,
@@ -75,9 +84,28 @@ def normalize_slug(value: str) -> str:
     return "/".join(s for s in segments if s)[:120]
 
 
-def _mark_reviewed(d: Doc, now: datetime) -> None:
-    d.last_reviewed_at = now
-    d.stale_paths = []
+# A review is a claim that the PROSE was re-checked against the CODE. Only the
+# body and the path anchor can carry that claim: a rename or a summary tweak
+# says nothing about whether the page still describes what the code does, and
+# clearing a stale badge by fixing a typo is how a review signal stops meaning
+# anything.
+_DOC_REVIEW_FIELDS = ("body", "watch_paths")
+
+
+def _earns_review(d: Doc, before: tuple, *, was_tracked: bool) -> bool:
+    """Did this write re-decide the page against the code?
+
+    Mirrors area_service._earns_review: nothing changed, the page ends up
+    RETIRED, or the write DESTROYED the watch anchor (a page that had watch
+    paths and now has none can never be marked stale again, so stamping it
+    fresh is the worst possible combination) all answer no. A page that never
+    had watch paths is a different thing and still earns its stamp.
+    """
+    if d.archived:
+        return False
+    if was_tracked and not doc_is_tracked(d):
+        return False
+    return review_snapshot(d, _DOC_REVIEW_FIELDS) != before
 
 
 async def list_docs(repository_uid: str) -> list[DocDTO]:
@@ -167,6 +195,8 @@ async def update_doc(
     actor: str = "human",
 ) -> Doc:
     d = await get_doc(uid)
+    before = review_snapshot(d, _DOC_REVIEW_FIELDS)
+    was_tracked = doc_is_tracked(d)
     if title is not None:
         d.title = title
     if summary is not None:
@@ -177,7 +207,8 @@ async def update_doc(
         d.watch_paths = list(watch_paths)
     now = datetime.now(UTC)
     d.updated_at = now
-    _mark_reviewed(d, now)  # a human edit counts as a review
+    if _earns_review(d, before, was_tracked=was_tracked):
+        mark_reviewed(d, now)  # the prose or its anchor was re-decided
     await d.save()
     await write_audit(
         kind="doc.updated",
@@ -362,6 +393,8 @@ async def accept_doc_edit(uid: str, *, actor: str = "human") -> DocDTO:
         d = await Doc.nodes.get_or_none(uid=e.doc_uid)
         if d is None:
             raise HTTPException(status_code=409, detail="target Doc no longer exists")
+        before = review_snapshot(d, _DOC_REVIEW_FIELDS)
+        was_tracked = doc_is_tracked(d)
         d.body = e.proposed_body or ""
         if e.title:
             d.title = e.title
@@ -371,7 +404,11 @@ async def accept_doc_edit(uid: str, *, actor: str = "human") -> DocDTO:
             d.watch_paths = list(e.watch_paths)
         d.archived = bool(getattr(e, "proposed_archived", False))
         d.updated_at = now
-        _mark_reviewed(d, now)  # an accepted edit counts as a review
+        # Retiring a page is not reviewing it — see _earns_review. Leaving the
+        # stamp untouched is what makes an un-archive come back truthfully
+        # stale rather than falsely current.
+        if _earns_review(d, before, was_tracked=was_tracked):
+            mark_reviewed(d, now)
         await d.save()
     else:
         d = await create_doc(

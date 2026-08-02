@@ -15,6 +15,7 @@ Pinned pages are injected verbatim into every run's first prompt; unpinned
 pages appear as a one-line index agents fetch on demand via read_doc.
 """
 
+from domains.freshness import is_tracked, node_is_stale
 from neomodel import (
     AsyncStructuredNode,
     BooleanProperty,
@@ -50,7 +51,10 @@ class Doc(AsyncStructuredNode):
     # Last push that touched watch_paths. Stale = code_changed_at newer than
     # last_reviewed_at (derived, never stored).
     code_changed_at = DateTimeProperty()
-    # Advances on human edit, accepted DocEdit, or confirm_doc_current.
+    # Advances when the page's BODY or watch_paths change (a human edit or an
+    # accepted content DocEdit) or on confirm_doc_current. A rename, a summary
+    # tweak, a pin, or an archive-on-accept deliberately does not: none of them
+    # says the prose was re-checked against the code.
     last_reviewed_at = DateTimeProperty()
     # Changed paths accumulated since the last review; cleared on review.
     stale_paths = JSONProperty(default=[])
@@ -94,9 +98,11 @@ CONVENTIONS_SLUG = "conventions"
 
 def doc_is_stale(d: Doc) -> bool:
     """Derived: code changed under watch_paths since the page was last
-    reviewed. Never stored."""
-    if d.code_changed_at is None:
-        return False
-    if d.last_reviewed_at is None:
-        return True
-    return d.code_changed_at > d.last_reviewed_at
+    reviewed. Never stored. The rule itself lives in `domains.freshness`."""
+    return node_is_stale(d)
+
+
+def doc_is_tracked(d: Doc) -> bool:
+    """Does this page watch any path? An unwatched page can never go stale —
+    not because it is current, but because nothing can mark it."""
+    return is_tracked(d.watch_paths)

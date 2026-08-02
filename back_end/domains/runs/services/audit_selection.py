@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 
 from domains.checked.models import Checked
 from domains.docs.models import Doc
+from domains.freshness import is_stale
 
 _EPOCH = datetime.min.replace(tzinfo=UTC)
 
@@ -56,9 +57,7 @@ def rank_targets(pages: list[PageInfo], *, limit: int) -> list[AuditTarget]:
             continue
         if p.last_checked is None:
             never.append(p)
-        elif p.code_changed_at is not None and (
-            p.last_reviewed_at is None or p.code_changed_at > p.last_reviewed_at
-        ):
+        elif is_stale(p.code_changed_at, p.last_reviewed_at):
             stale.append(p)
     never.sort(key=lambda p: p.created_at or _EPOCH)
     stale.sort(key=lambda p: p.last_reviewed_at or _EPOCH)

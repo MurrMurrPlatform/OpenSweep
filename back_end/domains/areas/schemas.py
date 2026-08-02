@@ -165,6 +165,10 @@ class AreaHealthRowDTO(BaseModel):
     file_count: int | None = None
 
     # Review axis
+    # False = no scope_paths at all. Correct for a grouping (it owns none by
+    # design); on a LEAF it means the webhook can never mark this area, so
+    # `stale=False` here says "untracked", not "current".
+    tracked: bool = True
     stale: bool = False
     stale_paths: list[str] = Field(default_factory=list)
     # Stale leaves under this key. Lets a grouping row show that its children
@@ -209,10 +213,23 @@ class UnassignedDocDTO(BaseModel):
 class AreaHealthSummaryDTO(BaseModel):
     """The Health page's stat tiles, recomputed over auditable area leaves
     (groupings are excluded — they own no files, so counting them would
-    inflate every tile)."""
+    inflate every tile).
+
+    The four state tiles PARTITION `total`: every auditable leaf lands in
+    exactly one of untracked / stale / never_audited / fresh, in that priority.
+    They used to overlap — a leaf that was both stale and unaudited counted in
+    two tiles, so they summed to more than `total`, while a tracked-but-never-
+    audited leaf appeared in neither `fresh` nor `stale`. Priority order is by
+    what you would do about it: give it a scope, review it, audit it, nothing.
+    """
 
     total: int = 0
+    # Enabled leaves with NO scope_paths. The webhook has nothing to match, so
+    # they can never go stale and can never receive coverage — permanently
+    # green for the wrong reason. A leaf here is a map bug, not a healthy area.
+    untracked: int = 0
     stale: int = 0
+    # Tracked, not stale, and no audit has ever covered it.
     never_audited: int = 0
     fresh: int = 0
 

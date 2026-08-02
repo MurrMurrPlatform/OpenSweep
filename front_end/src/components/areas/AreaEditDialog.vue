@@ -93,7 +93,7 @@ async function saveEdit() {
       <DialogHeader>
         <DialogTitle>Edit area</DialogTitle>
         <DialogDescription>
-          <span class="font-mono">{{ area?.key }}</span> — a human edit counts as a review and clears staleness.
+          <span class="font-mono">{{ area?.key }}</span> — changing the spec, scope paths or kind counts as a review and clears staleness. A rename does not.
         </DialogDescription>
       </DialogHeader>
       <div class="space-y-3">

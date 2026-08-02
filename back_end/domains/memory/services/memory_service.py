@@ -84,10 +84,14 @@ async def write_memory(
 
     now = datetime.now(UTC)
     if duplicate is not None:
-        duplicate.updated_at = now
-        if source_run_uid:
+        # Identical content — deliberately do NOT bump `updated_at`. It is the
+        # review side of memory staleness (`_possibly_stale` compares the
+        # anchor doc's code_changed_at against it), so touching it here let an
+        # agent clear the "code changed since" flag on every memory by
+        # re-asserting them verbatim, without re-checking anything.
+        if source_run_uid and duplicate.source_run_uid != source_run_uid:
             duplicate.source_run_uid = source_run_uid
-        await duplicate.save()
+            await duplicate.save()
         return {"status": "duplicate", "memory_uid": duplicate.uid}
 
     if same_title is not None:

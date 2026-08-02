@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from domains.docs.models import Doc
+from domains.freshness import mark_reviewed
 from domains.repositories.services.path_matching import (
     MAX_STALE_PATHS,
     mark_nodes_stale,
@@ -93,7 +94,6 @@ async def confirm_doc_current(repository_uid: str, slug: str) -> Doc | None:
     d = await get_doc_by_slug(repository_uid, normalize_slug(slug))
     if d is None:
         return None
-    d.last_reviewed_at = datetime.now(UTC)
-    d.stale_paths = []
+    mark_reviewed(d, datetime.now(UTC))
     await d.save()
     return d
