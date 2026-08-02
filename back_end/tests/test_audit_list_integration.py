@@ -14,7 +14,6 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-
 from neomodel import adb
 
 import api.v1.audit as audit_mod

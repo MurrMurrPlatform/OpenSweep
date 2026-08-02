@@ -28,11 +28,8 @@ across every call site for no gain here.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TypeVar
 
 from fastapi import Query, Response
-
-T = TypeVar("T")
 
 # Ceiling on an explicit ?limit=. Not a default — see the module docstring.
 MAX_LIMIT = 1000
@@ -60,7 +57,7 @@ def page_params(
     return Page(limit=limit, offset=offset)
 
 
-def paginate(items: list[T], page: Page, response: Response) -> list[T]:
+def paginate[T](items: list[T], page: Page, response: Response) -> list[T]:
     """Cut `page` out of `items`, reporting the full size in a header.
 
     X-Total-Count is always set, so a paging caller can see the total
