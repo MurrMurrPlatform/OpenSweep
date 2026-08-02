@@ -232,7 +232,6 @@ async def trigger_run(
         raise LifecycleError(
             "No LLM provider configured for this organization. An org admin must add one in Settings → LLM Providers and mark it active."
         )
-    chosen_executor = executor or _executor_for_provider(active_provider)
     # A normal run is read-only investigation work. Only write playbooks
     # (implement/fix, §6) pass an explicit execution_mode — and they must
     # bring their own write sandbox (made or deferred).
@@ -245,6 +244,24 @@ async def trigger_run(
         raise LifecycleError(
             f"execution_mode={chosen_mode.value} requires a prepared write sandbox"
         )
+    # A WRITE run whose executor is resolved from the provider (executor is None —
+    # how the delivery services dispatch since G1) MUST land on a write-capable
+    # executor. If the active/pinned provider is read-only (internal_llm/codex),
+    # re-select a write-capable one from the org chain so the run doesn't silently
+    # no-op at the write gate. An explicit `executor` (legacy callers) is trusted.
+    if (
+        chosen_mode != ExecutionMode.ANALYZE_ONLY
+        and executor is None
+        and _executor_for_provider(active_provider) not in _WRITE_CAPABLE_EXECUTORS
+    ):
+        write_provider = await _select_write_capable_provider(run_org_uid)
+        if write_provider is None:
+            raise LifecycleError(
+                "no write-capable LLM provider configured for this organization — "
+                "add a Claude subscription or an OpenCode provider to run write playbooks"
+            )
+        active_provider = write_provider
+    chosen_executor = executor or _executor_for_provider(active_provider)
 
     try:
         # Policy precedence: the explicit per-run run_policy_uid wins (agent
@@ -1212,16 +1229,32 @@ def _executor_for_provider(provider: LLMProvider) -> Executor:
 
 
 # Executors whose adapters have a write surface (IMPLEMENT mode: edit, test,
-# commit in a write sandbox). claude_code is the only one: internal_llm is
-# HTTP + read tools, and the codex/opencode tracking adapters are deliberately
-# read/report only — the write playbooks (fix/implement) always dispatch with
-# Executor.CLAUDE_CODE.
-_WRITE_CAPABLE_EXECUTORS = frozenset({Executor.CLAUDE_CODE})
+# commit in a write sandbox). claude_code and opencode: opencode edits files
+# with its own tools in the sandbox clone under the write contract (G1 — the
+# local-LLM delivery loop), and the finalize path validates + pushes its commits
+# the same way. internal_llm is HTTP + read tools, and the codex tracking adapter
+# is deliberately read/report only.
+_WRITE_CAPABLE_EXECUTORS = frozenset({Executor.CLAUDE_CODE, Executor.OPENCODE})
 
 
 def _provider_supports_write(provider: LLMProvider) -> bool:
-    """Whether a run in IMPLEMENT mode may resume on this provider."""
+    """Whether a run in IMPLEMENT mode may run/resume on this provider."""
     try:
         return _executor_for_provider(provider) in _WRITE_CAPABLE_EXECUTORS
     except LifecycleError:
         return False
+
+
+async def _select_write_capable_provider(run_org_uid: str) -> LLMProvider | None:
+    """Pick a write-capable provider from the org's §8 fallback chain.
+
+    Excludes every provider whose executor has no write surface (internal_llm,
+    codex) so a WRITE run never lands on a read-only executor and silently no-ops
+    at the write gate. Returns None when the org has no write-capable provider.
+    """
+    exclude = {
+        (p.uid or "").strip()
+        for p in await LLMProvider.nodes.filter(org_uid=run_org_uid)
+        if not _provider_supports_write(p)
+    }
+    return await select_provider(org_uid=run_org_uid, exclude_uids=exclude)

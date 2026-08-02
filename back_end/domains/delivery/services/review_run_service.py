@@ -21,7 +21,6 @@ from domains.docs.services.doc_freshness import docs_watching_paths
 from domains.executors.prompt_kit import stance_block
 from domains.runs.models import Run
 from domains.runs.schemas import (
-    Executor,
     Effort,
     RunTrigger,
     normalize_effort,
@@ -271,7 +270,9 @@ async def trigger_review_run(
                 "doc_uids": target_doc_uids,
             },
             linked_pr_uid=pr.uid,
-            executor=Executor.CLAUDE_CODE,
+            # executor=None: read-only review resolves to the repo's active
+            # provider (claude_code / opencode / internal_llm) — the local-LLM loop.
+            executor=None,
             run_policy_uid=run_policy.uid,
             effort=resolved_depth.value,
             trigger=trigger,

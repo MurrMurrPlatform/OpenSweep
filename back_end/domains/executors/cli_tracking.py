@@ -33,7 +33,7 @@ from domains.executors.base import AdapterRegistry, DispatchRequest, DispatchRes
 from domains.executors.prompt_kit import stance_block, system_prompt as build_system_prompt
 from domains.executors.quota import detect_quota_exhaustion
 from domains.executors.reasoning import reasoning_args
-from domains.runs.schemas import Executor, RunStatus
+from domains.runs.schemas import Executor, ExecutionMode, RunStatus
 from domains.runs.services.run_events import append_event
 from domains.llm_providers.services import codex_cli
 from domains.llm_providers.models import LLMProvider
@@ -328,13 +328,25 @@ class _CLITrackingAdapter(ExecutorAdapter):
         tool_calls, the continuation pass, quota handling, the raw transcript —
         is identical, because that is what makes a run a run."""
         timeout = resolve_wall_ceiling(req, provider.kind)
-        instruction = _instruction(req, timeout)
+        # Write mode (OpenCode local-LLM delivery loop, G1): an implement/fix run
+        # on a write-capable tracking executor gets the write contract — edit +
+        # test + COMMIT in the sandbox clone with the CLI's own tools — instead of
+        # the read-only "investigate + emit envelope" one. The finalize path then
+        # validates those commits and pushes, exactly as it does for claude_code.
+        # Codex is never write-capable, so it never reaches this branch.
+        write_mode = (
+            self.name == Executor.OPENCODE and req.mode == ExecutionMode.IMPLEMENT
+        )
+        base_prompt = _SYSTEM_PROMPT_WRITE if write_mode else _SYSTEM_PROMPT
+        instruction = (
+            _write_instruction(req, timeout) if write_mode else _instruction(req, timeout)
+        )
         # Both CLIs get the code-graph MCP server over the workspace clone —
         # opencode through its generated config, codex through `-c` argv
         # overrides (llm_executor) — under this same availability gate.
-        system_prompt = _SYSTEM_PROMPT
+        system_prompt = base_prompt
         if code_graph_available(req.repository_local_path or ""):
-            system_prompt = _SYSTEM_PROMPT + "\n" + CODE_GRAPH_PROMPT
+            system_prompt = base_prompt + "\n" + CODE_GRAPH_PROMPT
         await record_input(
             req.run_uid,
             system_prompt=system_prompt,
@@ -637,6 +649,9 @@ class OpenCodeAdapter(_CLITrackingAdapter):
 # list rendered from the registry, JSON envelope output contract, native
 # opensweep_* MCP preference note).
 _SYSTEM_PROMPT = build_system_prompt("cli_tracking")
+# The write contract for the local-LLM/OpenCode delivery loop (G1): edit + test
+# + commit in the sandbox, native opensweep_* MCP tools, no envelope.
+_SYSTEM_PROMPT_WRITE = build_system_prompt("cli_tracking_write")
 
 
 def _instruction(req: DispatchRequest, wall_ceiling: int | None = None) -> str:
@@ -661,6 +676,38 @@ run_uid: {req.run_uid}
 
 Investigate only. Record bugs, gaps, and improvements through the final
 JSON tool_calls envelope; persist durable facts with write_memory.
+"""
+
+
+def _write_instruction(req: DispatchRequest, wall_ceiling: int | None = None) -> str:
+    """Implement/fix instruction for the write-capable tracking loop (OpenCode).
+
+    Unlike `_instruction` (investigate-only + envelope), this tells the agent to
+    make the change and COMMIT it in the sandbox clone; the platform validates
+    the commits and pushes. No JSON envelope — the agent uses its native tools to
+    edit files and its native opensweep_* MCP tools to report."""
+    return f"""# Run
+
+repository_uid: {req.repository_uid}
+run_uid: {req.run_uid}
+
+# Intent
+
+{req.intent}
+
+# Target
+
+```json
+{json.dumps(req.target or {}, indent=2)}
+```
+
+{req.context or ""}
+
+{stance_block(req.policy, wall_ceiling, req.effort, write_run=True)}
+
+Make the change described in the intent, run the relevant tests, and COMMIT it
+in this working copy. Do NOT push. Finish by calling
+`opensweep_platform_complete_run` with your end-of-run report.
 """
 
 

@@ -45,7 +45,6 @@ from domains.runs.models import Run
 from domains.runs.schemas import (
     Effort,
     ExecutionMode,
-    Executor,
     RunTrigger,
 )
 from domains.runs.services.lifecycle import trigger_run
@@ -352,7 +351,9 @@ async def _dispatch_implement(
             "doc_uids": target_doc_uids,
         },
         linked_ticket_uid=ticket.uid,
-        executor=Executor.CLAUDE_CODE,
+        # executor=None: resolve the write-capable executor from the repo's
+        # provider (claude_code or opencode) — the local-LLM delivery loop.
+        executor=None,
         execution_mode=ExecutionMode.IMPLEMENT,
         run_policy_uid=run_policy.uid,
         effort=Effort.NORMAL.value,

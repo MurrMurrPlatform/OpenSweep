@@ -33,7 +33,6 @@ from domains.findings.models import Finding
 from domains.runs.models import Run
 from domains.runs.schemas import (
     ExecutionMode,
-    Executor,
     Effort,
     RunTrigger,
 )
@@ -213,7 +212,9 @@ async def trigger_fix_run(
                     "doc_uids": target_doc_uids,
                 },
                 linked_pr_uid=pr.uid,
-                executor=Executor.CLAUDE_CODE,
+                # executor=None: resolve the write-capable executor from the
+                # repo's provider (claude_code or opencode) — the local-LLM loop.
+                executor=None,
                 execution_mode=ExecutionMode.IMPLEMENT,
                 run_policy_uid=run_policy.uid,
                 effort=Effort.NORMAL.value,
