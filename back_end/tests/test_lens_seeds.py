@@ -34,7 +34,15 @@ _EXPECTED_LOCAL = {
     "performance",
     "legacy-patterns",
 }
-_EXPECTED_GLOBAL = {"architecture-review", "implementation-gaps"}
+_EXPECTED_GLOBAL = {
+    "architecture-review",
+    "implementation-gaps",
+    # The two analyses a SCOPED run cannot do by construction: an area
+    # run sees one end of a duplicated helper or a drifted contract and
+    # has to assume the other.
+    "duplication-and-dead-code",
+    "contract-drift",
+}
 
 
 # ── pure: the seed specs ────────────────────────────────────────────────────

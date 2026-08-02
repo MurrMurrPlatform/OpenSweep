@@ -77,7 +77,15 @@ DEFAULT_LENSES_BY_KIND: dict[str, tuple[str, ...]] = {
         "legacy-patterns", "refactor-opportunities", "simplification", "test-gaps",
     ),
     "feature": ("implementation-gaps",),
-    "global": ("architecture-review", "implementation-gaps"),
+    # Each global key needs BOTH a Lens carrying it as `global_agent_key` AND
+    # a seeded variant Agent at that slug — _dispatch_global raises
+    # LifecycleError otherwise and the part fails.
+    "global": (
+        "architecture-review",
+        "implementation-gaps",
+        "duplication-and-dead-code",
+        "contract-drift",
+    ),
 }
 
 

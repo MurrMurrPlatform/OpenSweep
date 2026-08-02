@@ -67,6 +67,11 @@ def _target(campaign, part: dict, **extra: Any) -> dict[str, Any]:
         "campaign_uid": campaign.uid,
         "campaign_part": int(part["idx"]),
         "area_keys": [str(k) for k in (part.get("area_keys") or [])],
+        # The lenses this part was assigned. Carried so the dispatch side can
+        # honour `Lens.wants` (lifecycle._run_wants_static_analysis) instead
+        # of running every analyzer for every run regardless of what the
+        # lenses actually asked for.
+        "lens_keys": [str(k) for k in (part.get("lens_keys") or [])],
         **extra,
     }
 

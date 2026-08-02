@@ -476,6 +476,81 @@ _VARIANTS: dict[str, dict] = {
             "result — report it rather than inventing problems."
         ),
     },
+    "duplication-and-dead-code": {
+        "title": "Duplication and dead code",
+        "description": "Whole-repo cleanup sweep: logic implemented twice, exports and modules "
+        "nothing imports, unused dependencies; confirms analyzer leads before filing.",
+        "stage": "ask",
+        "produces": "findings",
+        "default_effort": "deep",
+        "tags": ["opensweep-variant", "ask", "audit", "cleanup", "deep"],
+        "body": (
+            "Whole-repo sweep for code that exists twice, or exists for nobody.\n"
+            "\n"
+            "Global by necessity, not preference: an area run is scoped to its own\n"
+            "paths, so a helper duplicated across two subsystems — or exported in\n"
+            "one and unused in all of them — cannot be seen from inside either. You\n"
+            "are the only pass that sees both ends.\n"
+            "\n"
+            "Start with the escalation queue: open findings tagged\n"
+            "escalate:duplication-and-dead-code. Verify each against the current\n"
+            "code, then expand it into an evidenced finding or record why it does\n"
+            "not hold.\n"
+            "\n"
+            "Then sweep for:\n"
+            "- Duplicate logic: the same problem solved in two or more places. Name\n"
+            "  every site and which one should own it.\n"
+            "- Dead exports and modules: nothing imports them, no entry point\n"
+            "  reaches them, no test exercises them.\n"
+            "- Unused dependencies declared in the manifest.\n"
+            "- Parallel hierarchies that must always be edited together.\n"
+            "\n"
+            "Analyzer candidates in your context are LEADS. vulture and knip cannot\n"
+            "see dynamic dispatch, plugin registries, entry points, or reflection,\n"
+            "so a candidate is a place to look, never a finding by itself. Confirm\n"
+            "unreachability yourself and state how you confirmed it. File\n"
+            "kind=improvement listing every affected path.\n"
+            "\n"
+            "A repository with no real duplication is a valid verdict — report it\n"
+            "rather than filing near-misses."
+        ),
+    },
+    "contract-drift": {
+        "title": "Contract drift",
+        "description": "Whole-repo sweep comparing both ends of every interface: routes vs "
+        "clients, migrations vs models, config keys read vs set, event payloads.",
+        "stage": "ask",
+        "produces": "findings",
+        "default_effort": "deep",
+        "tags": ["opensweep-variant", "ask", "audit", "architecture", "deep"],
+        "body": (
+            "Whole-repo sweep for interfaces whose two ends have drifted apart.\n"
+            "\n"
+            "Every contract here has ends in different subsystems, which is exactly\n"
+            "why a scoped run cannot check one: it sees the definition or the use\n"
+            "and has to assume the other is consistent. You check both.\n"
+            "\n"
+            "Start with the escalation queue: open findings tagged\n"
+            "escalate:contract-drift. Verify each against the current code first.\n"
+            "\n"
+            "Then compare, wherever this repository has them:\n"
+            "- Server routes against the client that calls them: path, method,\n"
+            "  payload shape, status codes, nullability, pagination.\n"
+            "- Schema and migration state against the models and queries that assume\n"
+            "  it — a column dropped in a migration but still read, a field added\n"
+            "  and never backfilled, a constraint the code relies on but nothing\n"
+            "  creates.\n"
+            "- Config and environment keys the code READS against those documented,\n"
+            "  defaulted, or actually set in deployment. Both directions are bugs: a\n"
+            "  key read but never set, and a key set but never read.\n"
+            "- Event, queue and webhook payloads against every producer and consumer.\n"
+            "\n"
+            "Every finding cites BOTH ends — where it is defined and where it is\n"
+            "used — and says which side is wrong. Deliberate, documented drift (a\n"
+            "versioned endpoint kept for backward compatibility) is not a finding.\n"
+            "A repository whose contracts all line up is a valid verdict."
+        ),
+    },
     "implementation-gaps": {
         "title": "Implementation gaps",
         "description": "Promise-vs-reality sweep: what the product/docs/README claim vs what "
