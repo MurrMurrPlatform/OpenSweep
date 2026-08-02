@@ -270,8 +270,9 @@ mode:           {mode}
 Investigate and emit a single JSON envelope at the end of your response
 listing the platform tool calls you want the server to execute. The envelope
 must include at least one durable output call: a `create_finding`,
-`propose_doc_edit`, or `write_memory`. If no actionable issue exists,
-create a low-severity observation finding that states what was checked.
+`propose_doc_edit`, `write_memory`, or a `confirm_doc_current` /
+`confirm_area_current` review stamp. Only if the envelope would otherwise be
+empty, create a low-severity observation finding that states what was checked.
 """
 
 

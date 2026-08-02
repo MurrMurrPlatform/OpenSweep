@@ -2150,6 +2150,9 @@ export interface AreaHealthRowDTO {
   last_checked?: string | null
   outcome: string
   revision: string
+  /** Provenance of the stamp behind `last_checked`. Non-'reported' means a run
+   *  was aimed at these paths without reporting what it actually examined. */
+  coverage_source: 'reported' | 'inferred' | 'unknown'
 }
 
 /** A doc page no area covers — surfaced so it doesn't vanish with the Health page. */
@@ -2266,6 +2269,9 @@ export interface AreaCoverageStamp {
   outcome: string
   checked_at: string | null
   lens_verdicts: { lens: string; verdict: string; note?: string }[]
+  /** 'reported' is the agent's own coverage contract; 'inferred'/'unknown' mean
+   *  these are the run's dispatched paths — where it was aimed, not what it read. */
+  coverage_source: 'reported' | 'inferred' | 'unknown'
 }
 
 /** GET /areas/{uid}/detail — everything the area detail page renders. */

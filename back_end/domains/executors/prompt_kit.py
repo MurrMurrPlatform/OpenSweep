@@ -135,10 +135,27 @@ Skip the search steps only when the intent explicitly says to."""
 
 # The no-actionable-finding-is-valid rule — identical wording in the MCP and
 # envelope flavors of the durable-output rules.
-NO_ACTIONABLE_FINDING_RULE = """If you find no actionable issue, still call `create_finding` once with
+_NO_ACTIONABLE_FINDING_TEMPLATE = """Every run must leave at least one durable result: a Finding, a doc/area edit
+proposal, or a review stamp (`confirm_doc_current` / `confirm_area_current`)
+when verification is the explicit run goal. A document run that read twelve
+pages and confirmed all twelve has already met this — do NOT add a filler
+observation on top of it.
+
+Only when you would otherwise leave NO durable result at all, {action} with
 kind=`observation`, severity=`low`, subtype=`no-actionable-finding`, and
-evidence describing what you checked. Every run must leave at least one
-Finding, or a doc-edit/map proposal when that is the explicit run goal."""
+evidence describing what you checked."""
+
+# Two renderings of one rule. MCP executors call tools live; envelope executors
+# emit them in a JSON trailer. This used to be a `.replace()` on the rendered
+# MCP text, which silently no-ops the moment the wording drifts — and did,
+# shipping "call the tool" phrasing to envelope executors. A format slot cannot
+# fail silently: a renamed placeholder raises KeyError at import.
+NO_ACTIONABLE_FINDING_RULE = _NO_ACTIONABLE_FINDING_TEMPLATE.format(
+    action="call `create_finding` once"
+)
+NO_ACTIONABLE_FINDING_RULE_ENVELOPE = _NO_ACTIONABLE_FINDING_TEMPLATE.format(
+    action="include one `create_finding` envelope entry"
+)
 
 DURABLE_OUTPUT_RULES = (
     """You MUST record durable output through OpenSweep tools. For every bug, docs
@@ -279,10 +296,7 @@ Your JSON envelope MUST contain durable OpenSweep output. Include
 or improvement you discover; do not finish with an empty `tool_calls` array.
 
 """
-    + NO_ACTIONABLE_FINDING_RULE.replace(
-        "still call `create_finding` once with",
-        "still include one `create_finding` envelope entry with",
-    )
+    + NO_ACTIONABLE_FINDING_RULE_ENVELOPE
 )
 
 _ENVELOPE_CONTRACT_CLI = (
@@ -324,10 +338,7 @@ JSON envelope; list only the calls you could not make plus the closing
 call in the envelope as described above.
 
 """
-    + NO_ACTIONABLE_FINDING_RULE.replace(
-        "still call `create_finding` once with",
-        "still include one `create_finding` envelope entry with",
-    )
+    + NO_ACTIONABLE_FINDING_RULE_ENVELOPE
 )
 
 

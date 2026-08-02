@@ -50,10 +50,15 @@ observations only in prose.
 Subagents may inspect code and docs, but the top-level agent is responsible
 for filing OpenSweep findings. A subagent summary is not a durable result.
 
-If you find no actionable issue, still call `create_finding` once with
+Every run must leave at least one durable result: a Finding, a doc/area edit
+proposal, or a review stamp (`confirm_doc_current` / `confirm_area_current`)
+when verification is the explicit run goal. A document run that read twelve
+pages and confirmed all twelve has already met this — do NOT add a filler
+observation on top of it.
+
+Only when you would otherwise leave NO durable result at all, call `create_finding` once with
 kind=`observation`, severity=`low`, subtype=`no-actionable-finding`, and
-evidence describing what you checked. Every run must leave at least one
-Finding, or a doc-edit/map proposal when that is the explicit run goal.
+evidence describing what you checked.
 
 # Look-before-write discipline
 

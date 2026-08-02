@@ -36,25 +36,40 @@ def _outcome_for_run(*, status: str, findings_count: int) -> str:
 
 def _coverage_fields(
     *, usage: dict[str, Any], target: dict[str, Any]
-) -> tuple[list[str], list[str], list[dict[str, Any]]]:
-    """(covered_paths, skipped_paths, lens_verdicts) for a run's stamps.
+) -> tuple[list[str], list[str], list[dict[str, Any]], str]:
+    """(covered_paths, skipped_paths, lens_verdicts, coverage_source).
 
     Agent-reported coverage (usage["coverage"], written by complete_run) wins;
     when the agent didn't report covered_paths we fall back to the dispatched
     target paths — the run was pointed there, so that is the best available
-    claim of what it looked at. Pure for testability."""
+    claim of what it looked at.
+
+    That fallback is a guess, not evidence: a run that read one page of a
+    35-page scope still lands the whole scope in covered_paths. It stays
+    (dropping it would blank the area coverage strip for every run that omits
+    the contract) but is labelled `coverage_source="inferred"` so a reader can
+    tell the two apart — the areas board and the coverage strip badge it
+    "scope only".
+
+    The label is deliberately NOT used to rank or filter anywhere: it records
+    whether the model complied with the coverage contract, not which dispatch
+    path a run took, so ranking on it ranks on prompt compliance. See
+    audit_selection.coverage_recency_for for the worked argument. Pure for
+    testability."""
     coverage = dict(usage.get("coverage") or {})
 
     def _paths(value: Any) -> list[str]:
         # Shape guard: a stray string here would iterate per character.
         return [str(p) for p in (value if isinstance(value, (list, tuple)) else []) if p]
 
+    source = "reported"
     covered = _paths(coverage.get("covered_paths"))
     if not covered:
         covered = _paths(target.get("paths"))
+        source = "inferred"
     skipped = _paths(coverage.get("skipped_paths"))
     verdicts = [v for v in (coverage.get("lens_verdicts") or []) if isinstance(v, dict)]
-    return covered, skipped, verdicts
+    return covered, skipped, verdicts, source
 
 
 async def record_for_run(*, run_uid: str) -> list[Checked]:
@@ -95,7 +110,7 @@ async def record_for_run(*, run_uid: str) -> list[Checked]:
     revision = await _repository_revision(repo, run=run)
     outcome = _outcome_for_run(status=run.status or "", findings_count=len(findings))
     now = run.completed_at or datetime.now(UTC)
-    covered_paths, skipped_paths, lens_verdicts = _coverage_fields(
+    covered_paths, skipped_paths, lens_verdicts, coverage_source = _coverage_fields(
         usage=dict(run.usage or {}), target=target
     )
 
@@ -112,6 +127,7 @@ async def record_for_run(*, run_uid: str) -> list[Checked]:
             covered_paths=covered_paths,
             skipped_paths=skipped_paths,
             lens_verdicts=lens_verdicts,
+            coverage_source=coverage_source,
         )
         await c.save()
         stamps.append(c)

@@ -39,7 +39,9 @@ async def list_repositories(
 
 
 @router.get(
-    "/by-slug/{slug}",
+    # Repository slugs are "owner/name" shaped and stored unslugified, so the
+    # default `[^/]+` convertor never matches a real one.
+    "/by-slug/{slug:path}",
     response_model=RepositoryDTO,
     operation_id="opensweep_get_repository_by_slug",
 )

@@ -88,9 +88,25 @@ export const useDocStore = defineStore('docs', () => {
     return doc
   }
 
+  /** Replace a page in `list`, keeping its pending-edit badge honest.
+   *
+   *  Only `list_docs` computes `pending_edits` — every single-doc endpoint
+   *  returns the DocDTO default of 0 (`doc_to_dto(d, *, pending_edits=0)`).
+   *  Dropping the replaced entry in wholesale therefore zeroes the badge on any
+   *  page with proposals waiting. `delta` is for operations that actually
+   *  consume an edit.
+   */
+  function replaceDoc(doc: DocDTO, { delta = 0 }: { delta?: number } = {}): void {
+    list.value = list.value.map((d) =>
+      d.uid === doc.uid
+        ? { ...doc, pending_edits: Math.max(0, d.pending_edits + delta) }
+        : d,
+    )
+  }
+
   async function update(uid: string, req: UpdateDocRequest & { body?: string }): Promise<DocDTO> {
     const doc = await apiPut<DocDTO>(`/docs/${uid}`, req)
-    list.value = list.value.map((d) => (d.uid === uid ? doc : d))
+    replaceDoc(doc)
     return doc
   }
 
@@ -99,9 +115,16 @@ export const useDocStore = defineStore('docs', () => {
     list.value = list.value.filter((d) => d.uid !== uid)
   }
 
+  /** "I read it; the page is still right" — clears stale without a no-op edit. */
+  async function confirmCurrent(uid: string): Promise<DocDTO> {
+    const doc = await apiPost<DocDTO>(`/docs/${uid}/confirm-current`)
+    replaceDoc(doc)
+    return doc
+  }
+
   async function setPinned(uid: string, pinned: boolean): Promise<DocDTO> {
     const doc = await apiPost<DocDTO>(`/docs/${uid}/pin`, { pinned })
-    list.value = list.value.map((d) => (d.uid === uid ? doc : d))
+    replaceDoc(doc)
     return doc
   }
 
@@ -209,9 +232,14 @@ export const useDocStore = defineStore('docs', () => {
   async function acceptEdit(uid: string): Promise<DocDTO> {
     const doc = await apiPost<DocDTO>(`/doc-edits/${uid}/accept`)
     edits.value = edits.value.filter((e) => e.uid !== uid)
-    list.value = list.value.some((d) => d.uid === doc.uid)
-      ? list.value.map((d) => (d.uid === doc.uid ? doc : d))
-      : [...list.value, doc]
+    if (list.value.some((d) => d.uid === doc.uid)) {
+      // This accept consumed one pending edit — decrement rather than preserve.
+      // (bulkAccept refetches the list, so it needs no equivalent.)
+      replaceDoc(doc, { delta: -1 })
+    } else {
+      // A new-page proposal: the page did not exist, so 0 pending is correct.
+      list.value = [...list.value, doc]
+    }
     return doc
   }
 
@@ -245,6 +273,7 @@ export const useDocStore = defineStore('docs', () => {
     create,
     update,
     remove,
+    confirmCurrent,
     setPinned,
     draft,
     verify,

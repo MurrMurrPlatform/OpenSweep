@@ -134,6 +134,10 @@ class AreaCoverageDTO(BaseModel):
     outcome: str = ""
     checked_at: datetime | None = None
     lens_verdicts: list[dict] = Field(default_factory=list)
+    # reported | inferred | unknown — "reported" is the only value backed by the
+    # agent's own coverage contract. The other two mean the paths are the run's
+    # dispatched scope, so this row says where a run was aimed, not what it read.
+    coverage_source: str = "unknown"
 
 
 class AreaHealthRowDTO(BaseModel):
@@ -183,6 +187,11 @@ class AreaHealthRowDTO(BaseModel):
     last_checked: datetime | None = None
     outcome: str = ""
     revision: str = ""
+    # reported | inferred | unknown for THAT stamp. Non-"reported" means the
+    # covered paths are the run's dispatched scope, so `last_checked` records
+    # that a run was aimed here — not that it read this. The summary tiles
+    # deliberately still count it as coverage (see area_health).
+    coverage_source: str = "unknown"
 
 
 class UnassignedDocDTO(BaseModel):

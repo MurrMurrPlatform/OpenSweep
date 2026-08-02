@@ -417,6 +417,11 @@ async def area_detail(a: Area) -> AreaDetailDTO:
             outcome=c.outcome or "",
             checked_at=c.checked_at,
             lens_verdicts=[v for v in (c.lens_verdicts or []) if isinstance(v, dict)],
+            # Stamps predating m0022 have no coverage_source in the DB at all;
+            # neomodel inflates a defaulted property to its default, so they
+            # arrive as "unknown" rather than missing. The `or` only guards a
+            # stored empty string.
+            coverage_source=c.coverage_source or "unknown",
         )
         for c in await checked_service.stamps_for_paths(
             a.repository_uid, coverage_scope, limit=10

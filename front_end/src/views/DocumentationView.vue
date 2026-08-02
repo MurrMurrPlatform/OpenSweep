@@ -252,6 +252,24 @@ function selectFeature(uid: string) {
 
 const staleDocs = computed(() => docs.list.filter((d) => d.stale && !d.archived))
 
+/** Confirm-current: clear stale after reading a page, without inventing a
+ *  no-op edit just to move the badge. Mirrors the Areas board. */
+const confirmingUid = ref('')
+
+async function confirmCurrent(doc: DocDTO) {
+  if (confirmingUid.value) return
+  confirmingUid.value = doc.uid
+  try {
+    await docs.confirmCurrent(doc.uid)
+    toast.success('Marked reviewed', `${doc.slug} is current as of now`)
+  } catch (e: unknown) {
+    const msg = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
+    toast.error('Couldn’t confirm', msg)
+  } finally {
+    confirmingUid.value = ''
+  }
+}
+
 /** Rough token estimate for the combined pinned pages agents see every run. */
 const pinnedTokenEstimate = computed(() => {
   const chars = docs.list.filter((d) => d.pinned).reduce((sum, d) => sum + d.body.length, 0)
@@ -1142,6 +1160,15 @@ async function confirmDeleteMemory() {
                     {{ path }}
                   </li>
                 </ul>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  class="mt-2.5"
+                  :disabled="confirmingUid === selected.uid"
+                  @click="confirmCurrent(selected)"
+                >
+                  {{ confirmingUid === selected.uid ? 'Marking…' : 'Still accurate' }}
+                </Button>
               </div>
 
               <template v-if="editing">

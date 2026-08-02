@@ -48,7 +48,13 @@ async def read_list_docs(
 
 
 @router.get(
-    "/docs/{slug}",
+    # `{slug:path}`, not `{slug}` — doc slugs are path-like
+    # ("backend/queue-workers", doc_service.normalize_slug keeps the "/"), and
+    # the default `str` convertor is `[^/]+`, so every folder page 404'd at the
+    # router before the service was reached. FastAPI's OpenAPI path_format still
+    # renders this as `/docs/{slug}`, which is the literal fastapi-mcp
+    # substitutes into, so the generated tool keeps working unchanged.
+    "/docs/{slug:path}",
     operation_id="opensweep_platform_read_doc",
 )
 async def read_doc(

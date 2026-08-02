@@ -688,8 +688,10 @@ bugs/gaps/improvements, `propose_*` tools for structural/doc proposals,
 and `attach_artifact` for logs, traces, or notes.
 
 Before finishing, verify that the top-level agent has called at least one
-OpenSweep write tool. If there are no actionable findings, create a low-severity
-observation finding that explains what was checked. Finish with
+OpenSweep write tool — a finding, a `propose_*` edit, or a
+`confirm_doc_current`/`confirm_area_current` review stamp all count. Only if
+none of those happened, create a low-severity observation finding that
+explains what was checked. Finish with
 `complete_run`, reporting what you did, skipped, what succeeded, what
 failed, and next steps.
 """

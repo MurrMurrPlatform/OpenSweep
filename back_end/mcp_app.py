@@ -94,6 +94,7 @@ OPENSWEEP_PLATFORM_TOOL_OPERATIONS = [
     "opensweep_platform_propose_doc_edit",
     "opensweep_platform_propose_area_edit",
     "opensweep_platform_confirm_doc_current",
+    "opensweep_platform_confirm_area_current",
     "opensweep_platform_write_memory",
     "opensweep_platform_attach_artifact",
     "opensweep_platform_complete_run",
@@ -215,9 +216,10 @@ def mount_mcp(app: FastAPI) -> None:
             name="OpenSweep Platform Tools",
             description=(
                 "Platform tool surface — the write tools (create_finding, "
-                "update_finding, propose_doc_edit, confirm_doc_current, "
-                "write_memory, attach_artifact, complete_run) that "
-                "delegated executors call to push structured output back."
+                "update_finding, propose_doc_edit, propose_area_edit, "
+                "confirm_doc_current, confirm_area_current, write_memory, "
+                "attach_artifact, complete_run) that delegated executors call "
+                "to push structured output back."
             ),
             include_operations=OPENSWEEP_PLATFORM_TOOL_OPERATIONS,
             headers=MCP_FORWARD_HEADERS,

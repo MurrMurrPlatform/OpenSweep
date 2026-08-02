@@ -79,14 +79,26 @@ function docsTitle(h: AreaHealthRowDTO): string {
         </span>
       </span>
 
-      <Badge
-        v-if="props.health.last_checked"
-        :variant="outcomeVariant(props.health.outcome)"
-        class="px-1.5 text-[10px]"
-        :title="`Last audited ${daysAgo(props.health.last_checked)}${props.health.revision ? ` at ${props.health.revision.slice(0, 7)}` : ''}`"
-      >
-        {{ props.health.outcome }} · {{ daysAgo(props.health.last_checked) }}
-      </Badge>
+      <!-- Both badges live inside the v-if so the "never audited" v-else stays
+           bound to `last_checked`. Vue pairs v-else with the nearest preceding
+           v-if sibling, so a second v-if between them would steal it. -->
+      <template v-if="props.health.last_checked">
+        <Badge
+          :variant="outcomeVariant(props.health.outcome)"
+          class="px-1.5 text-[10px]"
+          :title="`Last audited ${daysAgo(props.health.last_checked)}${props.health.revision ? ` at ${props.health.revision.slice(0, 7)}` : ''}`"
+        >
+          {{ props.health.outcome }} · {{ daysAgo(props.health.last_checked) }}
+        </Badge>
+        <Badge
+          v-if="props.health.coverage_source !== 'reported'"
+          variant="outline"
+          class="px-1.5 text-[10px]"
+          title="That run was aimed at these paths but did not report what it examined — treat the coverage as unverified"
+        >
+          scope only
+        </Badge>
+      </template>
       <Badge
         v-else
         variant="outline"

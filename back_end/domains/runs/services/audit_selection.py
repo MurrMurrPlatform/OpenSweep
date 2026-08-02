@@ -140,7 +140,26 @@ def path_recency(stamps: list[dict]) -> dict[str, datetime]:
 
 async def coverage_recency_for(repository_uid: str) -> dict[str, datetime]:
     """path_recency over the repository's Checked stamps — campaign rotation
-    planning ranks areas by their least-recently-covered scope path."""
+    planning ranks areas by their least-recently-covered scope path.
+
+    Rotation deliberately does NOT discount stamps whose `coverage_source` is
+    "inferred"/"unknown", even though those paths are where a run was aimed
+    rather than what it read. Two reasons, both load-bearing:
+
+    1. `coverage_source` does not track the dispatch path. Campaign parts
+       already carry `_REPORTING_CONTRACT` (campaigns/services/part_dispatch.py)
+       asking for covered_paths, so the label records whether the MODEL complied
+       — ranking on it would rank on prompt compliance.
+    2. Any absolute penalty breaks round-robin. Recency here is the only memory
+       rotation has of what it already dispatched, so aging a stamp by a
+       constant pins an inferred-only area's apparent age at that constant no
+       matter how often it is audited: auditing it never retires it from the
+       queue. Simulated over weekly ticks, a 30-day penalty starved the areas
+       whose agents DID report by ~4x — an incentive to report less.
+
+    Honesty about coverage belongs where a human reads it (the areas board and
+    coverage strip badge non-reported stamps "scope only"), not in this ranker.
+    """
     stamps = [
         {
             "covered_paths": list(c.covered_paths or []),
