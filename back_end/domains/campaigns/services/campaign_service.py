@@ -211,6 +211,10 @@ async def _area_map_inputs(repository_uid: str) -> dict | None:
             # selector and generate-specs targeting both read these.
             "stale": area_is_stale(a),
             "has_spec": bool((a.spec or "").strip()),
+            # The audit-recency selector (selection="unaudited") compares this
+            # against the area's Checked coverage, which is a different
+            # question from `stale` (code moved since the MAP was reviewed).
+            "code_changed_at": a.code_changed_at,
         }
 
     subsystems = [a for a in rows if (a.kind or "subsystem") == "subsystem"]
@@ -460,7 +464,9 @@ async def _plan_parts(
                 # stalest path).
                 areas = planner.bundle_siblings(areas)
             path_recency = None
-            if selection == "rotation":
+            if selection in ("rotation", "unaudited"):
+                # Rotation ranks by it; unaudited compares it against each
+                # area's code_changed_at.
                 path_recency = await coverage_recency_for(repository_uid)
             parts = planner.build_plan_by_kind(
                 "subsystem",

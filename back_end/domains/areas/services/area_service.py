@@ -453,6 +453,9 @@ async def area_detail(a: Area) -> AreaDetailDTO:
             # arrive as "unknown" rather than missing. The `or` only guards a
             # stored empty string.
             coverage_source=c.coverage_source or "unknown",
+            covered_paths_observed=[
+                str(p) for p in (c.covered_paths_observed or []) if p
+            ],
         )
         for c in await checked_service.stamps_for_paths(
             a.repository_uid, coverage_scope, limit=10

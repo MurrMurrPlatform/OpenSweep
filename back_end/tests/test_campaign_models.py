@@ -72,7 +72,9 @@ def test_campaign_kinds_constant():
 
 
 def test_campaign_selections_constant():
-    assert CAMPAIGN_SELECTIONS == {"all", "stale", "rotation"}
+    # `stale` and `unaudited` answer different questions: code moved since the
+    # area MAP was last reviewed, vs since the area was last AUDITED.
+    assert CAMPAIGN_SELECTIONS == {"all", "stale", "unaudited", "rotation"}
 
 
 # ---------------------------------------------------------------------------

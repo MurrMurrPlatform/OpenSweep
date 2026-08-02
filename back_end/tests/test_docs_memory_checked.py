@@ -68,7 +68,7 @@ def test_checked_stamp_carries_agent_reported_coverage():
     # complete_run stored the coverage contract on usage["coverage"]; the
     # stamp must carry it so freshness reflects what was ACTUALLY examined.
     verdicts = [{"lens": "bugs", "verdict": "checked-clean"}]
-    covered, skipped, lenses, source = _coverage_fields(
+    covered, skipped, lenses, source, observed, unknown = _coverage_fields(
         usage={
             "coverage": {
                 "covered_paths": ["src/a.py"],
@@ -79,9 +79,12 @@ def test_checked_stamp_carries_agent_reported_coverage():
         target={"paths": ["src/"]},
     )
     assert covered == ["src/a.py"]  # agent's report wins over the target
-    assert skipped == ["src/vendored/"]
+    assert skipped == ["src/vendored"]  # normalized (trailing slash dropped)
     assert lenses == verdicts
     assert source == "reported"
+    # No tool-call evidence supplied, so nothing is claimed as measured.
+    assert observed == []
+    assert unknown == []
 
 
 def _stamp(uid, covered, *, repo="r1", days_ago=0):
@@ -140,19 +143,54 @@ async def test_stamps_for_paths_limits_and_handles_empty_inputs(monkeypatch):
 def test_checked_stamp_falls_back_to_target_paths_without_a_report():
     # Agent didn't report coverage — the dispatched scope is the best
     # available claim of what it looked at; lens_verdicts default empty.
-    covered, skipped, lenses, source = _coverage_fields(
+    covered, skipped, lenses, source, observed, _unknown = _coverage_fields(
         usage={}, target={"paths": ["src/", "tests/"]}
     )
-    assert covered == ["src/", "tests/"]
+    assert covered == ["src", "tests"]
     assert skipped == []
     assert lenses == []
+    assert observed == []
     # ...but the stamp must say so, so nothing reads the dispatched scope as
     # evidence the run actually examined it.
     assert source == "inferred"
     # Malformed inputs degrade to empty, never raise.
-    covered, _, lenses, source = _coverage_fields(
+    covered, _, lenses, source, _observed, _unknown = _coverage_fields(
         usage={"coverage": {"lens_verdicts": ["not-a-dict"]}},
         target={"paths": "not-a-list"},
     )
     assert covered == [] and lenses == []
     assert source == "inferred"
+
+
+def test_observed_tool_calls_outrank_both_the_claim_and_the_scope():
+    """Measurement beats assertion. The claim is still stored — the gap
+    between the two is the number worth looking at — but the stamp says which
+    one it rests on."""
+    covered, _skipped, _lenses, source, observed, _unknown = _coverage_fields(
+        usage={"coverage": {"covered_paths": ["src/"]}},
+        target={"paths": ["src/"]},
+        observed=["src/a.py", "src/b.py"],
+    )
+    assert source == "observed"
+    assert observed == ["src/a.py", "src/b.py"]
+    assert covered == ["src"]  # claim survives alongside it, normalized
+
+
+def test_a_claim_naming_files_the_repo_does_not_have_is_dropped():
+    covered, _skipped, _lenses, _source, _observed, unknown = _coverage_fields(
+        usage={"coverage": {"covered_paths": ["src/real.py", "src/imagined.py"]}},
+        target={},
+        tree=["src/real.py", "src/other.py"],
+    )
+    assert covered == ["src/real.py"]
+    assert unknown == ["src/imagined.py"]
+
+
+def test_an_unavailable_tree_drops_nothing():
+    """None means "could not check", not "nothing exists" — a torn-down
+    workspace must never retroactively invalidate an honest report."""
+    covered, _skipped, _lenses, _source, _observed, unknown = _coverage_fields(
+        usage={"coverage": {"covered_paths": ["src/a.py"]}}, target={}, tree=None
+    )
+    assert covered == ["src/a.py"]
+    assert unknown == []

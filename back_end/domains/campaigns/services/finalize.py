@@ -74,6 +74,48 @@ def _feature_rollup(parts: list[dict]) -> list[dict]:
     return out
 
 
+def _lens_rollup(parts: list[dict]) -> list[dict]:
+    """Per-lens verdict tallies across the campaign's parts. Pure.
+
+    `lens_verdicts` is what the coverage contract exists to collect — the
+    agent saying, per discipline, "checked and clean" / "checked, filed
+    something" / "skipped". Every area run was asked for it, complete_run
+    validated it, and Checked stored it; then the digest discarded it and
+    reported finding COUNTS instead. "performance skipped in 4 of 11 parts"
+    is the honest coverage statement that was already being gathered.
+
+    A lens with no returned verdict counts as `missing`, deliberately NOT
+    folded into `skipped`: an agent saying "I skipped performance" and an
+    agent silently omitting it are different failures, and only the first is
+    the contract working.
+    """
+    tally: dict[str, dict] = {}
+    order: list[str] = []
+    for part in parts:
+        verdicts = {
+            str(v.get("lens") or ""): str(v.get("verdict") or "")
+            for v in (part.get("lens_verdicts") or [])
+            if isinstance(v, dict)
+        }
+        for lens in (str(k) for k in (part.get("lens_keys") or []) if k):
+            row = tally.get(lens)
+            if row is None:
+                row = {
+                    "lens": lens,
+                    "checked-clean": 0,
+                    "checked-findings": 0,
+                    "skipped": 0,
+                    "missing": 0,
+                    "parts": 0,
+                }
+                tally[lens] = row
+                order.append(lens)
+            row["parts"] += 1
+            verdict = verdicts.get(lens) or "missing"
+            row[verdict if verdict in row else "missing"] += 1
+    return [tally[lens] for lens in order]
+
+
 def build_summary(
     parts: list[dict],
     findings_by_part: dict[int, list[dict]],
@@ -113,12 +155,15 @@ def build_summary(
                     "title": p.get("title") or "",
                     "covered": int(p.get("covered") or 0),
                     "skipped": int(p.get("skipped") or 0),
+                    "observed": int(p.get("observed") or 0),
+                    "coverage_source": str(p.get("coverage_source") or "unknown"),
                     "state": p.get("state") or "pending",
                 }
                 for p in sorted(parts, key=lambda p: int(p["idx"]))
             ],
             "holes": list(holes),
             "feature_rollup": rollup,
+            "lens_rollup": _lens_rollup(parts),
         },
         "failed_parts": sorted(
             int(p["idx"]) for p in parts if p.get("state") == "failed"
@@ -151,24 +196,32 @@ async def finalize_campaign(campaign) -> None:
                 for f in matched
             ]
 
-    # Coverage counts from the runs' Checked stamps (complete_run contract).
-    coverage_by_run: dict[str, tuple[int, int]] = {}
+    # Coverage from the runs' Checked stamps (complete_run contract). The
+    # lens verdicts ride along: they are what the contract was collecting all
+    # along, and the digest used to drop them on the floor.
+    coverage_by_run: dict[str, dict] = {}
     try:
         for c in await Checked.nodes.filter(repository_uid=campaign.repository_uid):
             if c.run_uid in run_by_idx.values():
-                coverage_by_run[c.run_uid] = (
-                    len(c.covered_paths or []),
-                    len(c.skipped_paths or []),
-                )
+                coverage_by_run[c.run_uid] = {
+                    "covered": len(c.covered_paths or []),
+                    "skipped": len(c.skipped_paths or []),
+                    "observed": len(c.covered_paths_observed or []),
+                    "coverage_source": c.coverage_source or "unknown",
+                    "lens_verdicts": list(c.lens_verdicts or []),
+                }
     except Exception as exc:  # noqa: BLE001 — coverage counts are best-effort
         logger.warning(
             f"campaign {campaign.uid}: coverage stamps unavailable: {exc}",
             extra={"tag": "campaigns"},
         )
     for p in parts:
-        covered, skipped = coverage_by_run.get(p.get("run_uid") or "", (0, 0))
-        p["covered"] = covered
-        p["skipped"] = skipped
+        stamp = coverage_by_run.get(p.get("run_uid") or "") or {}
+        p["covered"] = int(stamp.get("covered") or 0)
+        p["skipped"] = int(stamp.get("skipped") or 0)
+        p["observed"] = int(stamp.get("observed") or 0)
+        p["coverage_source"] = stamp.get("coverage_source") or "unknown"
+        p["lens_verdicts"] = list(stamp.get("lens_verdicts") or [])
 
     holes = [
         path

@@ -399,6 +399,7 @@ def areas_from_map(
         # dicts that already carry the key.
         area["stale"] = bool(leaf.get("stale"))
         area["has_spec"] = bool(leaf.get("has_spec"))
+        area["code_changed_at"] = leaf.get("code_changed_at")
         out.append(area)
 
     health = {
@@ -488,6 +489,11 @@ def bundle_siblings(
             # look as soon as ANY of its leaves does.
             "stale": any(bool(a.get("stale")) for a in group),
             "has_spec": any(bool(a.get("has_spec")) for a in group),
+            # The bundle moved as recently as its most recently changed leaf.
+            "code_changed_at": max(
+                (a.get("code_changed_at") for a in group if a.get("code_changed_at")),
+                default=None,
+            ),
         }
 
     out: list[dict] = []
@@ -584,6 +590,28 @@ def _area_recency(
     return min(v for v in per_scope if v is not None)
 
 
+def _area_needs_reaudit(
+    area: dict, path_recency: dict[str, datetime | None], code_changed_at
+) -> bool:
+    """Has code moved under this area since its last completed audit? Pure.
+
+    The audit-recency counterpart to `freshness.is_stale`, and deliberately
+    the same asymmetric null handling:
+      - never audited, but code has changed → YES (nobody has ever looked).
+      - never audited and code never changed → no (a webhook has never
+        matched it; a repo with no push history must not enqueue everything).
+      - audited, code changed since → YES.
+
+    An area with an unaudited scope path counts as needing one: _area_recency
+    returns None when ANY scope path has no coverage, which is exactly the
+    "part of this area has never been looked at" case.
+    """
+    if code_changed_at is None:
+        return False
+    covered_at = _area_recency(area, path_recency)
+    return covered_at is None or code_changed_at > covered_at
+
+
 def _part(idx: int, kind: str, title: str, area: dict | None, lens_keys: list[str]) -> dict:
     a = area or {}
     # Bundles carry area_keys; feature areas a singular area_key;
@@ -626,7 +654,10 @@ def build_plan_by_kind(
 
     kind="subsystem": one kind="area" part per area, lens_keys = all enabled
         lenses. selection filters: all=every area; stale=areas where
-        area.get("stale"); rotation=k least-recently-covered via _area_recency.
+        area.get("stale") (code moved since the MAP was reviewed);
+        unaudited=areas where code moved since the last COMPLETED AUDIT
+        (_area_needs_reaudit — the two are different questions); rotation=k
+        least-recently-covered via _area_recency.
     kind="feature": one kind="feature" part per leaf in feature_areas, lens_keys
         = all enabled lenses. selection: all=every leaf; stale/rotation=stale
         leaves only.
@@ -654,6 +685,16 @@ def build_plan_by_kind(
     if kind == "subsystem":
         if selection == "stale":
             candidate_areas = [a for a in areas if a.get("stale")]
+        elif selection == "unaudited":
+            # Code moved under the area since its last COMPLETED audit —
+            # the audit-recency axis, not the map-review one. Areas never
+            # audited at all sort first (_area_recency returns None).
+            recency = path_recency or {}
+            candidate_areas = [
+                a
+                for a in areas
+                if _area_needs_reaudit(a, recency, a.get("code_changed_at"))
+            ]
         elif selection == "rotation":
             recency = path_recency or {}
             scored = [(i, _area_recency(a, recency)) for i, a in enumerate(areas)]

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import Iterable, Literal
 
+from domains.platform_tools.complete_run import LENS_VERDICT_VALUES
 from domains.platform_tools.dispatcher import tool_descriptions, tool_names
 from domains.runs.schemas import Effort, normalize_effort
 from infrastructure.code_graph import CODE_GRAPH_PROMPT
@@ -180,11 +181,44 @@ for filing OpenSweep findings. A subagent summary is not a durable result.
     + NO_ACTIONABLE_FINDING_RULE
 )
 
-COVERAGE_NOTE = """When the run has assigned lenses or an explicit path scope, also pass the
-coverage fields on `complete_run`: `covered_paths` (paths you actually
-inspected), `skipped_paths` (paths you did not reach), and `lens_verdicts`
-(one {"lens": …, "verdict": "checked-clean" | "checked-findings" | "skipped",
-"note": …} entry per lens)."""
+#: The verdict vocabulary, rendered from the set `complete_run` validates
+#: against so the prompt and the validator cannot drift. They used to be three
+#: hand-written copies, each carrying a comment asking the next editor to keep
+#: them in lockstep.
+_VERDICT_ENUM = " | ".join(f'"{v}"' for v in sorted(LENS_VERDICT_VALUES))
+
+COVERAGE_NOTE = f"""Always pass the coverage fields on `complete_run`: `covered_paths` (paths you
+actually inspected) and `skipped_paths` (in-scope paths you did not reach).
+This applies to WHOLE-REPO runs too — a sweep that honestly reports what it
+never got to is far more useful than one that reports nothing, and silence is
+read as "the dispatched scope was covered". When the run has assigned lenses,
+also pass `lens_verdicts` (one {{"lens": …, "verdict": {_VERDICT_ENUM},
+"note": …}} entry per lens)."""
+
+
+def coverage_contract(*, lens_keys: Iterable[str] = ()) -> str:
+    """Intent-level restatement of COVERAGE_NOTE, for the runs that most need it.
+
+    The system prompt carries COVERAGE_NOTE for every run; this rides the
+    code-owned `structural` slot, which lands after every guidance layer and
+    cannot be displaced by an org override. Campaign area parts always had it.
+    Whole-repo runs — global lens sweeps, deep scans, the seeded cron sweeps —
+    did not, which is precisely why the platform could never say what fraction
+    of a repository a "whole-repo" run actually looked at.
+    """
+    keys = [str(k) for k in lens_keys if k]
+    verdicts = "|".join(sorted(LENS_VERDICT_VALUES))
+    lens_clause = (
+        " and lens_verdicts — one entry per lens above "
+        "({lens, verdict: " + verdicts + ", note})"
+        if keys
+        else ""
+    )
+    return (
+        "When done, call complete_run with covered_paths (paths you actually "
+        "examined), skipped_paths (in-scope paths you did not)"
+        f"{lens_clause}."
+    )
 
 
 def _report_contract(*, write_run: bool = False) -> str:

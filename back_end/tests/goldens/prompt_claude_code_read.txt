@@ -121,10 +121,12 @@ did), `skipped` (what you skipped and why), `succeeded` (what succeeded),
 suggestions). One short sentence per entry; omit lists you have nothing
 for.
 
-When the run has assigned lenses or an explicit path scope, also pass the
-coverage fields on `complete_run`: `covered_paths` (paths you actually
-inspected), `skipped_paths` (paths you did not reach), and `lens_verdicts`
-(one {"lens": …, "verdict": "checked-clean" | "checked-findings" | "skipped",
+Always pass the coverage fields on `complete_run`: `covered_paths` (paths you
+actually inspected) and `skipped_paths` (in-scope paths you did not reach).
+This applies to WHOLE-REPO runs too — a sweep that honestly reports what it
+never got to is far more useful than one that reports nothing, and silence is
+read as "the dispatched scope was covered". When the run has assigned lenses,
+also pass `lens_verdicts` (one {"lens": …, "verdict": "checked-clean" | "checked-findings" | "skipped",
 "note": …} entry per lens).
 
 Before calling `complete_run`, check the report against what you actually

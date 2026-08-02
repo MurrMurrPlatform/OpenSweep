@@ -127,10 +127,12 @@ async def test_audit_without_areas_keeps_the_whole_repo_scope(
     assert result.runs_dispatched == ["run1"]
     assert dispatch_seams["trigger"]["target"] is None
     assert dispatch_seams["trigger"]["title"] == "Repository audit"
-    assert (
-        dispatch_seams["compose"]["structural"]
-        == "The whole repository (no doc-page scoping)."
-    )
+    structural = dispatch_seams["compose"]["structural"]
+    assert structural.startswith("The whole repository (no doc-page scoping).")
+    # A whole-repo audit carries the coverage contract too. Without it the
+    # platform cannot say what fraction of the repository the run reached, and
+    # reporting nothing gets recorded as having covered the dispatched scope.
+    assert "covered_paths" in structural and "skipped_paths" in structural
 
 
 async def test_endpoint_rejects_area_uids_combined_with_doc_selection(monkeypatch):

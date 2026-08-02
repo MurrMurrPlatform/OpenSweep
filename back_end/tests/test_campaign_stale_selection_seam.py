@@ -133,6 +133,55 @@ async def test_selection_all_is_unaffected_by_staleness(plan_seams):
 
 
 @pytest.mark.asyncio
+async def test_unaudited_selects_areas_whose_code_moved_since_the_last_audit(
+    plan_seams, monkeypatch
+):
+    """`stale` and `unaudited` are different questions. An area can be
+    perfectly mapped (never stale) and years out of audit — before this
+    selection existed there was no way to ask for it."""
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+    # Both areas are map-fresh; only `backend` was audited before its last
+    # code change.
+    plan_seams.rows.extend(
+        [_area_row("backend", stale=False), _area_row("frontend", stale=False)]
+    )
+    plan_seams.tree.extend(_files("backend") + _files("frontend"))
+
+    async def fake_recency(_repo):
+        return {
+            "src/backend": now - timedelta(days=90),  # audited long before
+            "src/frontend": now + timedelta(days=1),  # audited after
+        }
+
+    # Lazily imported inside _plan_parts, so patch it at the source module.
+    import domains.runs.services.audit_selection as audit_selection
+
+    monkeypatch.setattr(audit_selection, "coverage_recency_for", fake_recency)
+
+    parts = await _plan(selection="unaudited")
+
+    assert {p["title"] for p in parts} == {"Backend"}
+
+
+@pytest.mark.asyncio
+async def test_unaudited_includes_areas_never_audited_at_all(plan_seams, monkeypatch):
+    plan_seams.rows.append(_area_row("backend", stale=False))
+    plan_seams.tree.extend(_files("backend"))
+
+    async def fake_recency(_repo):
+        return {}  # no coverage stamps anywhere
+
+    # Lazily imported inside _plan_parts, so patch it at the source module.
+    import domains.runs.services.audit_selection as audit_selection
+
+    monkeypatch.setattr(audit_selection, "coverage_recency_for", fake_recency)
+
+    assert [p["title"] for p in await _plan(selection="unaudited")] == ["Backend"]
+
+
+@pytest.mark.asyncio
 async def test_a_bundle_is_stale_when_any_bundled_leaf_is(plan_seams):
     """Undersized siblings share one run, so the part needs a look as soon as
     any leaf in it does — otherwise bundling would hide staleness."""

@@ -339,7 +339,8 @@ async function create() {
               <SelectTrigger class="w-full"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All — every area in scope</SelectItem>
-                <SelectItem value="stale">Stale — code changed since last review</SelectItem>
+                <SelectItem value="stale">Stale — map not reviewed since the code changed</SelectItem>
+                <SelectItem value="unaudited">Unaudited — code changed since the last audit</SelectItem>
                 <SelectItem value="rotation">Rotation — k areas per pass</SelectItem>
               </SelectContent>
             </Select>

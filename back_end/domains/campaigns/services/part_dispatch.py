@@ -19,6 +19,7 @@ from domains.agents.services.composition import compose_agent_intent
 from domains.agents.services.dispatch import dispatch_agent
 from domains.agents.services.registry import system_agent_by_url, variant_source_url
 from domains.areas.services import area_service
+from domains.executors.prompt_kit import coverage_contract
 from domains.lenses.services import lens_service
 from domains.lenses.services.lens_service import lens_checklist
 from domains.run_policies.services.effort import ensure_policy_for_effort
@@ -57,14 +58,6 @@ def _scope_contract(campaign, part: dict) -> str:
     return "\n".join(lines)
 
 
-# Intent-level reinforcement of prompt_kit.COVERAGE_NOTE for the runs that
-# most need it — the verdict enum here must change in lockstep with it.
-_REPORTING_CONTRACT = (
-    "When done, call complete_run with covered_paths (paths you actually "
-    "examined), skipped_paths (in-scope paths you did not), and "
-    "lens_verdicts — one entry per lens above "
-    "({lens, verdict: checked-clean|checked-findings|skipped, note})."
-)
 
 
 def _target(campaign, part: dict, **extra: Any) -> dict[str, Any]:
@@ -147,7 +140,7 @@ async def _dispatch_area(campaign, part: dict, *, spec_block: str = "") -> str:
     blocks = [_scope_contract(campaign, part), lens_checklist(lenses)]
     if spec_block:
         blocks.append(spec_block)
-    blocks.append(_REPORTING_CONTRACT)
+    blocks.append(coverage_contract(lens_keys=part.get("lens_keys") or []))
     structural = "\n\n".join(blocks)
     composed = await compose_agent_intent(
         repository_uid=campaign.repository_uid,
@@ -282,6 +275,13 @@ async def _dispatch_global(campaign, part: dict) -> str:
         structural_extra = (
             f"{structural_extra}\n\n{scope_note}" if structural_extra else scope_note
         )
+    # A whole-repo sweep needs the coverage contract MORE than an area part,
+    # not less: without it the platform has no way to know what fraction of the
+    # repository the run actually reached, and silence reads as full coverage.
+    contract = coverage_contract(lens_keys=[lens.key])
+    structural_extra = (
+        f"{structural_extra}\n\n{contract}" if structural_extra else contract
+    )
     run = await dispatch_agent(
         agent=variant,
         repository_uid=campaign.repository_uid,

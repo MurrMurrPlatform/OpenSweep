@@ -609,6 +609,7 @@ async def test_area_detail_coverage_and_pending_edits(stores, detail_seams):
             checked_at=None,
             lens_verdicts=[{"lens": "bugs", "verdict": "checked-findings"}, "junk"],
             coverage_source="inferred",
+            covered_paths_observed=[],
         ),
         # Pre-m0022 stamp. The property is absent in the DB, but neomodel
         # inflates a defaulted property to its default, so the service sees
@@ -619,6 +620,7 @@ async def test_area_detail_coverage_and_pending_edits(stores, detail_seams):
             checked_at=None,
             lens_verdicts=[],
             coverage_source="unknown",
+            covered_paths_observed=[],
         ),
     ]
     await area_service.propose_area_edit(
@@ -638,6 +640,11 @@ async def test_area_detail_coverage_and_pending_edits(stores, detail_seams):
     assert cov.coverage_source == "inferred"
     # A stamp predating the property must not claim the agent reported coverage.
     assert legacy.coverage_source == "unknown"
+    # Neither stamp was measured, so both observed lists are empty — and that
+    # emptiness means "not measured", which is precisely why a reader has to
+    # consult coverage_source rather than this list's length.
+    assert cov.covered_paths_observed == []
+    assert legacy.covered_paths_observed == []
     # Pending edits: only THIS area's; the badge count matches the list.
     assert [e.area_uid for e in out.pending_edits] == [a.uid]
     assert out.area.pending_edits == 1

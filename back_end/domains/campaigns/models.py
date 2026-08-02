@@ -35,7 +35,15 @@ class Campaign(AsyncStructuredNode):
     # subsystem | feature | global | batch — the campaign shape/kind.
     kind = StringProperty(default="subsystem", index=True)
 
-    # Which files/areas to select: all | stale | rotation.
+    # Which files/areas to select: all | stale | unaudited | rotation.
+    #
+    # `stale` and `unaudited` are two different questions, and conflating them
+    # is why "re-audit what changed" did not exist:
+    #   stale     — code moved since the AREA MAP was last reviewed. A
+    #               partition-correctness signal (freshness.is_stale).
+    #   unaudited — code moved since this area was last AUDITED. The
+    #               audit-recency signal, derived from Checked stamps.
+    # An area can be perfectly mapped (never stale) and years out of audit.
     selection = StringProperty(default="all")
 
     # The area keys this campaign covers (empty = whole map).
@@ -106,7 +114,7 @@ CAMPAIGN_TEMPLATES = {"full", "rotation", "focused"}
 
 CAMPAIGN_KINDS = {"subsystem", "feature", "global", "batch"}
 
-CAMPAIGN_SELECTIONS = {"all", "stale", "rotation"}
+CAMPAIGN_SELECTIONS = {"all", "stale", "unaudited", "rotation"}
 
 PART_STATES = {"pending", "running", "done", "failed"}
 

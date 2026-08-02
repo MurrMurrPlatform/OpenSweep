@@ -108,10 +108,12 @@ Always end the tool_calls with that `complete_run` entry — one short sentence
 per list item, omitting lists you have nothing for. It is stored on the Run
 and shown to humans who did not watch the run.
 
-When the run has assigned lenses or an explicit path scope, also pass the
-coverage fields on `complete_run`: `covered_paths` (paths you actually
-inspected), `skipped_paths` (paths you did not reach), and `lens_verdicts`
-(one {"lens": …, "verdict": "checked-clean" | "checked-findings" | "skipped",
+Always pass the coverage fields on `complete_run`: `covered_paths` (paths you
+actually inspected) and `skipped_paths` (in-scope paths you did not reach).
+This applies to WHOLE-REPO runs too — a sweep that honestly reports what it
+never got to is far more useful than one that reports nothing, and silence is
+read as "the dispatched scope was covered". When the run has assigned lenses,
+also pass `lens_verdicts` (one {"lens": …, "verdict": "checked-clean" | "checked-findings" | "skipped",
 "note": …} entry per lens).
 
 If `opensweep` MCP tools (opensweep_*) appear in your NATIVE tool list, prefer
