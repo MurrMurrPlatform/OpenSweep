@@ -14,7 +14,10 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
-from domains.analysis.services.analysis_service import get_or_create_analysis
+from domains.analysis.services.analysis_service import (
+    analysis_write_lock,
+    get_or_create_analysis,
+)
 
 
 async def ask_question(
@@ -29,26 +32,31 @@ async def ask_question(
     if not (question or "").strip():
         raise HTTPException(status_code=422, detail="question must be non-empty")
 
-    node = await get_or_create_analysis(
-        repository_uid=repository_uid,
-        source_run_uid=source_run_uid,
-        executor=executor,
-    )
-    questions = list(node.questions or [])
     qid = uuid4().hex
-    questions.append(
-        {
-            "uid": qid,
-            "question": question.strip(),
-            "why_it_matters": why_it_matters or "",
-            "category": category or "",
-            "status": "open",
-            "answer": "",
-            "answered_by": "",
-            "answered_at": None,
-        }
-    )
-    node.questions = questions
-    node.updated_at = datetime.now(UTC)
-    await node.save()
+    # Serialized against the other Analysis authoring tools — see
+    # analysis_write_lock_key. Two concurrent ask_question calls without this
+    # would each read `node.questions`, each append their new one to a
+    # private copy, and the second save wipe the first.
+    async with analysis_write_lock(source_run_uid):
+        node = await get_or_create_analysis(
+            repository_uid=repository_uid,
+            source_run_uid=source_run_uid,
+            executor=executor,
+        )
+        questions = list(node.questions or [])
+        questions.append(
+            {
+                "uid": qid,
+                "question": question.strip(),
+                "why_it_matters": why_it_matters or "",
+                "category": category or "",
+                "status": "open",
+                "answer": "",
+                "answered_by": "",
+                "answered_at": None,
+            }
+        )
+        node.questions = questions
+        node.updated_at = datetime.now(UTC)
+        await node.save()
     return {"analysis_uid": node.uid, "question_uid": qid}

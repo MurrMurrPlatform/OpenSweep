@@ -18,7 +18,10 @@ from domains.analysis.models import (
     CONFIDENCE_LABELS,
     HEALTH_GRADES,
 )
-from domains.analysis.services.analysis_service import get_or_create_analysis
+from domains.analysis.services.analysis_service import (
+    analysis_write_lock,
+    get_or_create_analysis,
+)
 from infrastructure.audit import write_audit
 
 
@@ -54,37 +57,42 @@ async def upsert_analysis(
             detail=f"invalid confidence={confidence!r}; expected one of {sorted(CONFIDENCE_LABELS)}",
         )
 
-    node = await get_or_create_analysis(
-        repository_uid=repository_uid,
-        source_run_uid=source_run_uid,
-        executor=executor,
-        revision=revision or "",
-    )
+    # Held across get_or_create → mutate → save so a concurrent
+    # set_analysis_section / add_analysis_note / ask_question call for the
+    # same source_run_uid cannot read the same base state and silently drop
+    # this write's fields on its own save. See analysis_write_lock_key.
+    async with analysis_write_lock(source_run_uid):
+        node = await get_or_create_analysis(
+            repository_uid=repository_uid,
+            source_run_uid=source_run_uid,
+            executor=executor,
+            revision=revision or "",
+        )
 
-    if title is not None:
-        node.title = title
-    if status is not None:
-        node.status = status
-        if status == "complete" and not node.completed_at:
-            node.completed_at = datetime.now(UTC)
-    if revision is not None:
-        node.revision = revision
-    if health_grade is not None:
-        node.health_grade = health_grade
-    if health_score is not None:
-        node.health_score = int(health_score)
-    if scorecard is not None:
-        node.scorecard = [e for e in scorecard if isinstance(e, dict)]
-    if confidence is not None:
-        node.confidence = confidence
-    if limitations is not None:
-        node.limitations = limitations
-    if stats is not None:
-        node.stats = {**(node.stats or {}), **stats}
-    if executor and not (node.executor or ""):
-        node.executor = executor
-    node.updated_at = datetime.now(UTC)
-    await node.save()
+        if title is not None:
+            node.title = title
+        if status is not None:
+            node.status = status
+            if status == "complete" and not node.completed_at:
+                node.completed_at = datetime.now(UTC)
+        if revision is not None:
+            node.revision = revision
+        if health_grade is not None:
+            node.health_grade = health_grade
+        if health_score is not None:
+            node.health_score = int(health_score)
+        if scorecard is not None:
+            node.scorecard = [e for e in scorecard if isinstance(e, dict)]
+        if confidence is not None:
+            node.confidence = confidence
+        if limitations is not None:
+            node.limitations = limitations
+        if stats is not None:
+            node.stats = {**(node.stats or {}), **stats}
+        if executor and not (node.executor or ""):
+            node.executor = executor
+        node.updated_at = datetime.now(UTC)
+        await node.save()
 
     await write_audit(
         kind="analysis.upserted",

@@ -7,6 +7,7 @@ including the Finding roll-up joined by source_run_uid.
 
 from __future__ import annotations
 
+import contextlib
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -24,6 +25,36 @@ from domains.analysis.schemas import (
     ValidationEntryDTO,
 )
 from domains.findings.models import Finding
+from infrastructure.dist_lock import dist_lock
+
+
+def analysis_write_lock_key(source_run_uid: str) -> str:
+    """Lock key for the four Analysis authoring tools.
+
+    upsert_analysis/set_analysis_section/add_analysis_note/ask_question all do
+    fetch-mutate-save on the ONE Analysis keyed by source_run_uid. Without a
+    critical section two concurrent calls read the same base state and the
+    second save silently drops the first's fields (e.g. a scorecard write and
+    a coverage note issued in parallel — one is lost). Every authoring tool
+    holds `analysis_write_lock(source_run_uid)` around its read→save."""
+    return f"analysis:write:{source_run_uid}"
+
+
+@contextlib.asynccontextmanager
+async def analysis_write_lock(source_run_uid: str):
+    """Cross-process serializer for one Analysis's authoring writes.
+
+    Raises 409 if the lock cannot be acquired within the default window
+    (rare: an authoring call held it past `blocking_timeout`) so the caller
+    can retry rather than silently proceed without the lock and drop a
+    concurrent write's fields."""
+    async with dist_lock(analysis_write_lock_key(source_run_uid)) as acquired:
+        if not acquired:
+            raise HTTPException(
+                status_code=409,
+                detail="another Analysis write is in progress; retry shortly",
+            )
+        yield
 
 
 async def get_or_create_analysis(

@@ -668,9 +668,11 @@ async def http_attach_artifact(
         req.target_uid, req.target_type
     )
     await require_tool_repo_access(request, user, repository_uid)
-    return await _invoke_platform_tool(
-        "attach_artifact", attach_artifact, **req.model_dump()
-    )
+    # Feed the tool the RESOLVED tenancy uid — req.repository_uid may be blank
+    # (agents rarely pass it) and the tool refuses to guess it from target_uid.
+    data = req.model_dump()
+    data["repository_uid"] = repository_uid
+    return await _invoke_platform_tool("attach_artifact", attach_artifact, **data)
 
 
 @router.post("/complete-run/{run_uid}", operation_id="opensweep_platform_complete_run")
