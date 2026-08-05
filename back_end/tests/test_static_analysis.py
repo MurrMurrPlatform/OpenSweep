@@ -1,8 +1,10 @@
 """Static-analysis candidate pipeline (§E) — pure parser/filter/render tests."""
 
 import json
+from pathlib import Path
 
 from domains.execution.services.static_analysis import (
+    ANALYZER_TOOLS,
     ANALYZERS,
     Candidate,
     AnalyzerReport,
@@ -138,3 +140,31 @@ def test_render_empty_report_is_silent():
     assert render_candidates_section(AnalyzerReport(), cap=5) == ""
     clean = AnalyzerReport(tools_run=["ruff"])
     assert "ran clean" in render_candidates_section(clean, cap=5)
+
+
+# ── Every advertised analyzer must actually be installed in the images ──────
+
+_BACK_END = Path(__file__).resolve().parent.parent
+
+# ruff/vulture/deptry/semgrep are pip packages resolved via requirements.txt;
+# knip is the one npm package (`ANALYZER_TOOLS` binary name doubles as its
+# package name for all five, so this maps 1:1 with no per-tool table).
+_PIP_TOOLS = {"ruff", "vulture", "deptry", "semgrep"}
+_NPM_TOOLS = {"knip"}
+
+
+def test_pip_analyzer_tools_are_in_requirements():
+    assert _PIP_TOOLS | _NPM_TOOLS == set(ANALYZER_TOOLS), (
+        "a new tool was added to ANALYZER_TOOLS without updating this test's "
+        "pip/npm split"
+    )
+    requirements = (_BACK_END / "requirements.txt").read_text()
+    missing = [t for t in _PIP_TOOLS if t not in requirements]
+    assert not missing, f"{missing} missing from requirements.txt — shutil.which() will never find them"
+
+
+def test_npm_analyzer_tools_are_installed_in_both_docker_images():
+    for dockerfile in ("Dockerfile.dev", "Dockerfile.prod"):
+        contents = (_BACK_END / dockerfile).read_text()
+        missing = [t for t in _NPM_TOOLS if t not in contents]
+        assert not missing, f"{missing} missing from {dockerfile} — shutil.which() will never find them"
