@@ -3,6 +3,7 @@
 import asyncio
 import re
 import shutil
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -322,6 +323,11 @@ class SandboxService:
             raise HTTPException(status_code=404, detail=f"Sandbox {sandbox_uid} not found")
         if sb.status == SandboxStatus.DESTROYED.value:
             return _to_dto(sb)
+        # A live agent turn may still be running with this sandbox's
+        # container_path as its cwd (manual "Destroy", cleanup_expired, or a
+        # racing second caller) — kill it BEFORE rmtree, or the subprocess's
+        # working directory disappears out from under it mid-write.
+        await self._kill_live_runs(sandbox_uid)
         try:
             shutil.rmtree(sb.container_path, ignore_errors=True)
         except Exception as exc:
@@ -335,6 +341,16 @@ class SandboxService:
         )
         return _to_dto(sb)
 
+    async def _kill_live_runs(self, sandbox_uid: str) -> None:
+        # Local import: same layering as _notify_runs_workspace_expired below
+        # (execution domain reaching into runs) — turn_service also only
+        # reaches back into execution lazily, inside end_run().
+        from domains.runs.models import Run
+        from domains.runs.services.turn_service import kill_running_turn
+
+        for run in await Run.nodes.filter(sandbox_uid=sandbox_uid):
+            await kill_running_turn(run.uid)
+
     async def cleanup_expired(self) -> int:
         """Destroy sandboxes whose cleanup_after has passed. Returns count destroyed.
 
@@ -342,17 +358,28 @@ class SandboxService:
         cleared, a system transcript event appended, and awaiting_input runs
         move to ended. The conversation stays followable: a follow-up message
         recreates the workspace from Run.workspace_spec.
+
+        The expiry candidate list is filtered server-side (never a full
+        table scan) and each candidate is re-checked against a fresh read
+        immediately before destroy(): the candidate list can be stale by the
+        time we get to it, and a touch() that slid cleanup_after into the
+        future in the meantime must win over this sweep, not get silently
+        discarded by force-destroying a sandbox (and ending its run) anyway.
         """
         now = datetime.now(UTC)
-        sbs = await Sandbox.nodes.all()
+        candidates = await Sandbox.nodes.filter(cleanup_after__lte=now).exclude(
+            status=SandboxStatus.DESTROYED.value
+        )
         count = 0
-        for sb in sbs:
-            if sb.status == SandboxStatus.DESTROYED.value:
+        for candidate in candidates:
+            fresh = await Sandbox.nodes.get_or_none(uid=candidate.uid)
+            if fresh is None or fresh.status == SandboxStatus.DESTROYED.value:
                 continue
-            if sb.cleanup_after and sb.cleanup_after <= now:
-                await self.destroy(sb.uid)
-                await self._notify_runs_workspace_expired(sb.uid, now=now)
-                count += 1
+            if not fresh.cleanup_after or fresh.cleanup_after > now:
+                continue  # touch() extended retention after the scan above
+            await self.destroy(fresh.uid)
+            await self._notify_runs_workspace_expired(fresh.uid, now=now)
+            count += 1
         return count
 
     async def _notify_runs_workspace_expired(self, sandbox_uid: str, *, now: datetime) -> None:
@@ -413,21 +440,34 @@ async def _fetch_branch(
         )
 
 
-async def _run(cmd: list[str], *, redact_token: str = "") -> None:
-    """Run a shell command, raising on non-zero exit.
+async def _run(cmd: list[str], *, redact_token: str = "", timeout: int | None = None) -> None:
+    """Run a shell command, raising on non-zero exit or timeout.
+
+    Every call (clone, branch fetch, config) is bounded by
+    OPENSWEEP_SANDBOX_GIT_TIMEOUT_SECONDS — unlike static_analysis.py's
+    subprocesses, this one sits directly in the run-dispatch path, so a
+    stalled git process (bad credential prompt, dead remote) must not hang
+    it forever.
 
     The error message is redacted: the GitHub credential (PAT or installation
     token — whichever was passed) travels in the clone command's extraHeader
     and must never land in Sandbox.error or the logs.
     """
+    timeout = timeout if timeout is not None else int(settings.OPENSWEEP_SANDBOX_GIT_TIMEOUT_SECONDS)
+    # Filter the extraHeader argv out of the message entirely (mirrors
+    # write_gate._git) — the token replace below stays as a second layer.
+    shown = " ".join(a for a in cmd if not a.startswith("http.extraHeader"))
     proc = await asyncio.create_subprocess_exec(
         *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
-    out, err = await proc.communicate()
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        with suppress(ProcessLookupError):
+            await proc.wait()
+        raise RuntimeError(f"{shown} timed out after {timeout}s")
     if proc.returncode != 0:
-        # Filter the extraHeader argv out of the message entirely (mirrors
-        # write_gate._git) — the token replace below stays as a second layer.
-        shown = " ".join(a for a in cmd if not a.startswith("http.extraHeader"))
         message = f"{shown} failed: {err.decode(errors='replace')[:300]}"
         for token in (redact_token, settings.GITHUB_TOKEN):
             if token:

@@ -94,6 +94,20 @@ async def _kill_turn_process(proc: asyncio.subprocess.Process) -> None:
         pass  # already exited
 
 
+async def kill_running_turn(uid: str) -> None:
+    """Best-effort: kill this run's in-flight turn subprocess, if any.
+
+    Used by sandbox_service.destroy() so a manual "Destroy" (or the retention
+    sweep) never rmtree's a sandbox out from under a live agent process still
+    using it as its cwd — a no-op when the run has nothing in flight.
+    """
+    proc = _RUNNING.get(uid)
+    if proc is None or isinstance(proc, _Starting):
+        return
+    _INTERRUPTED.add(uid)
+    await _kill_turn_process(proc)
+
+
 # Statuses a cancel is accepted from: the run is (or will be) doing work.
 # queued → the dispatch pipeline's != QUEUED check aborts pre-dispatch;
 # running → the late adapter result is discarded by _dispatch_and_finalize's
