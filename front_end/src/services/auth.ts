@@ -37,7 +37,12 @@ function getManager(): UserManager {
       // resourceowner asserts the user's org — the backend tenancy root.
       scope:
         'openid profile email offline_access urn:zitadel:iam:org:projects:roles urn:zitadel:iam:user:resourceowner',
-      userStore: new WebStorageStateStore({ store: window.localStorage }),
+      // sessionStorage, not localStorage: the offline_access refresh token
+      // must not persist beyond the tab/browser session — a stored-XSS
+      // payload that reads localStorage would otherwise walk out with a
+      // long-lived credential (see MarkdownView.vue's sanitize fix for the
+      // other half of this chain).
+      userStore: new WebStorageStateStore({ store: window.sessionStorage }),
       automaticSilentRenew: true,
     })
     manager.events.addUserLoaded((user) => {
