@@ -5,6 +5,11 @@ The SPA consent view (/connect/authorize) calls this as the logged-in user
 the browser-carried params are untrusted — checks the org's connect
 entitlement, mints the single-use authorization code, and returns the final
 client redirect for the SPA to follow.
+
+The `/client_metadata` endpoint lets the consent view render the
+server-truth client name + registered redirect URIs, so a hand-crafted
+`/connect/authorize?client_name=…` URL cannot show the user a spoofed
+identity for the client whose code will be minted.
 """
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,6 +22,33 @@ from domains.users.schemas import UserDTO
 from infrastructure.audit import write_audit
 
 router = APIRouter(prefix="/api/v1/oauth-mcp", tags=["oauth-mcp"])
+
+
+@router.get("/client_metadata", operation_id="opensweep_oauth_mcp_client_metadata")
+async def client_metadata(
+    client_id: str,
+    redirect_uri: str = "",
+    _user: UserDTO = Depends(get_current_user),
+) -> dict:
+    """Return the DB-truth client name + registered redirect URIs so the
+    consent view can display them without trusting URL query params.
+
+    Authenticated (any logged-in user): reveals only the client's public
+    registration data — the same fields the client itself sees back from
+    /oauth/register. `redirect_uri` is optional; when present the response's
+    `redirect_uri_registered` flag tells the view whether to show it as a
+    trusted destination or flag the link as malformed."""
+    client = await oauth_service.get_client(client_id)
+    registered = client.redirect_uris or []
+    return {
+        "client_id": client.uid,
+        "client_name": client.name or "",
+        "redirect_uris": registered,
+        "redirect_uri_registered": (
+            bool(redirect_uri)
+            and oauth_service.redirect_uri_allowed(redirect_uri, registered)
+        ),
+    }
 
 
 class ApproveRequest(BaseModel):
