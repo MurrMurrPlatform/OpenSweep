@@ -5,9 +5,11 @@ SimpleNamespace. Called from app.py's lifespan (OUTSIDE any try/except — a
 misconfigured deploy must go unhealthy, same rationale as the migration
 block) and from celery_app.init_worker (log critical + exit(1)).
 
-Two tiers: `auth_config_errors` applies in EVERY environment (Zitadel OIDC
-is the only supported user auth — see deployment/ZITADEL.md), while the
-`production_config_*` checks only bite when ENVIRONMENT is production.
+Three tiers: `auth_config_errors` applies in EVERY environment (Zitadel OIDC
+is the only supported user auth — see deployment/ZITADEL.md);
+`deployed_config_errors` bites any non-local environment (production OR
+staging); `production_config_*` checks only bite when ENVIRONMENT is
+production.
 
 Deliberately NOT config.py validators: those run at import time and would
 break scripts/tests that import config with a partial environment.
@@ -38,9 +40,9 @@ _DEFAULT_NEO4J_PASSWORDS = {"opensweeppassword", "koalapassword"}
 def deployed_config_errors(s) -> list[str]:
     """Hard errors for any deployed (non-local) environment (F8).
 
-    A well-known default DB password is fine on a disposable local stack but
-    must never reach a deployed instance — production OR staging. Broader than
-    `production_config_errors`, which only bites ENVIRONMENT=production."""
+    Broader than `production_config_errors`, which only bites
+    ENVIRONMENT=production — staging deserves the same hard checks, not just
+    production, for footguns that are equally misleading there."""
     if not is_deployed(getattr(s, "ENVIRONMENT", "")):
         return []
     errors: list[str] = []
@@ -50,6 +52,41 @@ def deployed_config_errors(s) -> list[str]:
             "well-known default ('opensweeppassword' or 'koalapassword'). Set a "
             "strong NEO4J_PASSWORD (and update the Neo4j container credentials to "
             "match)."
+        )
+
+    # Role-claim pin (F5): zitadel_roles() (infrastructure/oidc.py) only reads
+    # roles project-agnostically when ZITADEL_PROJECT_ID is unset — a foreign
+    # project's 'admin' role on the same issuer then confers OpenSweep
+    # platform-admin. ZITADEL_CLIENT_ID alone does NOT gate this: it only pins
+    # the JWT audience (_audience_ok), never reaches zitadel_roles/
+    # map_opensweep_role/is_platform_admin_claim. So this specifically
+    # requires ZITADEL_PROJECT_ID, not "either identifier".
+    zitadel_issuer = (getattr(s, "ZITADEL_ISSUER", "") or "").strip()
+    if zitadel_issuer:
+        project_id = (getattr(s, "ZITADEL_PROJECT_ID", "") or "").strip()
+        if not project_id:
+            errors.append(
+                "ENVIRONMENT is deployed and ZITADEL_ISSUER is set, but "
+                "ZITADEL_PROJECT_ID is not configured — role claims (viewer/"
+                "maintainer/admin) are read project-agnostically "
+                "(infrastructure/oidc.py zitadel_roles), so a foreign project's "
+                "'admin' role on the same issuer confers OpenSweep platform-admin "
+                "regardless of ZITADEL_CLIENT_ID. Set ZITADEL_PROJECT_ID "
+                "(ZITADEL_CLIENT_ID alone only pins the audience, not the roles "
+                "claim)."
+            )
+
+    # Short-key check (F-secrets): secretbox silently treats a <16-char key as
+    # unconfigured and stores secrets in PLAINTEXT — equally misleading in
+    # staging as in production, so this belongs here rather than
+    # production_config_errors.
+    secrets_key = (getattr(s, "OPENSWEEP_SECRETS_KEY", "") or "").strip()
+    if secrets_key and len(secrets_key) < 16:
+        errors.append(
+            "OPENSWEEP_SECRETS_KEY is set but shorter than 16 characters — "
+            "secretbox treats it as unconfigured and secrets would be stored "
+            "in PLAINTEXT despite the key being set. Use at least 16 chars "
+            "(e.g. `openssl rand -hex 32`)."
         )
     return errors
 
@@ -87,23 +124,6 @@ def production_config_errors(s) -> list[str]:
     auth_token = (getattr(s, "OPENSWEEP_AUTH_TOKEN", "") or "").strip()
     zitadel_issuer = (getattr(s, "ZITADEL_ISSUER", "") or "").strip()
 
-    # Audience pin (F5): with an issuer but no client/project id, OIDC accepts
-    # ANY audience from the issuer — a token minted for an unrelated app on the
-    # same Zitadel is honored, and its roles could confer platform-admin.
-    # Refuse to boot a production instance in that accept-any state.
-    if zitadel_issuer:
-        client_id = (getattr(s, "ZITADEL_CLIENT_ID", "") or "").strip()
-        project_id = (getattr(s, "ZITADEL_PROJECT_ID", "") or "").strip()
-        if not client_id and not project_id:
-            errors.append(
-                "ENVIRONMENT is production and ZITADEL_ISSUER is set, but neither "
-                "ZITADEL_CLIENT_ID nor ZITADEL_PROJECT_ID is configured — OIDC would "
-                "accept tokens for ANY audience on the issuer (and a foreign "
-                "project's 'admin' role could confer platform-admin). Set "
-                "ZITADEL_CLIENT_ID (the SPA app id) and/or ZITADEL_PROJECT_ID to pin "
-                "the accepted audience to this OpenSweep instance."
-            )
-
     if not auth_token and not zitadel_issuer:
         errors.append(
             "ENVIRONMENT is production but no authentication is configured: "
@@ -114,19 +134,10 @@ def production_config_errors(s) -> list[str]:
             "ZITADEL_ISSUER for OIDC login."
         )
 
-    # NEO4J default-password check lives in deployed_config_errors (fires for
-    # production AND staging), wired into enforce_production_guards below.
-
-    secrets_key = (getattr(s, "OPENSWEEP_SECRETS_KEY", "") or "").strip()
-    if secrets_key and len(secrets_key) < 16:
-        # Worse than no key: the operator set one expecting encryption, but
-        # secretbox treats short keys as unconfigured and writes PLAINTEXT.
-        errors.append(
-            "OPENSWEEP_SECRETS_KEY is set but shorter than 16 characters — "
-            "secretbox treats it as unconfigured and secrets would be stored "
-            "in PLAINTEXT despite the key being set. Use at least 16 chars "
-            "(e.g. `openssl rand -hex 32`)."
-        )
+    # NEO4J default-password check, the ZITADEL_PROJECT_ID role-claim pin, and
+    # the OPENSWEEP_SECRETS_KEY short-key check all live in
+    # deployed_config_errors (fires for production AND staging), wired into
+    # enforce_production_guards below.
 
     return errors
 

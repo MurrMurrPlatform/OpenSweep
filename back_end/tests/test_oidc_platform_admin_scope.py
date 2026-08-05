@@ -21,7 +21,7 @@ Pure functions — no DB.
 from types import SimpleNamespace
 
 from infrastructure.oidc import zitadel_roles
-from infrastructure.production_guards import production_config_errors
+from infrastructure.production_guards import deployed_config_errors
 
 _OUR_PROJECT = "1234"
 
@@ -63,17 +63,32 @@ def _prod(**over):
     return SimpleNamespace(**base)
 
 
-def test_prod_boot_blocked_without_audience_pin():
-    errors = production_config_errors(_prod())
-    assert any("ZITADEL_CLIENT_ID" in e or "ZITADEL_PROJECT_ID" in e for e in errors)
+def test_prod_boot_blocked_without_project_id():
+    errors = deployed_config_errors(_prod())
+    assert any("ZITADEL_PROJECT_ID" in e for e in errors)
 
 
-def test_prod_boot_ok_with_client_id():
-    errors = production_config_errors(_prod(ZITADEL_CLIENT_ID="spa-abc"))
-    assert not any("ZITADEL_CLIENT_ID" in e or "ZITADEL_PROJECT_ID" in e for e in errors)
+def test_prod_boot_not_ok_with_client_id_alone():
+    # f0514414: ZITADEL_CLIENT_ID only pins the JWT audience (_audience_ok) —
+    # it is never passed into zitadel_roles/map_opensweep_role/
+    # is_platform_admin_claim, so it must NOT silence this guard on its own.
+    errors = deployed_config_errors(_prod(ZITADEL_CLIENT_ID="spa-abc"))
+    assert any("ZITADEL_PROJECT_ID" in e for e in errors)
+
+
+def test_prod_boot_ok_with_project_id():
+    errors = deployed_config_errors(_prod(ZITADEL_PROJECT_ID="proj-1"))
+    assert not any("ZITADEL_PROJECT_ID" in e for e in errors)
 
 
 def test_audience_pin_not_required_when_issuer_unset():
     # A no-Zitadel prod (shared-token only) must not trip the new guard.
-    errors = production_config_errors(_prod(ZITADEL_ISSUER=""))
-    assert not any("ZITADEL_CLIENT_ID" in e or "ZITADEL_PROJECT_ID" in e for e in errors)
+    errors = deployed_config_errors(_prod(ZITADEL_ISSUER=""))
+    assert not any("ZITADEL_PROJECT_ID" in e for e in errors)
+
+
+def test_project_id_pin_enforced_in_staging():
+    # d0d19f86: this guard isn't production-only — it's wired into
+    # deployed_config_errors, which fires for any is_deployed() environment.
+    errors = deployed_config_errors(_prod(ENVIRONMENT="staging"))
+    assert any("ZITADEL_PROJECT_ID" in e for e in errors)

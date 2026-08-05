@@ -33,10 +33,11 @@ def _prod(**overrides) -> SimpleNamespace:
         ENVIRONMENT="production",
         OPENSWEEP_AUTH_TOKEN="a-real-token",
         ZITADEL_ISSUER="",
-        # Audience pin (F5): a hardened config that enables Zitadel also pins
-        # the accepted audience, so enabling the issuer alone stays clean.
+        # Role-claim pin (F5): a hardened config pins ZITADEL_PROJECT_ID
+        # specifically — that's what zitadel_roles() actually keys off, not
+        # ZITADEL_CLIENT_ID (which only pins the JWT audience).
         ZITADEL_CLIENT_ID="spa-app-id",
-        ZITADEL_PROJECT_ID="",
+        ZITADEL_PROJECT_ID="proj-1",
         NEO4J_PASSWORD="a-strong-password",
         OPENSWEEP_SECRETS_KEY="a-secrets-key-16-chars-plus",
         OPENSWEEP_STATE_SIGNING_SECRET="a-state-secret",
@@ -130,15 +131,40 @@ def test_enforce_rejects_default_neo4j_password_in_staging():
         )
 
 
-def test_zitadel_issuer_without_audience_pin_blocks_boot():
-    # F5: an issuer set but no client/project id = accept-any-audience → refuse.
-    errors = production_config_errors(
+def test_zitadel_issuer_without_project_id_blocks_boot():
+    # F5: an issuer set but no ZITADEL_PROJECT_ID → zitadel_roles() reads roles
+    # project-agnostically → refuse. This now lives in deployed_config_errors
+    # (fires for production AND staging), not production_config_errors.
+    errors = deployed_config_errors(
         _prod(ZITADEL_ISSUER="https://auth.example.com", ZITADEL_CLIENT_ID="", ZITADEL_PROJECT_ID="")
     )
-    assert any("ZITADEL_CLIENT_ID" in e or "ZITADEL_PROJECT_ID" in e for e in errors)
-    # Either identifier alone satisfies the pin.
-    assert production_config_errors(
+    assert any("ZITADEL_PROJECT_ID" in e for e in errors)
+    # ZITADEL_CLIENT_ID alone does NOT satisfy this — it only pins the JWT
+    # audience, not the roles claim (see infrastructure/oidc.py zitadel_roles).
+    errors = deployed_config_errors(
+        _prod(ZITADEL_ISSUER="https://auth.example.com", ZITADEL_CLIENT_ID="spa-app-id", ZITADEL_PROJECT_ID="")
+    )
+    assert any("ZITADEL_PROJECT_ID" in e for e in errors)
+    # ZITADEL_PROJECT_ID alone satisfies the pin.
+    assert deployed_config_errors(
         _prod(ZITADEL_ISSUER="https://auth.example.com", ZITADEL_CLIENT_ID="", ZITADEL_PROJECT_ID="proj-1")
+    ) == []
+
+
+def test_zitadel_project_id_pin_enforced_in_staging_too():
+    # d0d19f86: the pin isn't production-only — staging gets it via
+    # deployed_config_errors/is_deployed.
+    errors = deployed_config_errors(
+        _prod(
+            ENVIRONMENT="staging",
+            ZITADEL_ISSUER="https://auth.example.com",
+            ZITADEL_CLIENT_ID="",
+            ZITADEL_PROJECT_ID="",
+        )
+    )
+    assert any("ZITADEL_PROJECT_ID" in e for e in errors)
+    assert deployed_config_errors(
+        _prod(ENVIRONMENT="staging", ZITADEL_ISSUER="https://auth.example.com", ZITADEL_PROJECT_ID="proj-1")
     ) == []
 
 
@@ -204,11 +230,13 @@ def test_settings_object_missing_optional_fields():
     assert len(production_config_warnings(s)) == 2
 
 
-def test_short_secrets_key_is_a_hard_error_in_production():
-    errors = production_config_errors(_prod(OPENSWEEP_SECRETS_KEY="tooshort"))
-    assert len(errors) == 1
-    assert "shorter than 16 characters" in errors[0]
+def test_short_secrets_key_is_a_hard_error_in_deployed_envs():
+    # 1c6baf8f: the short-key guard lives in deployed_config_errors so it
+    # fires for staging too, not just ENVIRONMENT=production.
+    for env in ("production", "staging"):
+        errors = deployed_config_errors(_prod(ENVIRONMENT=env, OPENSWEEP_SECRETS_KEY="tooshort"))
+        assert any("shorter than 16 characters" in e for e in errors), env
 
 
-def test_short_secrets_key_ignored_outside_production():
-    assert production_config_errors(_settings(OPENSWEEP_SECRETS_KEY="tooshort")) == []
+def test_short_secrets_key_ignored_outside_deployed_envs():
+    assert deployed_config_errors(_settings(OPENSWEEP_SECRETS_KEY="tooshort")) == []
