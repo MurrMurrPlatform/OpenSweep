@@ -103,8 +103,8 @@ class Settings(BaseSettings):
     #      infrastructure/github_app_store.py. Repos covered by an
     #      installation authenticate with short-lived installation tokens.
     #   2. PAT (GITHUB_TOKEN): the fallback for repos without an installation
-    #      and for App-less deployments. When neither is set, GitHubService
-    #      falls back to the mock store.
+    #      and for App-less deployments. When neither is set, GitHubClient.is_active
+    #      is False and callers must surface a clear error rather than silently no-op.
     #
     # The private key comes from GITHUB_APP_PRIVATE_KEY (raw PEM or base64 of
     # one — base64 is what the setup script writes, it survives env transport

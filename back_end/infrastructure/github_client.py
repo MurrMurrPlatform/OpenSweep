@@ -4,11 +4,13 @@ Auth seam: a static Personal Access Token (the original path — unchanged) OR
 a `TokenSource` that resolves the credential per request (GitHub App
 installation tokens are short-lived, so they cannot be baked into the
 client's default headers). When neither is configured, `is_active` is False
-and callers should fall back to the mock store. The client is intentionally
-small — it only implements the endpoints we actually use.
+and callers must surface a clear error rather than silently no-op. The
+client is intentionally small — it only implements the endpoints we
+actually use.
 """
 
 import asyncio
+import time
 from typing import Any, Protocol
 from urllib.parse import quote
 
@@ -22,6 +24,43 @@ _GITHUB_API = "https://api.github.com"
 # Defensive upper bound when paginating check-run rollups — a rollup this
 # large is pathological and we only need enough to compute red/pending/green.
 MAX_CHECK_RUNS = 500
+
+# GitHub statuses worth retrying: primary/secondary rate limiting and
+# transient server-side failures. A 403 is only retryable when GitHub's body
+# actually names a rate limit — an ordinary permission 403 must fail
+# immediately, not spin four times waiting for a grant that will never come.
+_RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+# Read/list/publish calls all funnel through `_send`, so every one of them
+# survives a transient GitHub hiccup instead of failing hard on the first
+# 429/5xx — the same "hostile, retry-heavy relationship with GitHub" the
+# inbound webhook side is already built for.
+MAX_GITHUB_RETRIES = 4
+
+
+def _is_rate_limited_403(response: httpx.Response) -> bool:
+    if response.status_code != 403:
+        return False
+    text = response.text.lower()
+    return "rate limit" in text or "abuse detection" in text
+
+
+def _retry_delay_seconds(response: httpx.Response, attempt: int) -> float:
+    """Honor Retry-After / X-RateLimit-Reset when GitHub sends one, else a
+    capped exponential backoff (1, 2, 4, 8… seconds, ceiling 30s)."""
+    retry_after = response.headers.get("Retry-After")
+    if retry_after is not None:
+        try:
+            return max(0.0, float(retry_after))
+        except ValueError:
+            pass  # HTTP-date form — fall through to reset/backoff
+    reset = response.headers.get("X-RateLimit-Reset")
+    if reset is not None:
+        try:
+            return max(0.0, float(reset) - time.time())
+        except ValueError:
+            pass
+    return min(2**attempt, 30)
 
 # Defensive upper bound when paginating a PR's changed files (GitHub itself
 # stops listing at 3000) — enough for any reviewable diff.
@@ -108,7 +147,7 @@ class GitHubClient:
         )
         runs: list[dict[str, Any]] = []
         while url and len(runs) < MAX_CHECK_RUNS:
-            r = await self._client.get(url, headers=headers)
+            r = await self._send("GET", url, headers=headers)
             r.raise_for_status()
             body = r.json()
             runs.extend(body.get("check_runs", []) if isinstance(body, dict) else [])
@@ -135,7 +174,7 @@ class GitHubClient:
         url: str | None = f"/repos/{owner}/{repo}/pulls/{number}/files?per_page=100"
         files: list[dict[str, Any]] = []
         while url and len(files) < MAX_PR_FILES:
-            r = await self._client.get(url, headers=headers)
+            r = await self._send("GET", url, headers=headers)
             r.raise_for_status()
             body = r.json()
             files.extend(body if isinstance(body, list) else [])
@@ -225,6 +264,85 @@ class GitHubClient:
                 return None
             raise
 
+    async def get_branch_protection(self, owner: str, repo: str, branch: str) -> dict[str, Any] | None:
+        """GET .../branches/{branch}/protection. None when the branch has no
+        protection rule (404) or the credential can't read one (403 — the
+        common case for installation/PAT credentials scoped to contents +
+        pull-requests only, not repo admin)."""
+        if not self.is_active:
+            raise RuntimeError("GitHubClient is not active (GITHUB_TOKEN unset)")
+        r = await self._send(
+            "GET",
+            f"/repos/{owner}/{repo}/branches/{quote(branch, safe='')}/protection",
+            headers=await self._request_headers(),
+        )
+        if r.status_code in (404, 403):
+            return None
+        r.raise_for_status()
+        return r.json()
+
+    async def add_required_status_check(
+        self, owner: str, repo: str, branch: str, *, context: str
+    ) -> bool:
+        """Best-effort: make `context` (e.g. "opensweep/converged") a required
+        status check on `branch`, so a PR can't merge while it is red —
+        otherwise the check is advisory-only no matter what it reports.
+
+        Only CREATES a protection rule when the branch has none yet.
+        GitHub's PUT endpoint replaces the entire rule, and this client
+        cannot safely round-trip an existing rule's
+        `required_pull_request_reviews` / `restrictions` (their GET and PUT
+        shapes differ) — attempting to merge onto one risks silently
+        weakening a repo's real protection (e.g. dropping required
+        reviewers). A repo that already has a protection rule is left alone;
+        an admin should add the context to it by hand.
+
+        Returns True when the check is required (freshly added, or already
+        present on an existing rule), False otherwise (no admin rights, an
+        existing rule was left untouched, or any other failure). Never
+        raises — this must never block delivery or repo setup.
+        """
+        if not self.is_active:
+            return False
+        try:
+            current = await self.get_branch_protection(owner, repo, branch)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                f"branch protection read failed for {owner}/{repo}@{branch}: {exc}",
+                extra={"tag": "github"},
+            )
+            return False
+        if current is not None:
+            contexts = set((current.get("required_status_checks") or {}).get("contexts") or [])
+            return context in contexts
+        payload = {
+            "required_status_checks": {"strict": False, "contexts": [context]},
+            "enforce_admins": False,
+            "required_pull_request_reviews": None,
+            "restrictions": None,
+        }
+        try:
+            r = await self._send(
+                "PUT",
+                f"/repos/{owner}/{repo}/branches/{quote(branch, safe='')}/protection",
+                json=payload,
+                headers=await self._request_headers(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                f"branch protection create failed for {owner}/{repo}@{branch}: {exc}",
+                extra={"tag": "github"},
+            )
+            return False
+        if r.status_code != 200:
+            logger.warning(
+                f"branch protection create for {owner}/{repo}@{branch} → {r.status_code} "
+                f"{r.text[:200]}",
+                extra={"tag": "github"},
+            )
+            return False
+        return True
+
     # ── Writes ───────────────────────────────────────────────────────────
 
     async def open_pull_request(
@@ -290,7 +408,8 @@ class GitHubClient:
             payload["commit_title"] = commit_title
         if commit_message:
             payload["commit_message"] = commit_message
-        r = await self._client.put(
+        r = await self._send(
+            "PUT",
             f"/repos/{owner}/{repo}/pulls/{number}/merge",
             json=payload,
             headers=await self._request_headers(),
@@ -420,17 +539,40 @@ class GitHubClient:
 
     # ── Internals ────────────────────────────────────────────────────────
 
+    async def _send(
+        self, method: str, path: str, *, json: dict | None = None, headers: dict[str, str] | None = None
+    ) -> httpx.Response:
+        """Single funnel for every GitHub HTTP call: retries 429/5xx/secondary
+        rate-limited-403 up to `MAX_GITHUB_RETRIES` times, honoring
+        Retry-After / X-RateLimit-Reset (else capped exponential backoff).
+        Callers still see the final response (or raise on it) exactly as
+        before — this only buys transient errors a few extra attempts."""
+        attempt = 0
+        while True:
+            r = await self._client.request(method, path, json=json, headers=headers)
+            retryable = r.status_code in _RETRYABLE_STATUSES or _is_rate_limited_403(r)
+            if not retryable or attempt >= MAX_GITHUB_RETRIES:
+                return r
+            delay = _retry_delay_seconds(r, attempt)
+            attempt += 1
+            logger.warning(
+                f"GitHub {method} {path} → {r.status_code}, retrying in {delay:.1f}s "
+                f"(attempt {attempt}/{MAX_GITHUB_RETRIES})",
+                extra={"tag": "github"},
+            )
+            await asyncio.sleep(delay)
+
     async def _get(self, path: str) -> Any:
         if not self.is_active:
             raise RuntimeError("GitHubClient is not active (GITHUB_TOKEN unset)")
-        r = await self._client.get(path, headers=await self._request_headers())
+        r = await self._send("GET", path, headers=await self._request_headers())
         r.raise_for_status()
         return r.json()
 
     async def _post(self, path: str, json: dict) -> dict[str, Any]:
         if not self.is_active:
             raise RuntimeError("GitHubClient is not active (GITHUB_TOKEN unset)")
-        r = await self._client.post(path, json=json, headers=await self._request_headers())
+        r = await self._send("POST", path, json=json, headers=await self._request_headers())
         if r.status_code >= 400:
             logger.warning(f"GitHub POST {path} → {r.status_code} {r.text[:200]}", extra={"tag": "github"})
         r.raise_for_status()

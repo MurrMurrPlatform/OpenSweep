@@ -29,6 +29,12 @@ from logging_config import logger
 # Branch names that platform code will never push to, regardless of policy.
 PROTECTED_BRANCH_NAMES = frozenset({"main", "master", "develop"})
 
+# A stalled git subprocess (network outage, credential prompt, huge pack)
+# must never hold the event loop open indefinitely — FastAPI runs one loop
+# per worker process, so one hung `_git` call would starve every other
+# in-flight request.
+GIT_TIMEOUT_SECONDS = 120
+
 
 @dataclass
 class WriteGateResult:
@@ -327,12 +333,25 @@ def _reportable_argv(args: tuple[str, ...]) -> list[str]:
 
 async def _git(sandbox_path: str, *args: str, redact_token: str = "") -> str:
     """Run git in the sandbox, return stdout. Errors are token-redacted for
-    whichever credential was used (PAT and/or installation token)."""
+    whichever credential was used (PAT and/or installation token).
+
+    Bounded by ``GIT_TIMEOUT_SECONDS``: ``communicate()`` cannot be cancelled
+    without an explicit timeout, so a stalled push/fetch would otherwise hang
+    the calling coroutine — and the event loop with it — forever.
+    """
     cmd = ["git", "-C", sandbox_path, *args]
     proc = await asyncio.create_subprocess_exec(
         *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
-    out, err = await proc.communicate()
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=GIT_TIMEOUT_SECONDS)
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise RuntimeError(
+            f"git {' '.join(_reportable_argv(args))} timed out after "
+            f"{GIT_TIMEOUT_SECONDS}s — the sandbox git subprocess was killed"
+        )
     if proc.returncode != 0:
         message = (
             f"git {' '.join(_reportable_argv(args))} "

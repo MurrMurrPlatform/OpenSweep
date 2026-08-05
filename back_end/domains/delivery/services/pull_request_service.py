@@ -111,6 +111,41 @@ def review_status_for(
     return "failure", f"{new_blocking} blocking finding(s){detail}"
 
 
+async def ensure_converged_status_required(repo: Repository) -> bool:
+    """Best-effort: make the `opensweep/converged` commit status a REQUIRED
+    branch protection check on the repo's default branch.
+
+    Without this, `opensweep/converged` (convergence.py) is purely advisory:
+    it is published on every PR, but GitHub has no branch protection rule
+    telling it that status must be green before merge, so a PR with
+    unresolved blocking findings can still be merged through the GitHub UI
+    or API regardless of what OpenSweep reports.
+
+    Never raises and never blocks the caller — many credentials (PATs,
+    installation tokens) simply don't have repo admin, in which case this
+    quietly does nothing (see `GitHubClient.add_required_status_check`).
+    """
+    if not (repo.github_owner and repo.github_repo):
+        return False
+    client = get_provider_client(repo)
+    probe = getattr(client, "add_required_status_check", None)
+    if probe is None:
+        return False
+    try:
+        return await probe(
+            repo.github_owner,
+            repo.github_repo,
+            repo.default_branch or "main",
+            context=settings.OPENSWEEP_CONVERGED_STATUS_CONTEXT,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            f"ensure_converged_status_required failed for {repo.uid}: {exc}",
+            extra={"tag": "delivery"},
+        )
+        return False
+
+
 async def publish_review_status(
     repo: Repository, pr: PullRequest, *, state: str, description: str
 ) -> None:
@@ -619,6 +654,11 @@ class PullRequestService:
             return
         client = get_provider_client(repo)
         if not client.is_active or not (repo.github_owner and repo.github_repo):
+            logger.warning(
+                f"{settings.OPENSWEEP_CONVERGED_STATUS_CONTEXT} status not published for "
+                f"{pr.pr_key}: no usable GitHub credential for this repository",
+                extra={"tag": "delivery"},
+            )
             return
         if state.converged:
             gh_state = "success"

@@ -184,6 +184,8 @@ _KIND_MAP: dict[str, tuple[str, ...]] = {
     "finding.filed": ("finding.created",),
     "finding.fixed": ("finding.resolved",),
     "implement_run.pr_opened": ("pr.opened",),
+    "implement_run.post_push_failed": ("attention.required",),
+    "fix_run.post_push_failed": ("attention.required",),
     "verdict.submitted": ("review.completed",),
     "fix_run.pushed": ("fix.pushed",),
     "sweep.audit_completed": ("analysis.completed",),

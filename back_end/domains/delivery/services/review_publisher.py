@@ -174,6 +174,11 @@ async def publish_verdict_review(
         return False
     client = get_provider_client(repo)
     if not client.is_active or not (repo.github_owner and repo.github_repo):
+        logger.warning(
+            f"review not published for {pr.pr_key}: no usable GitHub credential "
+            "for this repository",
+            extra={"tag": "delivery"},
+        )
         return False
 
     changed_paths: set[str] = set()

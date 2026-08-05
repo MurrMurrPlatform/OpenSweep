@@ -200,6 +200,16 @@ async def trigger_implement_run(
     if denial:
         raise HTTPException(status_code=409, detail=denial)
 
+    # Best-effort: make the opensweep/converged status a required branch
+    # protection check the first time this repo delivers, so the merge gate
+    # convergence.py computes is actually enforced by GitHub, not merely
+    # advisory. Never blocks dispatch — see ensure_converged_status_required.
+    from domains.delivery.services.pull_request_service import (
+        ensure_converged_status_required,
+    )
+
+    await ensure_converged_status_required(repo)
+
     async def _dispatch() -> Run:
         # Idempotency 1: an open PR already implementing this ticket → point at it.
         existing_prs = await PullRequest.nodes.filter(ticket_uid=ticket.uid)
@@ -597,9 +607,13 @@ async def open_draft_pr_for_ticket(
 ) -> str:
     """Open (or adopt) the draft PR for a pushed work branch; link the ticket.
 
-    Returns the PullRequest node uid ("" only if everything GitHub-side
-    failed, which is surfaced via logs/audit rather than an exception —
-    the branch push already succeeded and must not be rolled back).
+    Returns the PullRequest node uid ("" only if the repository/ticket has
+    vanished since the run started — nothing left to notify). A missing
+    GitHub credential instead RAISES: the branch push already succeeded and
+    must not be rolled back, but silently returning "" here left the ticket
+    stuck with a pushed branch, no PR, and no visible reason why. Raising
+    lets `finalize_write_run`'s post-push guard audit it as
+    `implement_run.post_push_failed` (attention.required) instead.
     """
     # Local imports: pull_request_service ↔ delivery services would otherwise
     # form an import cycle through this module's service siblings.
@@ -612,7 +626,11 @@ async def open_draft_pr_for_ticket(
         return ""
     client = get_provider_client(repo)
     if not client.is_active:
-        return ""
+        raise RuntimeError(
+            f"no usable GitHub credential for repository {repository_uid} — branch "
+            f"{work_branch!r} was pushed but the draft PR could not be opened. "
+            "Connect the GitHub App or a PAT for this repository, then retry."
+        )
 
     criteria = [str(c) for c in (ticket.acceptance_criteria or []) if str(c).strip()]
     ac_block = "\n".join(f"- [ ] {c}" for c in criteria) or "- [ ] (no acceptance criteria recorded)"
