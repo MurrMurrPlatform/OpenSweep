@@ -1,6 +1,5 @@
 """Single helper used by every state-changing service to record an audit event."""
 
-import re
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -8,14 +7,54 @@ from uuid import uuid4
 from domains.events.models import Event
 from logging_config import logger
 
-# Subject labels whose nodes carry repository_uid (Repository maps to itself).
-_LABEL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+# Node labels every write_audit() call site passes as subject_type. A regex
+# guard on label syntax isn't enough (Cypher labels can't be parameterized —
+# they're interpolated into the query text below), so this is a closed
+# whitelist: any subject_type outside this set is treated as unknown rather
+# than risking Cypher injection through the f-string.
+_ALLOWED_LABELS = {
+    "Agent",
+    "Analysis",
+    "Area",
+    "AreaEdit",
+    "Campaign",
+    "Comment",
+    "Doc",
+    "DocEdit",
+    "EpicProposal",
+    "Finding",
+    "FindingResolution",
+    "GitConnection",
+    "GitHubInstallation",
+    "Interest",
+    "LLMProvider",
+    "Lens",
+    "Memory",
+    "MergePolicy",
+    "NewsItem",
+    "OAuthClient",
+    "OAuthToken",
+    "Organization",
+    "PlatformConfig",
+    "PullRequest",
+    "Repository",
+    "Run",
+    "RunPolicy",
+    "Sandbox",
+    "ScheduledAgent",
+    "SlackConnection",
+    "SlackNotificationRule",
+    "Thread",
+    "Ticket",
+    "User",
+    "Verdict",
+}
 
 
 async def _derive_repository_uid(subject_uid: str | None, subject_type: str | None) -> str:
     """Tenancy: resolve the subject's repository so audit events are
     org-scopeable. One indexed lookup; empty string = platform-level event."""
-    if not subject_uid or not subject_type or not _LABEL_RE.match(subject_type):
+    if not subject_uid or not subject_type or subject_type not in _ALLOWED_LABELS:
         return ""
     if subject_type == "Repository":
         return subject_uid
