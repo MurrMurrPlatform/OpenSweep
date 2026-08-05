@@ -942,6 +942,12 @@ export interface LLMProvider {
   /** Owning org uid. */
   org_uid: string
   /**
+   * Ordered fallback chain: when the active provider is quota-exhausted or
+   * unusable, the next healthy enabled provider is picked by ascending
+   * fallback_priority (ties broken by label). Default 100.
+   */
+  fallback_priority?: number
+  /**
    * How many runs may execute on this provider at once (>=1). Campaign
    * dispatch clamps to the remaining headroom, so this is a ceiling across
    * ALL campaigns, not per-campaign.

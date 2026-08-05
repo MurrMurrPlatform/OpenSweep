@@ -44,11 +44,15 @@ const selected = ref<Tile | null>(null)
 const credential = ref('')
 const baseUrl = ref('')
 const model = ref('')
+/** Empty = platform default (100). Only relevant once more than one provider
+ *  is connected — lower runs first when the active provider is unusable. */
+const fallbackPriority = ref('')
 const submitting = ref(false)
 
 watch(() => props.open, (val) => {
   if (!val) return
   selected.value = null
+  fallbackPriority.value = ''
   store.fetchCatalog().catch(() => {})
 })
 
@@ -135,6 +139,8 @@ async function connect() {
     if (model.value.trim()) payload.model = model.value.trim()
     if (t.preset?.extra_args) payload.extra_args = t.preset.extra_args
     if (credential.value.trim()) payload.credential_secret = credential.value.trim()
+    const priority = Number.parseInt(fallbackPriority.value, 10)
+    if (Number.isFinite(priority) && priority > 0) payload.fallback_priority = priority
     const created = await store.create(payload)
     toast.success('Provider connected', created.label)
     emit('connected')
@@ -256,6 +262,17 @@ async function connect() {
                 <li v-for="(step, i) in setupSteps" :key="i">{{ step }}</li>
               </ol>
             </div>
+          </div>
+
+          <div class="flex flex-col gap-1.5">
+            <Label for="connect-fallback-priority">
+              Fallback priority <span class="font-normal text-muted-foreground">(optional)</span>
+            </Label>
+            <Input id="connect-fallback-priority" v-model="fallbackPriority" type="number" min="1" class="max-w-32" placeholder="100" />
+            <span class="text-xs text-muted-foreground">
+              When another connected provider is quota-exhausted or unusable, providers with a
+              lower number take over first. Leave blank for the platform default.
+            </span>
           </div>
         </DialogBody>
 

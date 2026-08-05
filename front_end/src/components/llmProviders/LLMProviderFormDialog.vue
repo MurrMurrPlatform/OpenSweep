@@ -35,6 +35,7 @@ const form = reactive({
   model: '',
   base_url: '',
   max_concurrent_runs: 5,
+  fallback_priority: 100,
   enabled: true,
   active: false,
   credential_secret: '',          // write-only; never pre-filled
@@ -48,6 +49,7 @@ watch(() => props.open, (val) => {
   form.model = p.model || ''
   form.base_url = p.base_url || ''
   form.max_concurrent_runs = p.max_concurrent_runs ?? 5
+  form.fallback_priority = p.fallback_priority ?? 100
   form.enabled = p.enabled
   form.active = p.active
   form.credential_secret = ''
@@ -62,6 +64,7 @@ function onSubmit() {
     model: form.model,
     base_url: form.base_url,
     max_concurrent_runs: Math.max(Math.trunc(form.max_concurrent_runs) || 1, 1),
+    fallback_priority: Math.trunc(form.fallback_priority) || 100,
     enabled: form.enabled,
     active: form.active,
   }
@@ -114,6 +117,22 @@ function onSubmit() {
             How many runs may use this provider at once, across every campaign.
             Campaign dispatch stops at whichever is tighter — this or the
             campaign's own max parallel.
+          </p>
+        </div>
+
+        <div class="flex flex-col gap-1.5">
+          <Label for="provider-fallback-priority">Fallback priority</Label>
+          <Input
+            id="provider-fallback-priority"
+            v-model.number="form.fallback_priority"
+            type="number"
+            min="1"
+            class="max-w-32"
+          />
+          <p class="text-xs text-muted-foreground">
+            When the active provider is quota-exhausted or unusable, the next
+            healthy enabled provider is picked by ascending priority (lower
+            runs first; ties broken by label). Default 100.
           </p>
         </div>
 

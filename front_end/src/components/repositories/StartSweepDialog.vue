@@ -10,7 +10,7 @@
  * with a tooltip.
  */
 import { computed, ref, watch, type Component } from 'vue'
-import { BookOpen, Layers, Radar, Search, Sparkles } from 'lucide-vue-next'
+import { BookOpen, FolderTree, Layers, Radar, Search, Sparkles } from 'lucide-vue-next'
 import { useAreaStore } from '@/stores/areaStore'
 import { useDocStore, type SweepEstimate } from '@/stores/docStore'
 import { useToast } from '@/composables/useToast'
@@ -25,6 +25,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 
 type SweepKind = 'map-areas' | 'generate-docs' | 'audit' | 'deep-scan' | 'generate-specs'
@@ -46,6 +54,22 @@ const toast = useToast()
 
 const selected = ref<SweepKind>('map-areas')
 const dispatching = ref(false)
+/** Compute dial — audit and deep-scan are the only kinds the backend accepts it for. */
+const effort = ref<'short' | 'normal' | 'deep' | 'unlimited'>('normal')
+/** Area scope — only valid for the whole-repo audit path (no docs yet, so
+ *  auto-select is off); the backend 422s if combined with auto_select. */
+const auditAreaUids = ref<Set<string>>(new Set())
+
+function toggleAuditArea(uid: string) {
+  const next = new Set(auditAreaUids.value)
+  if (next.has(uid)) next.delete(uid)
+  else next.add(uid)
+  auditAreaUids.value = next
+}
+
+const scopeAreas = computed(() =>
+  areaStore.areas.filter((a) => a.enabled && (a.kind === 'subsystem' || a.kind === 'feature')),
+)
 
 // ── Preview: what this sweep costs, before spending it ──────────────────────
 
@@ -60,6 +84,7 @@ async function loadPreview() {
   if (!uid) return
   loadingPreview.value = true
   estimateError.value = false
+  auditAreaUids.value = new Set()
   const [est, areas] = await Promise.allSettled([
     docs.sweepEstimate(uid),
     areaStore.fetchAreas(uid),
@@ -177,6 +202,12 @@ function pick(option: SweepOption) {
   selected.value = option.kind
 }
 
+// Deep scan defaults to a generous ceiling (matches the backend's own
+// default when effort is omitted); audit defaults to normal.
+watch(selected, (kind) => {
+  effort.value = kind === 'deep-scan' ? 'deep' : 'normal'
+})
+
 // ── Dispatch ────────────────────────────────────────────────────────────────
 
 function close() {
@@ -221,8 +252,15 @@ async function start() {
       }
       case 'audit': {
         // No doc pages yet → one repository-wide run; auto-select needs pages
-        // to choose between and would otherwise dispatch nothing.
-        const r = await docs.audit(uid, [], { auto_select: hasDocs.value, limit: 3 })
+        // to choose between and would otherwise dispatch nothing. Area scope
+        // only applies to that whole-repo path (the backend 422s if combined
+        // with auto_select).
+        const r = await docs.audit(uid, [], {
+          auto_select: hasDocs.value,
+          limit: 3,
+          effort: effort.value,
+          area_uids: hasDocs.value ? [] : Array.from(auditAreaUids.value),
+        })
         if (r.runs_dispatched.length) {
           announce(r.runs_dispatched[0], `Audit dispatched — ${r.runs_dispatched.length} run${r.runs_dispatched.length === 1 ? '' : 's'}`, r.summary)
         } else {
@@ -231,7 +269,7 @@ async function start() {
         break
       }
       case 'deep-scan': {
-        const r = await docs.deepScan(uid)
+        const r = await docs.deepScan(uid, { effort: effort.value })
         if (!r.run_uid) toast.error('Deep scan not dispatched', r.errors?.join(' · ') || r.summary)
         else announce(r.run_uid, 'Deep scan started', r.summary)
         break
@@ -323,6 +361,51 @@ async function start() {
           <p v-else-if="estimateError" class="pt-1 text-xs text-muted-foreground">
             Couldn't load the cost estimate — the sweep still dispatches normally.
           </p>
+
+          <!-- Effort + scope — only the kinds the backend accepts them for. -->
+          <div v-if="selected === 'audit' || selected === 'deep-scan'" class="space-y-3 border-t pt-3">
+            <div class="space-y-1.5">
+              <Label>Effort</Label>
+              <Select v-model="effort">
+                <SelectTrigger class="w-full sm:w-56">
+                  <SelectValue placeholder="Effort" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="short">Short</SelectItem>
+                  <SelectItem value="normal">Normal</SelectItem>
+                  <SelectItem value="deep">Deep</SelectItem>
+                  <SelectItem value="unlimited">Unlimited</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <!-- Area scope: only the whole-repo audit path accepts it (the
+                 backend 422s if combined with auto_select). -->
+            <div v-if="selected === 'audit' && !hasDocs && scopeAreas.length" class="space-y-1.5">
+              <Label class="flex items-center gap-1.5">
+                <FolderTree class="h-3.5 w-3.5 text-muted-foreground" /> Scope (optional)
+              </Label>
+              <div class="flex flex-wrap gap-1.5">
+                <button
+                  v-for="a in scopeAreas"
+                  :key="a.uid"
+                  type="button"
+                  :title="a.scope_paths.join('\n')"
+                  :class="[
+                    'rounded-full border px-2.5 py-1 font-mono text-[11px] transition-colors',
+                    auditAreaUids.has(a.uid)
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border text-muted-foreground hover:bg-accent',
+                  ]"
+                  @click="toggleAuditArea(a.uid)"
+                >
+                  {{ a.key }}
+                </button>
+              </div>
+              <p class="text-xs text-muted-foreground">
+                {{ auditAreaUids.size === 0 ? 'Whole repository' : `${auditAreaUids.size} area${auditAreaUids.size === 1 ? '' : 's'}` }} — narrows the run to the selected areas' paths.
+              </p>
+            </div>
+          </div>
         </template>
       </div>
 

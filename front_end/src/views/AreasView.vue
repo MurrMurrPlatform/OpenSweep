@@ -250,6 +250,18 @@ const auditAutoSelect = ref(true)
 const auditLimit = ref('3')
 const auditMaxFindings = ref('')
 const auditIntent = ref('')
+const auditEffort = ref<'short' | 'normal' | 'deep' | 'unlimited'>('normal')
+/** Only meaningful when auto-select is off (whole-repo run) — narrows that
+ *  run's target to the selected areas' scope paths instead of the full repo. */
+const auditAreaUids = ref<Set<string>>(new Set())
+const scopeAreas = computed(() => sortedAreas.value.filter((a) => a.enabled && (a.kind === 'subsystem' || a.kind === 'feature')))
+
+function toggleAuditArea(uid: string) {
+  const next = new Set(auditAreaUids.value)
+  if (next.has(uid)) next.delete(uid)
+  else next.add(uid)
+  auditAreaUids.value = next
+}
 
 function openAudit() {
   auditAutoSelect.value = true
@@ -267,6 +279,8 @@ async function dispatchAudit() {
       limit: Number.isFinite(limit) && limit > 0 ? limit : 3,
       custom_intent: auditIntent.value.trim() || undefined,
       max_findings: Number.isFinite(budget) && budget > 0 ? budget : undefined,
+      effort: auditEffort.value,
+      area_uids: Array.from(auditAreaUids.value),
     })
     auditOpen.value = false
     auditIntent.value = ''
@@ -294,6 +308,7 @@ const deepScanOpen = ref(false)
 const deepScanning = ref(false)
 const deepScanIntent = ref('')
 const deepScanMaxFindings = ref('')
+const deepScanEffort = ref<'short' | 'normal' | 'deep' | 'unlimited'>('deep')
 
 async function dispatchDeepScan() {
   if (!repoUid.value || deepScanning.value) return
@@ -303,6 +318,7 @@ async function dispatchDeepScan() {
     const result = await docs.deepScan(repoUid.value, {
       custom_intent: deepScanIntent.value.trim() || undefined,
       max_findings: Number.isFinite(budget) && budget > 0 ? budget : undefined,
+      effort: deepScanEffort.value,
     })
     deepScanOpen.value = false
     deepScanIntent.value = ''
@@ -777,6 +793,21 @@ async function confirmResolveAll() {
               placeholder="e.g. weight the scan toward security and the multi-tenancy boundaries"
             />
           </div>
+          <div class="space-y-1.5">
+            <Label>Effort</Label>
+            <Select v-model="deepScanEffort">
+              <SelectTrigger class="w-full sm:w-56">
+                <SelectValue placeholder="Effort" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="short">Short</SelectItem>
+                <SelectItem value="normal">Normal</SelectItem>
+                <SelectItem value="deep">Deep</SelectItem>
+                <SelectItem value="unlimited">Unlimited</SelectItem>
+              </SelectContent>
+            </Select>
+            <p class="text-xs text-muted-foreground">Sets the run's wall-clock and tool-turn ceiling.</p>
+          </div>
         </div>
         <DialogFooter>
           <Button variant="ghost" @click="deepScanOpen = false">Cancel</Button>
@@ -897,6 +928,47 @@ async function confirmResolveAll() {
               :rows="2"
               placeholder="e.g. focus on security of the auth flows"
             />
+          </div>
+          <div class="space-y-1.5">
+            <Label>Effort</Label>
+            <Select v-model="auditEffort">
+              <SelectTrigger class="w-full sm:w-56">
+                <SelectValue placeholder="Effort" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="short">Short</SelectItem>
+                <SelectItem value="normal">Normal</SelectItem>
+                <SelectItem value="deep">Deep</SelectItem>
+                <SelectItem value="unlimited">Unlimited</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <!-- Area scope only applies to the whole-repo run (auto-select off) —
+               auto-select already narrows each dispatched run to its own page. -->
+          <div v-if="!auditAutoSelect && scopeAreas.length" class="space-y-1.5">
+            <Label class="flex items-center gap-1.5">
+              <FolderTree class="h-3.5 w-3.5 text-muted-foreground" /> Scope (optional)
+            </Label>
+            <div class="flex flex-wrap gap-1.5">
+              <button
+                v-for="a in scopeAreas"
+                :key="a.uid"
+                type="button"
+                :title="a.scope_paths.join('\n')"
+                :class="[
+                  'rounded-full border px-2.5 py-1 font-mono text-[11px] transition-colors',
+                  auditAreaUids.has(a.uid)
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border text-muted-foreground hover:bg-accent',
+                ]"
+                @click="toggleAuditArea(a.uid)"
+              >
+                {{ a.key }}
+              </button>
+            </div>
+            <p class="text-xs text-muted-foreground">
+              {{ auditAreaUids.size === 0 ? 'Whole repository' : `${auditAreaUids.size} area${auditAreaUids.size === 1 ? '' : 's'}` }} — narrows the run to the selected areas' paths.
+            </p>
           </div>
         </div>
         <DialogFooter>

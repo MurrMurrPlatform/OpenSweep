@@ -185,6 +185,7 @@ function canManage(): boolean {
           <div class="text-muted-foreground text-xs space-y-1">
             <div v-if="p.model"><span class="text-muted-foreground">model: </span>{{ p.model }}</div>
             <div v-if="p.base_url"><span class="text-muted-foreground">url: </span><span class="font-mono">{{ p.base_url }}</span></div>
+            <div><span class="text-muted-foreground">fallback priority: </span>{{ p.fallback_priority ?? 100 }}</div>
             <div v-if="p.last_health_detail" class="text-muted-foreground italic">{{ p.last_health_detail }}</div>
           </div>
 

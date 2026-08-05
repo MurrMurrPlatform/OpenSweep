@@ -79,7 +79,7 @@ const router = createRouter({
             { path: 'areas', name: 'areas', component: () => import('@/views/AreasView.vue'),
               meta: { title: 'Areas', eyebrow: 'Knowledge', section: 'main', repoScoped: true } },
             { path: 'analyses', name: 'analyses', component: () => import('@/views/AnalysisListView.vue'),
-              meta: { title: 'Analyses', eyebrow: 'Health', section: 'main' } },
+              meta: { title: 'Analyses', eyebrow: 'Health', section: 'main', repoScoped: true } },
             // Health folded into Areas: it reported on Docs only and said
             // nothing about the area map it sat beside. Redirect keeps old
             // links (and bookmarks) working.

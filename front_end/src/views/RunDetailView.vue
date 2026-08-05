@@ -45,10 +45,18 @@ import { useScheduledAgentStore } from '@/stores/scheduledAgentStore'
 import SaveAsAgentDialog from '@/components/agents/SaveAsAgentDialog.vue'
 import { useRunPolicyStore } from '@/stores/runPolicyStore'
 import { useRunStore } from '@/stores/runStore'
+import { useNowTicker } from '@/composables/useNowTicker'
 import { useRunSocket, type RunSocketState } from '@/composables/useRunSocket'
 import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
-import { acceptsFollowUp, isLiveRunStatus, runStatusLabel, runStatusVariant } from '@/lib/runStatus'
+import {
+  acceptsFollowUp,
+  formatDuration,
+  isLiveRunStatus,
+  runElapsedMs,
+  runStatusLabel,
+  runStatusVariant,
+} from '@/lib/runStatus'
 import type {
   AgentDTO,
   FindingDTO,
@@ -69,6 +77,10 @@ const toast = useToast()
 
 const uid = computed(() => String(route.params.uid))
 const run = ref<RunDTO | null>(null)
+const now = useNowTicker()
+/** Live while the run is in flight; the recorded duration once it isn't —
+ *  a long run no longer sits at "—" for its entire lifetime. */
+const duration = computed(() => (run.value ? formatDuration(runElapsedMs(run.value, now.value)) : '—'))
 const scheduledAgent = ref<ScheduledAgentDTO | null>(null)
 const agent = ref<AgentDTO | null>(null)
 const saveAgentOpen = ref(false)
@@ -889,7 +901,7 @@ function firstString(...values: unknown[]): string {
               <dt class="text-muted-foreground">started</dt><dd>{{ run.started_at || '—' }}</dd>
               <dt class="text-muted-foreground">last activity</dt><dd>{{ run.last_activity_at || '—' }}</dd>
               <dt class="text-muted-foreground">ended</dt><dd>{{ run.ended_at || '—' }}</dd>
-              <dt class="text-muted-foreground">duration</dt><dd>{{ run.duration_ms ? `${(run.duration_ms / 1000).toFixed(1)}s` : '—' }}</dd>
+              <dt class="text-muted-foreground">duration</dt><dd>{{ duration }}</dd>
               <dt class="text-muted-foreground">workspace</dt><dd class="font-mono">{{ run.sandbox_uid || 'destroyed' }}</dd>
               <dt class="text-muted-foreground">parse</dt><dd>{{ run.parse_status }}</dd>
             </dl>

@@ -31,6 +31,16 @@ import { Card, CardHeader, CardContent, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge, type BadgeVariants } from '@/components/ui/badge'
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -93,6 +103,7 @@ const merging = ref(false)
 const fixing = ref(false)
 const resettingFixRounds = ref(false)
 const linkTicketOpen = ref(false)
+const mergeOverrideOpen = ref(false)
 /** Blocking-resolution finding_uids pre-selected to scope the next fix run. */
 const fixSelection = ref<Set<string>>(new Set())
 
@@ -383,6 +394,11 @@ async function merge(override = false) {
   }
 }
 
+async function confirmMergeOverride() {
+  mergeOverrideOpen.value = false
+  await merge(true)
+}
+
 function openReviewDialog() {
   if (!pr.value || reviewing.value || reviewInFlight.value) return
   reviewDialogOpen.value = true
@@ -575,7 +591,7 @@ async function onResolutionUpdated(updated: FindingResolutionDTO) {
               v-if="pr.state === 'open' && !pr.converged"
               :disabled="merging"
               class="text-destructive focus:text-destructive"
-              @select="merge(true)"
+              @select="mergeOverrideOpen = true"
             >
               <GitMerge /> Merge without convergence
             </DropdownMenuItem>
@@ -931,6 +947,32 @@ async function onResolutionUpdated(updated: FindingResolutionDTO) {
       <CommentThread subject-type="pull_request" :subject-uid="pr.uid" :repository-uid="pr.repository_uid" title="Discussion" />
 
       <LinkTicketDialog v-model:open="linkTicketOpen" :pr="pr" @linked="onTicketLinked" />
+
+      <!-- Merge-without-convergence confirm — destructive, so it gets the
+           same AlertDialog pattern as every other destructive action. -->
+      <AlertDialog v-model:open="mergeOverrideOpen">
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Merge without convergence?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This PR has not converged. Merging anyway skips the checks below and ships
+              whatever the head SHA currently contains.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <ul v-if="pr.convergence?.reasons.length" class="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+            <li v-for="reason in pr.convergence.reasons" :key="reason">{{ reason }}</li>
+          </ul>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              class="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              @click="confirmMergeOverride"
+            >
+              <GitMerge /> Merge anyway
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </template>
   </div>
 </template>

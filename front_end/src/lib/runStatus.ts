@@ -89,3 +89,70 @@ export function toneToBadgeVariant(
   if (tone === 'default') return 'secondary'
   return tone
 }
+
+// ── Elapsed / duration — a 40-minute run should not look identical to a
+//    40-second one anywhere it's listed. ────────────────────────────────────
+
+type RunTimingLike = Pick<
+  RunDTO,
+  'status' | 'started_at' | 'created_at' | 'last_activity_at' | 'updated_at' | 'duration_ms'
+>
+
+/** "45s" / "3m 12s" / "1h 04m". */
+export function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return '—'
+  const totalSeconds = Math.floor(ms / 1000)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  if (hours > 0) return `${hours}h ${String(minutes).padStart(2, '0')}m`
+  if (minutes > 0) return `${minutes}m ${String(seconds).padStart(2, '0')}s`
+  return `${seconds}s`
+}
+
+/** Elapsed time for a run row: ticks live (from started_at, falling back to
+ *  created_at while still queued) for anything still in flight; the recorded
+ *  duration — or a best-effort span to its last known activity — otherwise. */
+export function runElapsedMs(run: RunTimingLike, nowMs: number): number {
+  if (run.duration_ms) return run.duration_ms
+  const startIso = run.started_at || run.created_at
+  if (!startIso) return 0
+  const start = new Date(startIso).getTime()
+  if (Number.isNaN(start)) return 0
+  if (isLiveRunStatus(run.status)) return Math.max(0, nowMs - start)
+  const endIso = run.last_activity_at || run.updated_at
+  const end = endIso ? new Date(endIso).getTime() : nowMs
+  return Math.max(0, (Number.isNaN(end) ? nowMs : end) - start)
+}
+
+/** Coarse phase, limited to what the backend actually signals. There is no
+ *  distinct "finalizing" stage in the data today — output parsing happens
+ *  synchronously at turn-end, not as an observable live phase — so it isn't
+ *  represented here rather than guessed at. */
+export type RunPhase = 'queued' | 'starting' | 'running' | 'paused' | 'done'
+
+export function runPhase(run: Pick<RunDTO, 'status' | 'turns'>): RunPhase {
+  if (run.status === 'queued') return 'queued'
+  if (run.status === 'paused_quota') return 'paused'
+  if (run.status === 'running') return run.turns > 0 ? 'running' : 'starting'
+  return 'done'
+}
+
+export function runPhaseLabel(phase: RunPhase): string {
+  if (phase === 'starting') return 'starting — cloning workspace'
+  return phase
+}
+
+/** 1-based position within the other runs still ahead of it in the same
+ *  queue (older created_at first) — null once the run has left `queued`. */
+export function queuePosition(
+  run: Pick<RunDTO, 'uid' | 'status' | 'created_at'>,
+  allQueued: Pick<RunDTO, 'uid' | 'status' | 'created_at'>[],
+): number | null {
+  if (run.status !== 'queued') return null
+  const queued = allQueued
+    .filter((r) => r.status === 'queued')
+    .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))
+  const idx = queued.findIndex((r) => r.uid === run.uid)
+  return idx === -1 ? null : idx + 1
+}

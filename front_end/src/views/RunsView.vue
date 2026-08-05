@@ -6,10 +6,19 @@ import { useRunStore } from '@/stores/runStore'
 import { useCurrentUserStore } from '@/stores/currentUserStore'
 import { useCurrentRepo } from '@/composables/useCurrentRepo'
 import { useActiveRuns } from '@/composables/useActiveRuns'
+import { useNowTicker } from '@/composables/useNowTicker'
 import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/services/api'
 import { PLAYBOOK_TO_PRODUCES, producesLabel } from '@/lib/produces'
-import { runStatusLabel, runStatusVariant } from '@/lib/runStatus'
+import {
+  formatDuration,
+  queuePosition,
+  runElapsedMs,
+  runPhase,
+  runPhaseLabel,
+  runStatusLabel,
+  runStatusVariant,
+} from '@/lib/runStatus'
 import { formatRelativeTime } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/page-header'
 import { Card, CardContent } from '@/components/ui/card'
@@ -65,6 +74,8 @@ const error = ref<string | null>(null)
 const producesFilter = ref<ProducesKind | ''>('')
 /** Platform admins only: also list @opensweep comment replies + chat sessions. */
 const showAgentActivity = ref(false)
+/** Drives the live elapsed column — one shared timer for every row. */
+const now = useNowTicker()
 
 /** `silent` skips the skeleton so the live heartbeat below never flickers the
  *  table the user is reading. */
@@ -106,6 +117,26 @@ function surfaceLabel(r: RunDTO): string {
   if (r.surface === 'comment') return 'comment reply'
   if (r.surface === 'chat') return 'chat bubble'
   return ''
+}
+
+/** Live-ticks while the run is in flight; the recorded duration once it isn't. */
+function rowDuration(r: RunDTO): string {
+  return formatDuration(runElapsedMs(r, now.value))
+}
+
+/** "#2 of 5" among the runs still ahead of it in the queue — null once dispatched. */
+function rowQueuePosition(r: RunDTO): string | null {
+  const pos = queuePosition(r, items.value)
+  if (pos === null) return null
+  const total = items.value.filter((x) => x.status === 'queued').length
+  return `#${pos} of ${total}`
+}
+
+/** Only "starting" is worth calling out beside the status badge — "running"
+ *  and "queued" already say themselves via the badge label. */
+function rowPhaseSuffix(r: RunDTO): string | null {
+  const phase = runPhase(r)
+  return phase === 'starting' ? runPhaseLabel(phase) : null
 }
 
 const sorted = computed(() =>
@@ -316,6 +347,7 @@ async function startChat() {
                 <th class="px-4 py-2 font-medium">Run</th>
                 <th class="px-4 py-2 font-medium">Playbook</th>
                 <th class="px-4 py-2 font-medium">Status</th>
+                <th class="px-4 py-2 font-medium">Duration</th>
                 <th class="px-4 py-2 font-medium">Turns</th>
                 <th class="px-4 py-2 font-medium">Executor</th>
                 <th class="px-4 py-2 font-medium">Last activity</th>
@@ -346,7 +378,10 @@ async function startChat() {
                 </td>
                 <td class="px-4 py-2">
                   <Badge :variant="statusBadgeVariant(r)">{{ runStatusLabel(r) }}</Badge>
+                  <span v-if="rowQueuePosition(r)" class="ml-1.5 text-xs text-muted-foreground">{{ rowQueuePosition(r) }}</span>
+                  <span v-if="rowPhaseSuffix(r)" class="ml-1.5 text-xs text-muted-foreground">{{ rowPhaseSuffix(r) }}</span>
                 </td>
+                <td class="whitespace-nowrap px-4 py-2 tabular-nums">{{ rowDuration(r) }}</td>
                 <td class="px-4 py-2 tabular-nums">{{ r.turns }}</td>
                 <td class="whitespace-nowrap px-4 py-2 font-mono">{{ r.executor }}</td>
                 <td class="whitespace-nowrap px-4 py-2 text-muted-foreground">{{ formatRelativeTime(r.last_activity_at || r.updated_at) }}</td>
