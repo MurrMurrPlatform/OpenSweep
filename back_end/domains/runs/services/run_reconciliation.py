@@ -201,10 +201,10 @@ async def reconcile_orphaned_runs(
     single_replica = bool(getattr(settings, "OPENSWEEP_SINGLE_REPLICA", True))
     now = datetime.now(timezone.utc)
     changed = 0
-    # intentional: cross-tenant reconciliation must sweep every repo's runs.
-    for run in await Run.nodes.all():
-        if run.status not in _REPAIRABLE_STATUSES:
-            continue
+    # Cross-tenant reconciliation must sweep every repo's runs — but only
+    # queued/running rows are repairable, so push the status gate down to the
+    # DB instead of loading the whole Run table on every restart.
+    for run in await Run.nodes.filter(status__in=list(_REPAIRABLE_STATUSES)):
         owner = str((run.usage or {}).get("dispatch_runtime") or "")
         if not is_orphan(
             owner=owner,

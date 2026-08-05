@@ -110,9 +110,8 @@ async def run_generate_docs(
     """
     subsystem_areas = [
         a
-        for a in await Area.nodes.all()
-        if a.repository_uid == repository_uid
-        and bool(a.enabled)
+        for a in await Area.nodes.filter(repository_uid=repository_uid)
+        if bool(a.enabled)
         and (a.kind or "subsystem") == "subsystem"
     ]
     if not subsystem_areas:
@@ -187,9 +186,8 @@ async def feature_leaf_spec_targets(repository_uid: str) -> list[Area]:
     listing."""
     rows = [
         a
-        for a in await Area.nodes.all()
-        if a.repository_uid == repository_uid
-        and bool(a.enabled)
+        for a in await Area.nodes.filter(repository_uid=repository_uid)
+        if bool(a.enabled)
         and a.kind == "feature"
     ]
     feature_keys = [a.key for a in rows]
@@ -536,9 +534,8 @@ async def run_audit(
             areas = sorted(
                 (
                     a
-                    for a in await Area.nodes.all()
+                    for a in await Area.nodes.filter(repository_uid=repository_uid)
                     if a.uid in wanted_areas
-                    and a.repository_uid == repository_uid
                 ),
                 key=lambda a: a.key,
             )
@@ -625,8 +622,8 @@ async def run_audit(
 
     wanted = set(doc_uids)
     docs: list[Doc] = [
-        d for d in await Doc.nodes.all()
-        if d.repository_uid == repository_uid and d.uid in wanted
+        d for d in await Doc.nodes.filter(repository_uid=repository_uid)
+        if d.uid in wanted
     ]
     found = {d.uid for d in docs}
     for missing in wanted - found:
@@ -802,9 +799,8 @@ async def _select_stale_feature_leaves(repository_uid: str) -> list[Area]:
 
     rows = [
         a
-        for a in await Area.nodes.all()
-        if a.repository_uid == repository_uid
-        and bool(a.enabled)
+        for a in await Area.nodes.filter(repository_uid=repository_uid)
+        if bool(a.enabled)
         and a.kind == "feature"
     ]
     feature_keys = [a.key for a in rows]
@@ -982,7 +978,7 @@ async def _deep_scan_intent(
 async def _existing_pages_listing(repository_uid: str) -> str:
     """Compact listing of existing Doc pages for the generate-docs prompt,
     so re-runs update pages instead of proposing duplicates."""
-    docs = [d for d in await Doc.nodes.all() if d.repository_uid == repository_uid]
+    docs = list(await Doc.nodes.filter(repository_uid=repository_uid))
     real = [d for d in docs if (d.body or "").strip()]
     if not real:
         return "(none yet — this is the first Generate docs for this repository)"
@@ -999,8 +995,8 @@ async def _existing_areas_listing(repository_uid: str) -> str:
     """Compact listing of enabled Areas for the map-areas prompt, so re-runs
     update areas instead of proposing duplicates."""
     areas = [
-        a for a in await Area.nodes.all()
-        if a.repository_uid == repository_uid and a.enabled
+        a for a in await Area.nodes.filter(repository_uid=repository_uid)
+        if a.enabled
     ]
     if not areas:
         return "(none yet — this is the first Map areas run)"
@@ -1021,7 +1017,7 @@ async def _docs_metadata_listing(repository_uid: str) -> str:
     grounded in the code, not restate the docs; bodies are pulled
     deliberately via the `read_doc` tool when the agent decides it needs
     one. The uid is what an area proposal links back via doc_uids."""
-    docs = [d for d in await Doc.nodes.all() if d.repository_uid == repository_uid]
+    docs = list(await Doc.nodes.filter(repository_uid=repository_uid))
     if not docs:
         return "(no documentation pages yet)"
     lines: list[str] = []

@@ -76,11 +76,7 @@ async def select_audit_targets(repository_uid: str, *, limit: int = 3) -> list[A
     """Load Docs + their latest completed Checked stamp and rank. Failed
     stamps do not count as a check (that look never finished); docs already
     targeted by an in-flight run are excluded (no double-dispatch)."""
-    docs = [
-        d
-        for d in await Doc.nodes.all()
-        if d.repository_uid == repository_uid and not d.archived
-    ]
+    docs = list(await Doc.nodes.filter(repository_uid=repository_uid, archived=False))
     if not docs:
         return []
 
