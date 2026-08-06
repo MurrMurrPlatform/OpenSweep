@@ -45,6 +45,15 @@ class PlatformCreateTicketRequest(BaseModel):
     size: str = ""
     origin_finding_uid: str = ""
     parent_ticket_uid: str = ""
+    allow_duplicate: bool = Field(
+        default=False,
+        description=(
+            "Set to true ONLY after inspecting the near-duplicate ticket the "
+            "platform returned on a prior 409 (`existing_ticket_uid`) and "
+            "confirming the new one is genuinely distinct. Default false so "
+            "the tool refuses to file an obvious duplicate."
+        ),
+    )
 
 
 @router.post(
@@ -56,7 +65,12 @@ async def platform_create_ticket(
     req: PlatformCreateTicketRequest, request: Request, user: UserDTO = Depends(get_current_user)
 ):
     """Agents propose work: origin is forced to agent-proposal and the ticket
-    lands in backlog — never todo (Gate 1 is human-only)."""
+    lands in backlog — never todo (Gate 1 is human-only).
+
+    Refuses to file a near-duplicate of an existing open ticket in the same
+    repo (409) — pass `allow_duplicate=true` after reviewing the returned
+    `existing_ticket_uid` if the new work really is distinct.
+    """
     await require_tool_repo_access(request, user, req.repository_uid)
     actor = request.headers.get("X-OpenSweep-Run-Uid") or user.uid
     t = await TicketService().create(
@@ -71,6 +85,7 @@ async def platform_create_ticket(
             origin="agent-proposal",
             origin_finding_uid=req.origin_finding_uid,
             parent_ticket_uid=req.parent_ticket_uid,
+            allow_duplicate=req.allow_duplicate,
         ),
         actor_uid=actor,
     )

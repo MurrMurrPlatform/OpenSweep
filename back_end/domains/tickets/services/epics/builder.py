@@ -123,20 +123,52 @@ async def plan_epics(
     plan_uid = uuid4().hex
     service = EpicService()
     created: list[EpicProposalDTO] = []
+    errors: list[dict[str, str]] = []
     for d in drafts:
-        proposal, _deduped = await service.propose(
-            repository_uid=req.repository_uid,
-            title=d.title,
-            rationale=d.rationale,
-            member_ticket_uids=d.member_ticket_uids,
-            suggested_labels=d.suggested_labels,
-            suggested_priority=d.suggested_priority,
-            actor_uid=actor_uid,
-            axis=d.axis.value,
-            evidence=d.evidence,
-            plan_uid=plan_uid,
-            origin="rule",
-        )
+        # `propose` re-reads each member ticket through `validate_group_members`
+        # and raises HTTPException on staleness (member deleted, moved to
+        # `done`, wrong repo). Without the try, the FIRST stale draft aborts
+        # the whole loop and returns nothing — but every draft persisted
+        # before it is already saved with `plan_uid`, so those proposals are
+        # orphaned in the DB with no way for the caller to discover them.
+        # Mirror bulk_approve's contract: skip the failing draft, keep going,
+        # and always return the plan_uid + per-draft errors.
+        try:
+            proposal, _deduped = await service.propose(
+                repository_uid=req.repository_uid,
+                title=d.title,
+                rationale=d.rationale,
+                member_ticket_uids=d.member_ticket_uids,
+                suggested_labels=d.suggested_labels,
+                suggested_priority=d.suggested_priority,
+                actor_uid=actor_uid,
+                axis=d.axis.value,
+                evidence=d.evidence,
+                plan_uid=plan_uid,
+                origin="rule",
+            )
+        except HTTPException as exc:
+            errors.append({"title": d.title, "detail": str(exc.detail)})
+            continue
+        except Exception as exc:  # noqa: BLE001 — same reason as bulk_approve
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "plan_epics: unexpected error for draft %r: %s",
+                d.title,
+                exc,
+                exc_info=True,
+            )
+            errors.append(
+                {"title": d.title, "detail": f"internal error: {type(exc).__name__}"}
+            )
+            continue
         created.append(proposal_to_dto(proposal))
 
-    return {"plan_uid": plan_uid, "summary": summary, "epics": created}
+    summary = {**summary, "errors": len(errors)}
+    return {
+        "plan_uid": plan_uid,
+        "summary": summary,
+        "epics": created,
+        "errors": errors,
+    }

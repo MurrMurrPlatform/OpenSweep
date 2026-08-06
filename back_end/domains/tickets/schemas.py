@@ -77,6 +77,12 @@ class CreateTicketRequest(BaseModel):
     kind: str = ""
     tags: list[str] = Field(default_factory=list)
     subtype: str = ""
+    # Escape hatch for the near-duplicate check at create time. Off by
+    # default: an agent proposing the same ticket twice must SEE the existing
+    # one (via the 409 payload) and either update it or re-submit with this
+    # flag once it has confirmed the new one is distinct. Same shape the full
+    # semantic-dedupe design (ticket 5570ff15) calls for.
+    allow_duplicate: bool = False
 
 
 class UpdateTicketRequest(BaseModel):

@@ -1542,6 +1542,10 @@ export interface PlanEpicsResult {
   plan_uid: string
   summary: EpicPlanSummary
   epics: EpicProposalDTO[]
+  /** Per-draft failures during proposal creation. A stale member on one draft
+   *  no longer aborts the batch — the caller always gets its plan_uid and the
+   *  drafts that landed, plus any that were skipped. */
+  errors?: { title: string; detail: string }[]
 }
 
 /** Result of `dry_run: true` — nothing written, so `plan_uid` is empty. */
