@@ -26,6 +26,15 @@ class _Nodes:
     async def all(self):
         return list(self._rows)
 
+    async def filter(self, **kw):
+        def _match(row):
+            for k, v in kw.items():
+                if getattr(row, k, None) != v:
+                    return False
+            return True
+
+        return [r for r in self._rows if _match(r)]
+
     async def get_or_none(self, uid=None, **_kw):
         return next((r for r in self._rows if r.uid == uid), None)
 
@@ -109,3 +118,31 @@ def test_is_due_first_run_fires_immediately():
 def test_is_due_rejects_invalid_expression():
     with pytest.raises(ValueError):
         is_due("not a cron", last=None, now=datetime.now(timezone.utc))
+
+
+@pytest.mark.asyncio
+async def test_scan_pushes_enabled_filter_into_query(monkeypatch):
+    """Regression: `.nodes.all()` scanned the whole platform's bindings on
+    every 60s beat. The scanner must query with `enabled=True` so disabled
+    rows never even leave Cypher."""
+    sa_enabled = _audit_binding(uid="sa-on", enabled=True)
+    sa_disabled = _audit_binding(uid="sa-off", enabled=False)
+    agent = SimpleNamespace(uid="agent-audit", source_url="opensweep://agent/audit-stale")
+    monkeypatch.setattr(
+        schedule_scanner,
+        "ScheduledAgent",
+        SimpleNamespace(nodes=_Nodes([sa_enabled, sa_disabled])),
+    )
+    monkeypatch.setattr(
+        schedule_scanner, "Agent", SimpleNamespace(nodes=_Nodes([agent]))
+    )
+
+    async def fake_audit(*, repository_uid, limit, triggered_by):
+        return SimpleNamespace(runs_dispatched=["r"])
+
+    monkeypatch.setattr(sweep, "run_auto_audit", fake_audit)
+    result = await schedule_scanner.scan_and_dispatch(now=NOW)
+    # The disabled row must never even be considered.
+    assert sa_disabled.saved is False
+    assert sa_enabled.saved is True
+    assert result.dispatched == 1

@@ -48,13 +48,13 @@ async def candidates_for_change(
     if not changed:
         return []
 
-    bindings = [
-        s
-        for s in await ScheduledAgent.nodes.all()
-        if s.repository_uid == repository_uid
-        and (s.trigger or "") == "on-event"
-        and s.enabled
-    ]
+    # Push the filter into Cypher — fires on every GitHub push webhook, so
+    # `.nodes.all()` was O(total-platform-bindings) per push per tenant.
+    bindings = list(
+        await ScheduledAgent.nodes.filter(
+            repository_uid=repository_uid, trigger="on-event", enabled=True
+        )
+    )
     out: list[TriggerCandidate] = []
     for s in bindings:
         target_paths = [
