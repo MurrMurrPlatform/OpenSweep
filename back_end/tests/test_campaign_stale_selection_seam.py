@@ -53,6 +53,16 @@ def plan_seams(monkeypatch):
         async def all():
             return list(rows)
 
+        @staticmethod
+        async def filter(**kw):
+            # _area_map_inputs now narrows in the query (tenant + enabled);
+            # mirror the same predicate here so these seams keep behaving
+            # like production.
+            def _matches(a):
+                return all(getattr(a, key) == val for key, val in kw.items())
+
+            return [a for a in rows if _matches(a)]
+
     import domains.areas.models as area_models
     import domains.repositories.models as repo_models
 

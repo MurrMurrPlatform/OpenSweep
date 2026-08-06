@@ -52,8 +52,11 @@ def _campaign(**overrides):
 @pytest.fixture
 def seams(monkeypatch):
     """launch() with the DB seams stubbed: get → in-memory campaign,
-    save → counted no-op, record_event → captured list."""
-    state = SimpleNamespace(campaign=None, events=[], saves=0)
+    save → counted no-op, record_event → captured list, plus the atomic-
+    transition Cypher stubbed to succeed and Campaign.nodes.get_or_none
+    → the same in-memory campaign (used by _replan's refetch-before-save).
+    """
+    state = SimpleNamespace(campaign=None, events=[], saves=0, cypher_calls=[])
 
     async def fake_get(uid):
         return state.campaign
@@ -65,6 +68,20 @@ def seams(monkeypatch):
     async def fake_record_event(c, type, **payload):
         state.events.append({"type": type, **payload})
 
+    async def fake_cypher(query, params=None):
+        state.cypher_calls.append((query, params or {}))
+        # _transition treats a non-empty result as "the CAS wrote the row".
+        return [["running"]], None
+
+    class _Nodes:
+        @staticmethod
+        async def get_or_none(uid=None, **_kw):
+            return state.campaign if state.campaign and state.campaign.uid == uid else None
+
+    from neomodel import adb as _adb
+
+    monkeypatch.setattr(_adb, "cypher_query", fake_cypher)
+    monkeypatch.setattr(Campaign, "nodes", _Nodes)
     monkeypatch.setattr(campaign_service, "get", fake_get)
     monkeypatch.setattr(Campaign, "save", fake_save)
     monkeypatch.setattr(campaign_service, "record_event", fake_record_event)

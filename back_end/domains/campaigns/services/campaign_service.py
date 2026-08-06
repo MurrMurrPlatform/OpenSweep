@@ -19,6 +19,7 @@ from domains.campaigns.models import (
     CAMPAIGN_KINDS,
     CAMPAIGN_TEMPLATES,
     DEFAULT_MAX_PARALLEL,
+    LEGAL_STATUS_TRANSITIONS,
     Campaign,
     is_legal_status_transition,
 )
@@ -27,6 +28,12 @@ from domains.campaigns.services import planner
 from domains.repositories.services.file_tree import file_tree_paths
 from infrastructure.audit import write_audit
 from logging_config import logger
+
+
+# Campaign statuses that end its contribution to a batch's roll-up. Kept
+# here (not imported from batch.py) because campaign_service is imported by
+# batch.py — pulling a name back would introduce a circular import.
+_TERMINAL_STATUSES = {"done", "failed", "cancelled"}
 
 
 def to_dto(c: Campaign) -> CampaignDTO:
@@ -111,6 +118,10 @@ async def update(uid: str, req, *, actor_uid: str = "") -> Campaign:
     at create time — changing it after the fact would leave `parts`
     describing work nobody asked for. `max_parallel` is pure scheduling, so
     the next tick just picks it up.
+
+    Batch parents own no parts of their own — their own `max_parallel` is
+    never read by dispatch. Cascade the retune to every non-terminal child
+    so the setting actually takes effect on the runs the batch dispatches.
     """
     c = await get(uid)
     changed: dict = {}
@@ -131,6 +142,26 @@ async def update(uid: str, req, *, actor_uid: str = "") -> Campaign:
         kind="campaign.updated", subject_uid=c.uid, subject_type="Campaign",
         actor_uid=actor_uid, payload=changed,
     )
+    if (
+        "max_parallel" in changed
+        and str(getattr(c, "kind", "") or "") == "batch"
+    ):
+        for child_uid in list(getattr(c, "child_uids", []) or []):
+            child = await Campaign.nodes.get_or_none(uid=child_uid)
+            if child is None or (child.status or "") in _TERMINAL_STATUSES:
+                continue
+            if int(child.max_parallel or DEFAULT_MAX_PARALLEL) == changed["max_parallel"]:
+                continue
+            child.max_parallel = changed["max_parallel"]
+            child.updated_at = datetime.now(UTC)
+            await child.save()
+            await record_event(
+                child,
+                "updated",
+                actor=actor_uid,
+                max_parallel=changed["max_parallel"],
+                cascaded_from=c.uid,
+            )
     return c
 
 
@@ -161,7 +192,11 @@ async def record_event(campaign: Campaign, type: str, **payload) -> None:
 
 
 async def _doc_inputs(repository_uid: str) -> list[dict]:
-    """The repo's docs as the planner's input dicts."""
+    """The repo's docs as the planner's input dicts.
+
+    Tenant-scoped in the query itself — a `.nodes.all()` sweep would load
+    every repo's docs and drop the wrong-repo rows in Python (the codebase
+    anti-pattern called out in CLAUDE.md's neomodel conventions)."""
     from domains.docs.models import Doc
 
     return [
@@ -171,8 +206,7 @@ async def _doc_inputs(repository_uid: str) -> list[dict]:
             "title": d.title or "",
             "watch_paths": list(d.watch_paths or []),
         }
-        for d in await Doc.nodes.all()
-        if d.repository_uid == repository_uid
+        for d in await Doc.nodes.filter(repository_uid=repository_uid)
     ]
 
 
@@ -191,11 +225,12 @@ async def _area_map_inputs(repository_uid: str) -> dict | None:
     audit target) and are counted, not planned."""
     from domains.areas.models import Area, area_is_stale, is_leaf
 
-    rows = [
-        a
-        for a in await Area.nodes.all()
-        if a.repository_uid == repository_uid and bool(a.enabled)
-    ]
+    # Push the tenant + enabled predicate into the query — a `.nodes.all()`
+    # sweep would scan every repo's areas and filter in Python (the codebase
+    # anti-pattern flagged in CLAUDE.md's neomodel conventions).
+    rows = list(
+        await Area.nodes.filter(repository_uid=repository_uid, enabled=True)
+    )
     if not rows:
         return None
     subsystem_keys = [a.key for a in rows if (a.kind or "subsystem") == "subsystem"]
@@ -683,13 +718,46 @@ async def create(
     return c
 
 
+def _predecessors_of(to_status: str) -> list[str]:
+    """Statuses from which `to_status` is a legal move.
+
+    Reverse-lookup over LEGAL_STATUS_TRANSITIONS; used as the CAS predicate
+    in `_transition` so a concurrent transition (launch vs cancel, tick vs
+    cancel) can never lose an update by racing between a read and a write."""
+    return sorted(
+        frm for frm, tos in LEGAL_STATUS_TRANSITIONS.items() if to_status in tos
+    )
+
+
 async def _transition(c: Campaign, to_status: str) -> None:
-    if not is_legal_status_transition(c.status or "planning", to_status):
+    """planning → running (etc.) as an atomic CAS.
+
+    A prior read-then-save pattern lost concurrent transitions: two ticks
+    could both see `running` and both write `finalizing`, or launch could
+    step on cancel. Now a single MATCH+SET writes only when the row's
+    current status is in the legal predecessor set for `to_status`; a
+    zero-row response means someone else transitioned first, which is a
+    real conflict and surfaces as HTTP 409."""
+    from neomodel import adb
+
+    predecessors = _predecessors_of(to_status)
+    if not predecessors:
         raise HTTPException(
-            status_code=409, detail=f"illegal transition {c.status} → {to_status}"
+            status_code=409, detail=f"illegal transition target {to_status!r}"
+        )
+    rows, _ = await adb.cypher_query(
+        "MATCH (c:Campaign {uid: $uid}) WHERE c.status IN $predecessors "
+        "SET c.status = $to RETURN c.status",
+        {"uid": c.uid, "predecessors": predecessors, "to": to_status},
+    )
+    if not rows:
+        # Refresh the local view so the 409 message reflects reality.
+        fresh = await Campaign.nodes.get_or_none(uid=c.uid)
+        current = (fresh.status if fresh is not None else c.status) or "planning"
+        raise HTTPException(
+            status_code=409, detail=f"illegal transition {current} → {to_status}"
         )
     c.status = to_status
-    await c.save()
 
 
 async def _replan(c: Campaign) -> None:
@@ -727,9 +795,27 @@ async def _replan(c: Campaign) -> None:
     if parts == list(c.parts or []):
         return
     was = len(c.parts or [])
+    # Refetch immediately before saving: `_plan_parts` awaits `file_tree_paths`
+    # (network → seconds) and a concurrent cancel that moved the campaign out
+    # of `planning` in that window must not be clobbered by the replan write.
+    fresh = await Campaign.nodes.get_or_none(uid=c.uid)
+    if fresh is None or (fresh.status or "planning") != "planning":
+        current = fresh.status if fresh is not None else "deleted"
+        logger.info(
+            f"campaign {c.uid}: replan aborted — campaign is now {current!r}",
+            extra={"tag": "campaigns"},
+        )
+        await record_event(
+            c, "replan_skipped", reason=f"status changed during replan: {current}"
+        )
+        return
+    fresh.parts = parts
+    fresh.plan_summary = plan_summary
+    await fresh.save()
+    # Keep the caller's node in sync with what we just wrote so `launch`
+    # transitions off the same values.
     c.parts = parts
     c.plan_summary = plan_summary
-    await c.save()
     await record_event(c, "replanned", parts=len(parts), was=was)
 
 
@@ -827,8 +913,32 @@ async def preview_plan(repository_uid: str, req: CreateCampaignRequest) -> dict:
 
 async def cancel(uid: str, *, reason: str = "", actor_uid: str = "") -> Campaign:
     """planning/running → cancelled. In-flight child runs are left to
-    finish on their own; parts stay as-is for the record."""
+    finish on their own; parts stay as-is for the record.
+
+    A batch parent owns no parts of its own — cancelling it must also
+    cancel every non-terminal child, otherwise those children keep
+    dispatching and billing while the batch is nominally cancelled."""
     c = await get(uid)
+    if str(getattr(c, "kind", "") or "") == "batch":
+        for child_uid in list(getattr(c, "child_uids", []) or []):
+            child = await Campaign.nodes.get_or_none(uid=child_uid)
+            if child is None or (child.status or "") in _TERMINAL_STATUSES:
+                continue
+            try:
+                await cancel(
+                    child_uid,
+                    reason=reason or f"batch parent {c.uid} cancelled",
+                    actor_uid=actor_uid,
+                )
+            except HTTPException as exc:
+                # A child that raced us to a terminal state is not an error;
+                # anything else is worth a trail on the parent.
+                if exc.status_code != 409:
+                    logger.warning(
+                        f"batch {c.uid}: child {child_uid} cancel failed: "
+                        f"{exc.status_code} {exc.detail}",
+                        extra={"tag": "campaigns"},
+                    )
     await _transition(c, "cancelled")
     await record_event(c, "cancelled", reason=reason, by=actor_uid)
     return c
@@ -838,7 +948,12 @@ async def delete(uid: str, *, actor_uid: str = "") -> None:
     """Remove the campaign record entirely. Live campaigns (running/
     finalizing) must be cancelled first — deleting mid-flight would pull the
     plan out from under the celery tick. Child runs are kept: they are the
-    audit record, and the digest already landed as findings."""
+    audit record, and the digest already landed as findings.
+
+    A batch parent additionally blocks deletion while ANY child is still
+    live (planning/running/finalizing) — silently orphaning a child would
+    leave its Runs pointing at a parent_uid the parent record no longer
+    exists at."""
     c = await get(uid)
     status = c.status or "planning"
     if status in {"running", "finalizing"}:
@@ -846,6 +961,22 @@ async def delete(uid: str, *, actor_uid: str = "") -> None:
             status_code=409,
             detail=f"campaign is {status} — cancel it before deleting",
         )
+    if str(getattr(c, "kind", "") or "") == "batch":
+        live_children: list[str] = []
+        for child_uid in list(getattr(c, "child_uids", []) or []):
+            child = await Campaign.nodes.get_or_none(uid=child_uid)
+            if child is not None and (child.status or "") not in _TERMINAL_STATUSES:
+                live_children.append(child_uid)
+        if live_children:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"batch has non-terminal children ({len(live_children)}: "
+                    f"{', '.join(live_children[:3])}"
+                    f"{'…' if len(live_children) > 3 else ''}) — "
+                    "cancel or wait for them before deleting"
+                ),
+            )
     repository_uid = c.repository_uid
     title = c.title
     await c.delete()

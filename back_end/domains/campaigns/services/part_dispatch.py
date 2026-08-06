@@ -269,12 +269,19 @@ async def _dispatch_global(campaign, part: dict) -> str:
             "each against the current code:\n" + "\n".join(digest)
         )
     prefix = str(getattr(campaign, "area_prefix", "") or "")
-    if prefix:
+    coverage_keys = [str(k) for k in (getattr(campaign, "coverage_keys", []) or [])]
+    # Gate on EITHER path: the legacy area_prefix or the newer coverage_keys.
+    # `_plan_parts` writes scope_hint whenever coverage_keys resolves any
+    # areas; without this gate a coverage_keys-only global campaign had its
+    # hint computed and then silently never read at dispatch time.
+    if prefix or coverage_keys:
         # The sweep agent stays whole-repo; steer it toward the slice this
         # campaign covers (scope_hint = union of the filtered areas' scopes).
-        hint = ", ".join(part.get("scope_hint") or []) or prefix
+        scope_hint = part.get("scope_hint") or []
+        hint = ", ".join(scope_hint) or prefix or ", ".join(coverage_keys)
+        label = prefix or ", ".join(coverage_keys)
         scope_note = (
-            f"This campaign is scoped to areas under '{prefix}'. "
+            f"This campaign is scoped to areas under '{label}'. "
             f"Concentrate on: {hint}."
         )
         structural_extra = (
