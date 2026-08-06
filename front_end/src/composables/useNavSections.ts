@@ -71,7 +71,6 @@ export function useNavSections(): { sections: ComputedRef<NavSection[]> } {
         items: [
           { to: '/settings/organization', label: 'Organization', icon: Building2 },
           { to: '/agents', label: 'Agent library', icon: Bot },
-          { to: '/lenses', label: 'Lens library', icon: Telescope },
           { to: '/settings/slack', label: 'Slack', icon: Slack },
           { to: '/admin/llm-providers', label: 'LLM providers', icon: Sparkles },
           { to: '/settings/account', label: 'Account', icon: User },
@@ -82,6 +81,7 @@ export function useNavSections(): { sections: ComputedRef<NavSection[]> } {
         label: 'Admin',
         items: [
           { to: '/settings/github', label: 'GitHub', icon: Github },
+          { to: '/lenses', label: 'Lens library', icon: Telescope },
           { to: '/admin/platform-config', label: 'Platform config', icon: ShieldAlert },
           { to: '/admin/run-policies', label: 'Run policies', icon: Settings2 },
           { to: '/admin/sandboxes', label: 'Sandboxes', icon: FolderArchive },

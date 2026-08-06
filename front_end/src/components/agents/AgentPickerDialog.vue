@@ -173,7 +173,7 @@ async function create() {
             </Select>
           </div>
           <div class="space-y-1.5">
-            <Label>Compute dial</Label>
+            <Label>Autonomy</Label>
             <Select :model-value="dial" @update:model-value="dial = $event as Autonomy">
               <SelectTrigger class="w-full"><SelectValue /></SelectTrigger>
               <SelectContent>

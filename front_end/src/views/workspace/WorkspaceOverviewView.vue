@@ -9,8 +9,8 @@
  * Refresh button.
  */
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
-import { Activity, MessagesSquare, Sparkles } from 'lucide-vue-next'
+import { RouterLink, useRouter } from 'vue-router'
+import { Activity, Github, MessagesSquare, Sparkles } from 'lucide-vue-next'
 import { useDeliveryStore } from '@/stores/deliveryStore'
 import { useMetricsStore } from '@/stores/metricsStore'
 import { useRunStore } from '@/stores/runStore'
@@ -99,6 +99,21 @@ function statusBadgeVariant(run: RunDTO): BadgeVariants['variant'] {
   return v
 }
 
+/**
+ * Surface the backend's per-repo GitHub connection health — the webhook
+ * handler flips this to `disconnected`/`suspended` when the App is
+ * uninstalled or its access is revoked. Left unrendered, the user only
+ * discovered the credential was gone by watching runs fail.
+ */
+const githubStatusLabel = computed(() => {
+  switch (repo.value?.github_connection_status) {
+    case 'disconnected': return 'GitHub disconnected'
+    case 'suspended': return 'GitHub App suspended'
+    case 'error': return 'GitHub connection error'
+    default: return null
+  }
+})
+
 /** Nothing has ever run here: the whole page becomes one call to action. */
 const untouched = computed(
   () =>
@@ -165,6 +180,25 @@ const stats = computed(() => [
     </EmptyState>
 
     <template v-else>
+      <!-- Surface a GitHub credential outage before the user notices runs
+           failing. Backend flips repo.github_connection_status via webhooks
+           on App uninstall / repo access revoke / installation suspend. -->
+      <div
+        v-if="githubStatusLabel"
+        class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm"
+      >
+        <div class="flex items-center gap-3">
+          <Github class="h-4 w-4 shrink-0 text-destructive" />
+          <span>
+            <span class="font-medium text-destructive">{{ githubStatusLabel }}</span>
+            <span class="text-muted-foreground"> — OpenSweep can no longer talk to GitHub for this repo. Sweeps, audits and PR sync will fail until the App is reconnected.</span>
+          </span>
+        </div>
+        <RouterLink to="/settings/github">
+          <Button variant="outline" size="sm">Reconnect</Button>
+        </RouterLink>
+      </div>
+
       <!-- What needs a human, priority-sorted server-side. -->
       <AttentionPanel
         v-if="repoUid && repoSlug"
@@ -259,6 +293,12 @@ const stats = computed(() => [
               class="text-primary hover:underline"
             >{{ repo.github_owner }}/{{ repo.github_repo }}</a>
             <template v-else>—</template>
+          </div>
+          <div
+            v-if="githubStatusLabel"
+            class="mt-2 text-[10px] font-semibold uppercase tracking-wide text-destructive"
+          >
+            {{ githubStatusLabel }}
           </div>
         </CardContent>
       </Card>

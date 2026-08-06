@@ -109,7 +109,7 @@ function save() {
           </Select>
         </div>
         <div class="space-y-1.5">
-          <Label>Compute dial</Label>
+          <Label>Autonomy</Label>
           <Select :model-value="dial" @update:model-value="dial = $event as Autonomy">
             <SelectTrigger class="w-full"><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -124,8 +124,8 @@ function save() {
       </div>
       <p v-if="hint" class="text-xs text-muted-foreground">{{ hint }}</p>
       <p v-else class="text-xs text-muted-foreground">
-        Cron runs dispatch on the beat scanner; on-push runs are gated by the compute
-        dial — “auto-run on free compute” makes them cost nothing on a local provider.
+        Cron runs dispatch on the beat scanner; on-push runs are gated by the autonomy
+        setting — “auto-run on free compute” makes them cost nothing on a local provider.
       </p>
     </CardContent>
   </Card>

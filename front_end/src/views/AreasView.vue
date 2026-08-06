@@ -99,37 +99,39 @@ const preview = ref<CampaignAreasPreview | null>(null)
 const health = ref<AreasHealthDTO | null>(null)
 
 async function reload() {
-  if (!repoUid.value) return
+  const target = repoUid.value
+  if (!target) return
   loading.value = true
   error.value = null
   // The drift strip is best-effort: any preview failure just hides it.
   preview.value = null
   void campaignStore
-    .fetchAreas(repoUid.value)
-    .then((p) => (preview.value = p))
-    .catch(() => (preview.value = null))
+    .fetchAreas(target)
+    .then((p) => { if (repoUid.value === target) preview.value = p })
+    .catch(() => { if (repoUid.value === target) preview.value = null })
   // The latest deep-scan report link is decorative — never block the board.
   void analyses
-    .latestForRepo(repoUid.value)
-    .then((a) => (latestAnalysis.value = a))
-    .catch(() => (latestAnalysis.value = null))
+    .latestForRepo(target)
+    .then((a) => { if (repoUid.value === target) latestAnalysis.value = a })
+    .catch(() => { if (repoUid.value === target) latestAnalysis.value = null })
   void scheduledAgents
-    .fetchAll(repoUid.value)
+    .fetchAll(target)
     .then((all) => {
+      if (repoUid.value !== target) return
       auditScheduleBinding.value = all.find((s) => s.agent_key === 'audit-stale') ?? null
     })
-    .catch(() => (auditScheduleBinding.value = null))
+    .catch(() => { if (repoUid.value === target) auditScheduleBinding.value = null })
   try {
     const [, , h] = await Promise.all([
-      areaStore.fetchAreas(repoUid.value),
-      areaStore.fetchEdits(repoUid.value, 'pending'),
-      areaStore.fetchHealth(repoUid.value),
+      areaStore.fetchAreas(target),
+      areaStore.fetchEdits(target, 'pending'),
+      areaStore.fetchHealth(target),
     ])
-    health.value = h
+    if (repoUid.value === target) health.value = h
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    if (repoUid.value === target) error.value = e instanceof Error ? e.message : String(e)
   } finally {
-    loading.value = false
+    if (repoUid.value === target) loading.value = false
   }
 }
 

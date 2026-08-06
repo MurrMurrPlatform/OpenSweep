@@ -39,6 +39,16 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -114,7 +124,10 @@ const verdictDialogOpen = ref(false)
 const submittingVerdict = ref(false)
 const verdictResult = ref<VerdictResult>('approve')
 const verdictSha = ref('')
-const verdictBlocking = ref('')
+
+// Confirmation for the destructive override merge — every other destructive
+// action in this app goes through AlertDialog; this one dropdown item slipped.
+const overrideMergeOpen = ref(false)
 
 const VERDICT_OPTIONS = [
   { label: 'Approve — mergeable at this head', value: 'approve' },
@@ -442,7 +455,6 @@ function openVerdictDialog() {
   if (!pr.value) return
   verdictSha.value = pr.value.head_sha || ''
   verdictResult.value = 'approve'
-  verdictBlocking.value = ''
   verdictDialogOpen.value = true
 }
 
@@ -455,11 +467,13 @@ async function submitVerdict() {
   }
   submittingVerdict.value = true
   try {
-    const blocking = Number.parseInt(verdictBlocking.value, 10)
+    // The backend always derives new_blocking_findings from finding_uids +
+    // MergePolicy (anti-self-grading design). This manual dialog can't attach
+    // finding_uids, so any number sent here would silently floor to 0 —
+    // omit the field entirely and record the maintainer's overall result.
     verdict.value = await delivery.submitVerdict(pr.value.uid, {
       sha,
       result: verdictResult.value,
-      new_blocking_findings: Number.isFinite(blocking) && blocking > 0 ? blocking : 0,
     })
     verdictDialogOpen.value = false
     toast.success('Verdict recorded', `Bound to ${sha.slice(0, 10)} · ${verdictResult.value}`)
@@ -575,7 +589,7 @@ async function onResolutionUpdated(updated: FindingResolutionDTO) {
               v-if="pr.state === 'open' && !pr.converged"
               :disabled="merging"
               class="text-destructive focus:text-destructive"
-              @select="merge(true)"
+              @select="overrideMergeOpen = true"
             >
               <GitMerge /> Merge without convergence
             </DropdownMenuItem>
@@ -673,15 +687,11 @@ async function onResolutionUpdated(updated: FindingResolutionDTO) {
                 Defaults to the current head. A verdict only counts as fresh at the PR's head sha.
               </p>
             </div>
-            <div class="space-y-1.5">
-              <Label>New blocking findings</Label>
-              <Input
-                v-model="verdictBlocking"
-                type="number"
-                min="0"
-                placeholder="0"
-              />
-            </div>
+            <p class="rounded-md border border-border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+              Blocking-finding counts are derived server-side from the ledger
+              (findings + merge policy). Use "Request changes" to signal blocking
+              issues, then triage the specific findings on the ledger below.
+            </p>
           </div>
           <DialogFooter>
             <Button variant="ghost" @click="verdictDialogOpen = false">Cancel</Button>
@@ -691,6 +701,28 @@ async function onResolutionUpdated(updated: FindingResolutionDTO) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog v-model:open="overrideMergeOpen">
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Merge without convergence?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This PR has not converged — outstanding blockers are being ignored.
+              Merging anyway pushes unreviewed code to the base branch and can
+              trigger downstream deploys.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              class="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              @click="() => { overrideMergeOpen = false; merge(true) }"
+            >
+              Merge anyway
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <div class="grid grid-cols-1 gap-4 items-start lg:grid-cols-[1fr_360px]">
         <!-- ── Main column ─────────────────────────────────────────────── -->

@@ -48,7 +48,7 @@ const auditLimit = computed(() => {
 
 const scheduleHint = computed(() =>
   sa.value?.agent_key === 'audit-stale'
-    ? `Each due tick audits the stalest / never-checked documentation pages (up to ${auditLimit.value} per tick, one scoped run each). “Disabled” on the compute dial is the kill switch even with a cron set.`
+    ? `Each due tick audits the stalest / never-checked documentation pages (up to ${auditLimit.value} per tick, one scoped run each). “Disabled” on the autonomy setting is the kill switch even with a cron set.`
     : '',
 )
 

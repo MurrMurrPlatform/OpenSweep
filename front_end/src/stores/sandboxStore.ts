@@ -14,9 +14,7 @@ export const useSandboxStore = defineStore('sandboxes', () => {
 
   async function destroy(uid: string) {
     const s = await apiDelete<Sandbox>(`/sandboxes/${uid}`)
-    if (s) {
-      list.value = list.value.map(x => (x.uid === uid ? s : x))
-    }
+    list.value = list.value.filter(x => x.uid !== uid)
     return s
   }
 
