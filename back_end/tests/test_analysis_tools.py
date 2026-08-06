@@ -6,11 +6,15 @@ internal_llm prompt) and that input validation rejects bad args BEFORE any DB
 write.
 """
 
+import contextlib
 import inspect
+from importlib import import_module
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
+from domains.analysis.services.analysis_service import analysis_write_lock_key
 from domains.platform_tools.add_analysis_note import add_analysis_note
 from domains.platform_tools.ask_question import ask_question
 from domains.platform_tools.dispatcher import tool_names
@@ -98,3 +102,252 @@ def test_tool_signatures_key_off_source_run_uid():
     for fn in (upsert_analysis, set_analysis_section, add_analysis_note, ask_question):
         params = set(inspect.signature(fn).parameters)
         assert {"repository_uid", "source_run_uid"} <= params
+
+
+# ── write-race lock (concurrent authoring tools cannot silently clobber) ─────
+
+
+def test_lock_key_is_scoped_by_source_run_uid():
+    # One Analysis per source_run_uid ⇒ one lock per source_run_uid: two runs
+    # scanning in parallel must not queue behind each other.
+    a = analysis_write_lock_key("run-a")
+    b = analysis_write_lock_key("run-b")
+    assert a != b
+    assert "run-a" in a
+    assert "run-b" in b
+
+
+class _Saveable(SimpleNamespace):
+    async def save(self):
+        return self
+
+
+def _wire_analysis_tool(monkeypatch, tool_module_name: str) -> dict:
+    """Stub get_or_create + write_audit + capture the lock key each tool
+    passes. Returns a dict populated on invocation with keys `lock_key`
+    (str) and `node` (the fake node the tool mutated)."""
+    mod = import_module(tool_module_name)
+    captured: dict = {}
+
+    async def fake_get_or_create(*, repository_uid, source_run_uid, executor="", revision=""):
+        node = _Saveable(
+            uid="an-1",
+            repository_uid=repository_uid,
+            source_run_uid=source_run_uid,
+            executor=executor or "",
+            revision=revision or "",
+            title="",
+            status="in_progress",
+            completed_at=None,
+            health_grade="",
+            health_score=None,
+            scorecard=[],
+            confidence="",
+            limitations="",
+            stats={},
+            sections={},
+            coverage=[],
+            strengths=[],
+            validation_baseline=[],
+            questions=[],
+            updated_at=None,
+        )
+        captured["node"] = node
+        return node
+
+    @contextlib.asynccontextmanager
+    async def fake_lock(source_run_uid):
+        captured["lock_key"] = analysis_write_lock_key(source_run_uid)
+        yield True
+
+    async def fake_audit(**_):
+        return None
+
+    monkeypatch.setattr(mod, "get_or_create_analysis", fake_get_or_create)
+    monkeypatch.setattr(mod, "analysis_write_lock", fake_lock)
+    if hasattr(mod, "write_audit"):
+        monkeypatch.setattr(mod, "write_audit", fake_audit)
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_upsert_analysis_holds_lock_around_write(monkeypatch):
+    captured = _wire_analysis_tool(monkeypatch, "domains.platform_tools.upsert_analysis")
+    await upsert_analysis(repository_uid="repo-1", source_run_uid="run-x", title="t")
+    assert captured["lock_key"] == analysis_write_lock_key("run-x")
+    assert captured["node"].title == "t"
+
+
+@pytest.mark.asyncio
+async def test_set_analysis_section_holds_lock_around_write(monkeypatch):
+    captured = _wire_analysis_tool(monkeypatch, "domains.platform_tools.set_analysis_section")
+    await set_analysis_section(
+        repository_uid="repo-1",
+        source_run_uid="run-x",
+        section="Executive Summary",
+        content="hello",
+    )
+    assert captured["lock_key"] == analysis_write_lock_key("run-x")
+    assert captured["node"].sections == {"executive_summary": "hello"}
+
+
+@pytest.mark.asyncio
+async def test_add_analysis_note_holds_lock_around_write(monkeypatch):
+    captured = _wire_analysis_tool(monkeypatch, "domains.platform_tools.add_analysis_note")
+    await add_analysis_note(
+        repository_uid="repo-1",
+        source_run_uid="run-x",
+        note_type="coverage",
+        area="auth",
+        status="examined",
+    )
+    assert captured["lock_key"] == analysis_write_lock_key("run-x")
+    assert len(captured["node"].coverage) == 1
+
+
+@pytest.mark.asyncio
+async def test_ask_question_holds_lock_around_write(monkeypatch):
+    captured = _wire_analysis_tool(monkeypatch, "domains.platform_tools.ask_question")
+    await ask_question(
+        repository_uid="repo-1", source_run_uid="run-x", question="Where is prod?"
+    )
+    assert captured["lock_key"] == analysis_write_lock_key("run-x")
+    assert len(captured["node"].questions) == 1
+
+
+# ── scorecard validation (a bad write used to brick every later read) ────────
+
+
+@pytest.mark.asyncio
+async def test_upsert_analysis_rejects_scorecard_entry_without_dimension():
+    """`dimension` is required on ScorecardEntryDTO. Storing an entry without
+    it used to succeed and then 500 analysis_to_dto on EVERY subsequent read
+    of that Analysis — a write that permanently breaks reads, unrepairable
+    through the API. Fail the write instead."""
+    with pytest.raises(HTTPException) as exc:
+        await upsert_analysis(
+            repository_uid="repo-1",
+            source_run_uid="run-1",
+            scorecard=[{"score": 80, "grade": "B", "rationale": "no dimension key"}],
+        )
+    assert exc.value.status_code == 422
+    assert "dimension" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_upsert_analysis_rejects_blank_and_non_object_scorecard_entries():
+    for bad in ([{"dimension": "   ", "score": 1}], ["not-an-object"]):
+        with pytest.raises(HTTPException) as exc:
+            await upsert_analysis(
+                repository_uid="repo-1", source_run_uid="run-1", scorecard=bad
+            )
+        assert exc.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_upsert_analysis_rejects_invalid_scorecard_grade():
+    with pytest.raises(HTTPException) as exc:
+        await upsert_analysis(
+            repository_uid="repo-1",
+            source_run_uid="run-1",
+            scorecard=[{"dimension": "security", "grade": "A+"}],
+        )
+    assert exc.value.status_code == 422
+    assert "grade" in exc.value.detail
+
+
+def test_validated_scorecard_accepts_and_trims_a_good_entry():
+    from domains.platform_tools.upsert_analysis import _validated_scorecard
+
+    out = _validated_scorecard([{"dimension": "  security  ", "score": 80, "grade": "B"}])
+    assert out == [{"dimension": "security", "score": 80, "grade": "B"}]
+
+
+def test_analysis_dto_survives_an_already_stored_bad_scorecard_entry():
+    """Write-side validation can't heal rows already in the graph, so the read
+    path must drop what it cannot hydrate rather than 500 the whole report."""
+    from datetime import UTC, datetime
+
+    from domains.analysis.services.analysis_service import analysis_to_dto
+
+    node = SimpleNamespace(
+        uid="an-1",
+        repository_uid="repo-1",
+        source_run_uid="run-1",
+        revision="",
+        title="t",
+        status="in_progress",
+        supersedes="",
+        superseded_by="",
+        executor="",
+        health_grade="",
+        health_score=None,
+        scorecard=[
+            {"score": 10},  # poisoned: no dimension
+            {"dimension": "security", "score": 80},
+        ],
+        confidence="",
+        limitations="",
+        stats={},
+        sections={},
+        coverage=[],
+        strengths=[],
+        validation_baseline=[],
+        questions=[],
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        completed_at=None,
+    )
+    dto = analysis_to_dto(node)
+    assert [e.dimension for e in dto.scorecard] == ["security"]
+
+
+# ── the human writers on the same Analysis node ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_question_writers_use_the_same_lock_as_the_agent_tools(monkeypatch):
+    """answer_question / dismiss_question fetch-mutate-save the SAME node the
+    four authoring tools lock. Keyed by Analysis uid rather than
+    source_run_uid, they must still resolve to the identical lock key."""
+    from domains.analysis.services import analysis_service as svc
+
+    node = SimpleNamespace(
+        uid="an-1",
+        source_run_uid="run-7",
+        questions=[{"uid": "q-1", "status": "open"}],
+        updated_at=None,
+    )
+
+    async def fake_save():
+        return node
+
+    node.save = fake_save
+    captured: dict = {}
+
+    @contextlib.asynccontextmanager
+    async def fake_lock(key):
+        captured["lock_key"] = key
+        yield True
+
+    async def fake_get_node(self, uid):
+        return node
+
+    async def fake_rollup(dto):
+        return dto
+
+    monkeypatch.setattr(svc, "dist_lock", fake_lock)
+    monkeypatch.setattr(svc.AnalysisService, "get_node", fake_get_node)
+    monkeypatch.setattr(svc, "_attach_finding_rollup", fake_rollup)
+    monkeypatch.setattr(svc, "analysis_to_dto", lambda a: a)
+
+    await svc.AnalysisService().answer_question(
+        "an-1", "q-1", answer="yes", actor="u-1"
+    )
+    assert captured["lock_key"] == analysis_write_lock_key("run-7")
+    assert node.questions[0]["status"] == "answered"
+
+    captured.clear()
+    await svc.AnalysisService().dismiss_question("an-1", "q-1")
+    assert captured["lock_key"] == analysis_write_lock_key("run-7")
+    assert node.questions[0]["status"] == "dismissed"

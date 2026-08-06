@@ -16,7 +16,10 @@ from typing import Any, Optional
 from fastapi import HTTPException
 
 from domains.analysis.models import COVERAGE_STATUSES, NOTE_TYPES
-from domains.analysis.services.analysis_service import get_or_create_analysis
+from domains.analysis.services.analysis_service import (
+    analysis_write_lock,
+    get_or_create_analysis,
+)
 
 
 async def add_analysis_note(
@@ -50,12 +53,6 @@ async def add_analysis_note(
             detail=f"invalid coverage status={status!r}; expected one of {sorted(COVERAGE_STATUSES)}",
         )
 
-    node = await get_or_create_analysis(
-        repository_uid=repository_uid,
-        source_run_uid=source_run_uid,
-        executor=executor,
-    )
-
     if note_type == "coverage":
         field, item = "coverage", {
             "area": area,
@@ -77,9 +74,19 @@ async def add_analysis_note(
             "details": details,
         }
 
-    current = list(getattr(node, field) or [])
-    current.append(item)
-    setattr(node, field, current)
-    node.updated_at = datetime.now(UTC)
-    await node.save()
+    # Held across read→append→save so two concurrent add_analysis_note calls
+    # (or one racing set_analysis_section / upsert_analysis) cannot both read
+    # the same base list and only the last save's append survive. See
+    # analysis_write_lock_key.
+    async with analysis_write_lock(source_run_uid):
+        node = await get_or_create_analysis(
+            repository_uid=repository_uid,
+            source_run_uid=source_run_uid,
+            executor=executor,
+        )
+        current = list(getattr(node, field) or [])
+        current.append(item)
+        setattr(node, field, current)
+        node.updated_at = datetime.now(UTC)
+        await node.save()
     return {"analysis_uid": node.uid, "note_type": note_type, "count": len(current)}

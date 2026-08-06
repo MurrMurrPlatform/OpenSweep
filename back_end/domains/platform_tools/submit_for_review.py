@@ -27,32 +27,46 @@ async def submit_for_review(
 ) -> dict[str, Any]:
     if not (thread_uid or "").strip():
         raise HTTPException(status_code=422, detail="thread_uid is required")
+    from domains.threads.models import Thread
     from domains.threads.services.thread_service import (
         THREAD_NOT_FOUND_DETAIL,
         resolve_thread,
+        thread_write_lock,
     )
 
     thread = await resolve_thread(thread_uid, run_uid=executor)
     if thread is None:
         raise HTTPException(status_code=404, detail=THREAD_NOT_FOUND_DETAIL)
     thread_uid = thread.uid  # the candidate may have been the ticket uid
-    if thread.phase not in _READY_PHASES:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "ready-for-review only applies while implementing or in review — "
-                f"thread is '{thread.phase}'"
-            ),
-        )
-    if not thread.ready_for_review:
-        now = datetime.now(UTC)
-        thread.ready_for_review = True
-        thread.events = [
-            *(thread.events or []),
-            {"ts": now.isoformat(), "type": "ready_for_review", "by": executor},
-        ]
-        thread.updated_at = now
-        await thread.save()
+    newly_marked = False
+    # Same lock as submit_thread_plan / the human plan routes: neomodel save()
+    # writes every property, so this ready-flag write would otherwise clobber a
+    # plan edit that landed after our read — and its timeline event would be
+    # dropped by the concurrent writer's stale events list.
+    async with thread_write_lock(thread_uid):
+        # Re-fetch inside the lock: the phase gate must see persisted state,
+        # and ready_for_review may already have been set while we waited
+        # (keeping this call idempotent rather than double-appending).
+        thread = await Thread.nodes.get_or_none(uid=thread_uid) or thread
+        if thread.phase not in _READY_PHASES:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "ready-for-review only applies while implementing or in review — "
+                    f"thread is '{thread.phase}'"
+                ),
+            )
+        newly_marked = not thread.ready_for_review
+        if newly_marked:
+            now = datetime.now(UTC)
+            thread.ready_for_review = True
+            thread.events = [
+                *(thread.events or []),
+                {"ts": now.isoformat(), "type": "ready_for_review", "by": executor},
+            ]
+            thread.updated_at = now
+            await thread.save()
+    if newly_marked:
         await write_audit(
             kind="thread.ready_for_review",
             subject_uid=thread_uid,

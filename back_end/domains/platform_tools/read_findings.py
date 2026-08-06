@@ -17,6 +17,20 @@ from typing import Any, Optional
 
 from domains.findings.models import Finding
 
+# `status` is a plain equality filter, so any value that isn't a real Finding
+# status matches nothing. Agents reach for "all" (and the API default makes
+# "open" look like one option among several), so an unfiltered listing came
+# back EMPTY rather than complete — a silent wrong answer, the worst kind.
+# Only "" was accepted as the no-filter escape hatch; spell the obvious
+# synonyms too and treat them all as "don't filter on status".
+_ANY_STATUS = {"", "all", "any", "*"}
+
+
+def _status_filter(status: Optional[str]) -> Optional[str]:
+    """The status to filter on, or None meaning 'no status filter'."""
+    normalized = (status or "").strip().lower()
+    return None if normalized in _ANY_STATUS else normalized
+
 
 def _finding_to_dict(f: Finding) -> dict[str, Any]:
     return {
@@ -45,14 +59,16 @@ async def opensweep_list_findings(
 ) -> list[dict[str, Any]]:
     """List Findings in a repository, optionally filtered.
 
-    Defaults to status=open. Use BEFORE calling `create_finding` to see if a
-    similar issue is already filed — `create_finding` already dedupes on
-    title+top_path, but checking here lets the LLM choose to call
-    `update_finding` (adding evidence) instead.
+    Defaults to status=open. Pass status="all" (or "", "any", "*") for every
+    status. Use BEFORE calling `create_finding` to see if a similar issue is
+    already filed — `create_finding` already dedupes on title+top_path, but
+    checking here lets the LLM choose to call `update_finding` (adding
+    evidence) instead.
     """
+    wanted = _status_filter(status)
     nodes = (
-        await Finding.nodes.filter(repository_uid=repository_uid, status=status)
-        if status
+        await Finding.nodes.filter(repository_uid=repository_uid, status=wanted)
+        if wanted
         else await Finding.nodes.filter(repository_uid=repository_uid)
     )
     out: list[dict[str, Any]] = []
@@ -77,12 +93,13 @@ async def opensweep_search_findings(
     """Substring search across open Finding titles + affected paths.
 
     Use to ask "did anyone already file a finding about <X>?" before creating
-    a new one.
+    a new one. Pass status="all" (or "", "any", "*") to search every status.
     """
     needle = (query or "").strip().lower()
+    wanted = _status_filter(status)
     nodes = (
-        await Finding.nodes.filter(repository_uid=repository_uid, status=status)
-        if status
+        await Finding.nodes.filter(repository_uid=repository_uid, status=wanted)
+        if wanted
         else await Finding.nodes.filter(repository_uid=repository_uid)
     )
     out: list[dict[str, Any]] = []

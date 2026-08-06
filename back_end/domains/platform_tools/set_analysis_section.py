@@ -14,7 +14,10 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from domains.analysis.services.analysis_service import get_or_create_analysis
+from domains.analysis.services.analysis_service import (
+    analysis_write_lock,
+    get_or_create_analysis,
+)
 
 
 def _slugify_section(section: str) -> str:
@@ -34,14 +37,19 @@ async def set_analysis_section(
     if not key:
         raise HTTPException(status_code=422, detail="section must be a non-empty key")
 
-    node = await get_or_create_analysis(
-        repository_uid=repository_uid,
-        source_run_uid=source_run_uid,
-        executor=executor,
-    )
-    sections = dict(node.sections or {})
-    sections[key] = content or ""
-    node.sections = sections
-    node.updated_at = datetime.now(UTC)
-    await node.save()
+    # Serialized against the other Analysis authoring tools — see
+    # analysis_write_lock_key. Two set_analysis_section calls in flight for
+    # different keys would otherwise both read `node.sections`, each add
+    # their key to a private copy, and the second save wipe the first.
+    async with analysis_write_lock(source_run_uid):
+        node = await get_or_create_analysis(
+            repository_uid=repository_uid,
+            source_run_uid=source_run_uid,
+            executor=executor,
+        )
+        sections = dict(node.sections or {})
+        sections[key] = content or ""
+        node.sections = sections
+        node.updated_at = datetime.now(UTC)
+        await node.save()
     return {"analysis_uid": node.uid, "section": key}

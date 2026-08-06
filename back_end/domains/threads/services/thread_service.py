@@ -7,6 +7,7 @@ per ticket.
 
 from __future__ import annotations
 
+import contextlib
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -17,9 +18,41 @@ from domains.threads.schemas import ThreadDetailDTO, ThreadDTO, ThreadRunSummary
 from domains.threads.services.intents import build_thread_session_intent
 from domains.threads.services.progress import compute_progress
 from infrastructure.audit import write_audit
+from infrastructure.dist_lock import dist_lock
 from logging_config import logger
 
 TERMINAL_PHASES = {"done", "abandoned"}
+
+
+def thread_write_lock_key(thread_uid: str) -> str:
+    """Lock key serializing the fetch→gate→mutate→save writers on one Thread.
+
+    neomodel `save()` writes EVERY declared property, so any writer holding a
+    node it read earlier clobbers whatever landed in between — not just the
+    field it meant to touch. The agent tool (submit_thread_plan) and the human
+    routes (update_plan / approve_plan / submit_for_review) mutate the SAME
+    node, so locking only the agent half leaves the human↔agent clobber live:
+    a maintainer hand-editing the plan while the agent submits its draft still
+    loses one of the two writes, plus whichever timeline events went with it.
+    Keyed by the RESOLVED thread uid — callers may arrive with the ticket uid.
+    """
+    return f"thread:plan:{thread_uid}"
+
+
+@contextlib.asynccontextmanager
+async def thread_write_lock(thread_uid: str):
+    """Cross-process serializer for one Thread's state writes.
+
+    409 on timeout so the caller retries rather than silently proceeding
+    lockless and dropping a concurrent writer's fields."""
+    async with dist_lock(thread_write_lock_key(thread_uid)) as acquired:
+        if not acquired:
+            raise HTTPException(
+                status_code=409,
+                detail="another write is in progress for this thread; retry shortly",
+            )
+        yield
+
 
 # The board follows the thread: each phase maps to the ticket column the
 # board should have reached by then. Order gives the forward walk.
@@ -465,14 +498,22 @@ class ThreadService:
         )
 
     async def update_plan(self, uid: str, plan_text: str, *, actor_uid: str) -> Thread:
-        t = await self.get_node(uid)
-        if t.phase in TERMINAL_PHASES:
-            raise HTTPException(status_code=409, detail=f"thread is {t.phase}")
-        t.plan_text = plan_text
-        t.plan_state = "drafted"  # hand-edits invalidate approval
-        await t.save()
-        await mirror_plan_to_ticket(t)
-        await self.record_event(t, "plan_edited", by=actor_uid)
+        # Same lock as submit_thread_plan: a hand-edit racing the agent's
+        # draft otherwise both pass the phase gate on a stale read and the
+        # second save wins outright. Re-fetch inside so the gate sees a phase
+        # no older than the lock acquisition.
+        async with thread_write_lock(uid):
+            t = await self.get_node(uid)
+            if t.phase in TERMINAL_PHASES:
+                raise HTTPException(status_code=409, detail=f"thread is {t.phase}")
+            t.plan_text = plan_text
+            t.plan_state = "drafted"  # hand-edits invalidate approval
+            await t.save()
+            await mirror_plan_to_ticket(t)
+            # Inside the lock: the edit and its timeline entry land together,
+            # so a concurrent writer can't slip a save between them and drop
+            # the event via its own stale events list.
+            await self.record_event(t, "plan_edited", by=actor_uid)
         await write_audit(
             kind="thread.plan_edited",
             subject_uid=uid,
@@ -483,16 +524,21 @@ class ThreadService:
         return t
 
     async def approve_plan(self, uid: str, *, actor_uid: str) -> Thread:
-        t = await self.get_node(uid)
-        if not (t.plan_text or "").strip():
-            raise HTTPException(status_code=409, detail="no plan to approve")
-        now = datetime.now(UTC)
-        t.plan_state = "approved"
-        t.plan_approved_by = actor_uid
-        t.plan_approved_at = now
-        await t.save()
-        await mirror_plan_to_ticket(t)
-        await self.record_event(t, "plan_approved", by=actor_uid)
+        # Approval writes plan_state, the same field submit_thread_plan sets
+        # to "drafted" — unlocked, an approval could be silently reverted by a
+        # draft that started before it, or approve a plan_text the maintainer
+        # never read.
+        async with thread_write_lock(uid):
+            t = await self.get_node(uid)
+            if not (t.plan_text or "").strip():
+                raise HTTPException(status_code=409, detail="no plan to approve")
+            now = datetime.now(UTC)
+            t.plan_state = "approved"
+            t.plan_approved_by = actor_uid
+            t.plan_approved_at = now
+            await t.save()
+            await mirror_plan_to_ticket(t)
+            await self.record_event(t, "plan_approved", by=actor_uid)
         await write_audit(
             kind="thread.plan_approved",
             subject_uid=uid,

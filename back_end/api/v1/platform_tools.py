@@ -664,13 +664,23 @@ async def http_attach_artifact(
     request: Request,
     user: UserDTO = Depends(get_current_user),
 ):
-    repository_uid = req.repository_uid or await _artifact_target_repository_uid(
-        req.target_uid, req.target_type
-    )
-    await require_tool_repo_access(request, user, repository_uid)
-    return await _invoke_platform_tool(
-        "attach_artifact", attach_artifact, **req.model_dump()
-    )
+    # Always resolve the owner from the target — never take the caller's word
+    # for it. Treating req.repository_uid as a shortcut ("skip the lookup")
+    # makes it trusted input: a run in repo A could pass repository_uid=A with
+    # a target_uid in repo B and have the write accepted, and an unknown
+    # target_uid would never 404. The envelope door (executors/_shared.py)
+    # already resolves-and-compares; this is the same rule for the MCP door.
+    owner_uid = await _artifact_target_repository_uid(req.target_uid, req.target_type)
+    if req.repository_uid and req.repository_uid != owner_uid:
+        # 404 not 403, matching require_tool_repo_access — don't confirm the
+        # existence of a target in a repository the caller can't reach.
+        raise HTTPException(status_code=404, detail="not found")
+    await require_tool_repo_access(request, user, owner_uid)
+    # Feed the tool the RESOLVED tenancy uid — req.repository_uid may be blank
+    # (agents rarely pass it) and the tool refuses to guess it from target_uid.
+    data = req.model_dump()
+    data["repository_uid"] = owner_uid
+    return await _invoke_platform_tool("attach_artifact", attach_artifact, **data)
 
 
 @router.post("/complete-run/{run_uid}", operation_id="opensweep_platform_complete_run")

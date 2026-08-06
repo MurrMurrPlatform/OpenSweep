@@ -51,6 +51,7 @@ async def submit_thread_plan(
     from domains.threads.services.thread_service import (
         THREAD_NOT_FOUND_DETAIL,
         resolve_thread,
+        thread_write_lock,
     )
 
     run_uid = run_uid or source_run_uid
@@ -58,26 +59,38 @@ async def submit_thread_plan(
     if thread is None:
         raise HTTPException(status_code=404, detail=THREAD_NOT_FOUND_DETAIL)
     thread_uid = thread.uid  # the candidate may have been the ticket uid
-    if thread.phase != "refining":
-        raise HTTPException(
-            status_code=409,
-            detail=f"plan can only be drafted while refining — thread is '{thread.phase}'",
-        )
-    now = datetime.now(UTC)
-    thread.plan_text = plan_markdown
-    thread.plan_state = "drafted"
-    thread.events = [
-        *(thread.events or []),
-        {"ts": now.isoformat(), "type": "plan_drafted", "by": executor},
-    ]
-    thread.updated_at = now
-    await thread.save()
+    # Held across the phase gate + read/append/save. Two concurrent drafts
+    # for the same thread would otherwise both pass the phase check on a
+    # stale read and race the timeline events — one's `plan_drafted` entry
+    # is silently dropped, and the winning plan_text is whichever save fired
+    # second regardless of author. The human plan routes and submit_for_review
+    # take this same lock, so an agent draft and a maintainer's hand-edit
+    # serialize against each other too.
+    async with thread_write_lock(thread_uid):
+        # Re-fetch inside the lock — the phase may have changed between the
+        # first resolve_thread and now, and the events list must reflect the
+        # persisted state, not a stale copy.
+        thread = await Thread.nodes.get_or_none(uid=thread_uid) or thread
+        if thread.phase != "refining":
+            raise HTTPException(
+                status_code=409,
+                detail=f"plan can only be drafted while refining — thread is '{thread.phase}'",
+            )
+        now = datetime.now(UTC)
+        thread.plan_text = plan_markdown
+        thread.plan_state = "drafted"
+        thread.events = [
+            *(thread.events or []),
+            {"ts": now.isoformat(), "type": "plan_drafted", "by": executor},
+        ]
+        thread.updated_at = now
+        await thread.save()
 
-    # Canonical public copy lives on the ticket (user request: plan as
-    # ticket metadata, not buried in the conversation).
-    from domains.threads.services.thread_service import mirror_plan_to_ticket
+        # Canonical public copy lives on the ticket (user request: plan as
+        # ticket metadata, not buried in the conversation).
+        from domains.threads.services.thread_service import mirror_plan_to_ticket
 
-    await mirror_plan_to_ticket(thread)
+        await mirror_plan_to_ticket(thread)
 
     await write_audit(
         kind="thread.plan_drafted",
