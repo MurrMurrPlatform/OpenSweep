@@ -137,7 +137,11 @@ async def record_for_run(*, run_uid: str) -> list[Checked]:
         return []
     repo = await Repository.nodes.get_or_none(uid=run.repository_uid)
 
-    findings = [f for f in await Finding.nodes.all() if (f.source_run_uid or "") == run.uid]
+    findings = list(
+        await Finding.nodes.filter(
+            repository_uid=run.repository_uid, source_run_uid=run.uid
+        )
+    )
 
     scopes: list[str] = []
     target = dict(run.target or {})

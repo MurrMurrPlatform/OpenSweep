@@ -192,11 +192,9 @@ async def build_briefing(
     target_doc_uids: list[str] | None = None,
     target_paths: list[str] | None = None,
 ) -> str:
-    docs = [
-        d
-        for d in await Doc.nodes.all()
-        if d.repository_uid == repository_uid and not d.archived
-    ]
+    docs = list(
+        await Doc.nodes.filter(repository_uid=repository_uid, archived=False)
+    )
     docs.sort(key=lambda d: d.slug)
     target_uids = set(target_doc_uids or [])
     paths = [str(p) for p in (target_paths or []) if p]

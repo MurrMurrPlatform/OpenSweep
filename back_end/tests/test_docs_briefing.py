@@ -42,6 +42,13 @@ class _Nodes:
     async def all(self):
         return list(self._rows)
 
+    async def filter(self, **kwargs):
+        return [
+            r
+            for r in self._rows
+            if all(getattr(r, k, None) == v for k, v in kwargs.items())
+        ]
+
 
 async def _no_memories(**_kwargs):
     return []
