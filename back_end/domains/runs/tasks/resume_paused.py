@@ -49,7 +49,7 @@ async def _scan_and_enqueue() -> dict:
     """Select eligible runs and fan out one resume_run task per run."""
     from domains.runs.models import Run
 
-    paused = [r for r in await Run.nodes.all() if r.status == "paused_quota"]
+    paused = list(await Run.nodes.filter(status="paused_quota"))
     for run in paused:
         # A resumed run re-executes from the original intent, so it needs the
         # same headroom as a first dispatch — a `deep` run resumed under the

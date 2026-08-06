@@ -50,6 +50,7 @@ from domains.runs.services.turn_cli import (
 from infrastructure.audit import write_audit
 from infrastructure.code_graph import CODE_GRAPH_PROMPT, code_graph_available
 from infrastructure.process_tree import kill_tree, process_group_kwargs, terminate_tree
+from infrastructure.secretbox import SecretBoxError
 from logging_config import logger
 
 _FOLLOW_UP_STATUS_VALUES = {s.value for s in FOLLOW_UP_STATUSES}
@@ -270,23 +271,33 @@ class TurnService:
             append_event(uid, "user_message", text=text, turn=turn_no)
 
             if (run.executor or "") in _SUBPROCESS_EXECUTORS:
-                argv, env = await self._build_subprocess_turn(run, provider, text, cwd=cwd)
                 try:
-                    proc = await asyncio.create_subprocess_exec(
-                        *argv,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        env=env,
-                        cwd=cwd,
-                        limit=16 * 1024 * 1024,
-                        # Group leader, so interrupt/timeout kills reach the
-                        # CLI's MCP/Bash children too (see process_tree).
-                        **process_group_kwargs(),
-                    )
-                except FileNotFoundError as exc:
-                    error_detail = f"{argv[0]} CLI not found: {exc}"
-                except OSError as exc:
-                    error_detail = f"failed to spawn {argv[0]}: {exc}"
+                    argv, env = await self._build_subprocess_turn(run, provider, text, cwd=cwd)
+                except SecretBoxError as exc:
+                    # The provider credential can't be unsealed (rotated or
+                    # missing OPENSWEEP_SECRETS_KEY, corrupted ciphertext).
+                    # The run is already RUNNING and saved, so letting this
+                    # propagate leaves the row stuck there forever with no
+                    # error recorded — record it as a turn failure instead and
+                    # let _finalize_turn land the run in awaiting_input.
+                    error_detail = f"provider credential could not be decrypted: {exc}"
+                else:
+                    try:
+                        proc = await asyncio.create_subprocess_exec(
+                            *argv,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            env=env,
+                            cwd=cwd,
+                            limit=16 * 1024 * 1024,
+                            # Group leader, so interrupt/timeout kills reach the
+                            # CLI's MCP/Bash children too (see process_tree).
+                            **process_group_kwargs(),
+                        )
+                    except FileNotFoundError as exc:
+                        error_detail = f"{argv[0]} CLI not found: {exc}"
+                    except OSError as exc:
+                        error_detail = f"failed to spawn {argv[0]}: {exc}"
             setup_ok = True
         except (GeneratorExit, asyncio.CancelledError):
             # Consumer vanished / request cancelled before the spawn.

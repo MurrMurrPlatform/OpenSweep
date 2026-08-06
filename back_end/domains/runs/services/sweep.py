@@ -19,6 +19,26 @@ module holds the two repository-level entry points:
 
 Triggered Runs use the active LLM provider and the system-default
 RunPolicy.
+
+## Failure contract — read this before trusting an HTTP status
+
+Every entry point here has TWO failure regions and they surface differently:
+
+  * **Pre-dispatch gates** (no area map, no spec targets, area not found)
+    raise `LifecycleError` out of the function. The routers convert that to
+    **HTTP 409** — nothing was dispatched.
+  * **Dispatch-time failures** — anything `trigger_run` raises (policy
+    violations, repository-not-found, provider/sandbox prep) plus any
+    unexpected exception — are caught HERE, appended to `result.errors`, and
+    the result is returned normally. The router answers **HTTP 200 with a
+    non-empty `errors` list** and an empty `run_uid` / `runs_dispatched`.
+
+That split is deliberate: a per-page fan-out must still report the runs it
+did dispatch when one of them fails. But it means **a 200 does not mean the
+sweep ran**. Clients must read `errors` and `runs_dispatched` rather than the
+status code alone (the frontend's StartSweepDialog already does). Where a
+per-function docstring below says "raises LifecycleError → 409" it is
+describing the pre-dispatch gate only.
 """
 
 from __future__ import annotations
@@ -105,14 +125,17 @@ async def run_generate_docs(
 
     Docs are scaffolded by the Area map (one page per subsystem area by
     default), so a repo with no enabled subsystem areas cannot generate:
-    the gate raises LifecycleError BEFORE any dispatch — the API converts
+    that gate raises LifecycleError BEFORE any dispatch — the API converts
     it to a 409. keep-docs-current / targeted doc updates are ungated.
+
+    That 409 is the ONLY error the caller sees as a status code. A failure in
+    the dispatch itself comes back as a normal result with `errors` populated
+    and `run_uid` empty (module docstring, "Failure contract").
     """
     subsystem_areas = [
         a
-        for a in await Area.nodes.all()
-        if a.repository_uid == repository_uid
-        and bool(a.enabled)
+        for a in await Area.nodes.filter(repository_uid=repository_uid)
+        if bool(a.enabled)
         and (a.kind or "subsystem") == "subsystem"
     ]
     if not subsystem_areas:
@@ -187,9 +210,8 @@ async def feature_leaf_spec_targets(repository_uid: str) -> list[Area]:
     listing."""
     rows = [
         a
-        for a in await Area.nodes.all()
-        if a.repository_uid == repository_uid
-        and bool(a.enabled)
+        for a in await Area.nodes.filter(repository_uid=repository_uid)
+        if bool(a.enabled)
         and a.kind == "feature"
     ]
     feature_keys = [a.key for a in rows]
@@ -218,7 +240,10 @@ async def run_generate_specs(
 
     Gated on a feature map existing: a repo with no enabled feature areas
     that need a spec has nothing to generate, so the gate raises
-    LifecycleError BEFORE any dispatch — the API converts it to a 409.
+    LifecycleError BEFORE any dispatch — the API converts it to a 409. That
+    409 is the ONLY error the caller sees as a status code; a failure in the
+    dispatch itself comes back as a normal result with `errors` populated and
+    `run_uid` empty (module docstring, "Failure contract").
     """
     targets = await feature_leaf_spec_targets(repository_uid)
     if not targets:
@@ -295,7 +320,10 @@ async def revise_area_spec(
     `propose_area_edit` — mirroring `run_generate_specs` but scoped to a
     single area with a user instruction.
 
-    Raises LifecycleError if the area does not exist.
+    Raises LifecycleError if the area does not exist — the only failure the
+    caller sees as a status code (409). A dispatch failure comes back as a
+    normal result with `errors` populated (module docstring, "Failure
+    contract").
     """
     area = await Area.nodes.get_or_none(uid=area_uid)
     if area is None:
@@ -536,9 +564,8 @@ async def run_audit(
             areas = sorted(
                 (
                     a
-                    for a in await Area.nodes.all()
+                    for a in await Area.nodes.filter(repository_uid=repository_uid)
                     if a.uid in wanted_areas
-                    and a.repository_uid == repository_uid
                 ),
                 key=lambda a: a.key,
             )
@@ -625,8 +652,8 @@ async def run_audit(
 
     wanted = set(doc_uids)
     docs: list[Doc] = [
-        d for d in await Doc.nodes.all()
-        if d.repository_uid == repository_uid and d.uid in wanted
+        d for d in await Doc.nodes.filter(repository_uid=repository_uid)
+        if d.uid in wanted
     ]
     found = {d.uid for d in docs}
     for missing in wanted - found:
@@ -802,9 +829,8 @@ async def _select_stale_feature_leaves(repository_uid: str) -> list[Area]:
 
     rows = [
         a
-        for a in await Area.nodes.all()
-        if a.repository_uid == repository_uid
-        and bool(a.enabled)
+        for a in await Area.nodes.filter(repository_uid=repository_uid)
+        if bool(a.enabled)
         and a.kind == "feature"
     ]
     feature_keys = [a.key for a in rows]
@@ -982,7 +1008,7 @@ async def _deep_scan_intent(
 async def _existing_pages_listing(repository_uid: str) -> str:
     """Compact listing of existing Doc pages for the generate-docs prompt,
     so re-runs update pages instead of proposing duplicates."""
-    docs = [d for d in await Doc.nodes.all() if d.repository_uid == repository_uid]
+    docs = list(await Doc.nodes.filter(repository_uid=repository_uid))
     real = [d for d in docs if (d.body or "").strip()]
     if not real:
         return "(none yet — this is the first Generate docs for this repository)"
@@ -999,8 +1025,8 @@ async def _existing_areas_listing(repository_uid: str) -> str:
     """Compact listing of enabled Areas for the map-areas prompt, so re-runs
     update areas instead of proposing duplicates."""
     areas = [
-        a for a in await Area.nodes.all()
-        if a.repository_uid == repository_uid and a.enabled
+        a for a in await Area.nodes.filter(repository_uid=repository_uid)
+        if a.enabled
     ]
     if not areas:
         return "(none yet — this is the first Map areas run)"
@@ -1021,7 +1047,7 @@ async def _docs_metadata_listing(repository_uid: str) -> str:
     grounded in the code, not restate the docs; bodies are pulled
     deliberately via the `read_doc` tool when the agent decides it needs
     one. The uid is what an area proposal links back via doc_uids."""
-    docs = [d for d in await Doc.nodes.all() if d.repository_uid == repository_uid]
+    docs = list(await Doc.nodes.filter(repository_uid=repository_uid))
     if not docs:
         return "(no documentation pages yet)"
     lines: list[str] = []

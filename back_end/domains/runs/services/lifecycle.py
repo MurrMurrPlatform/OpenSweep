@@ -785,9 +785,22 @@ async def _prepare_dispatch_and_finalize(
     if run is None:
         return
     if run.status != RunStatus.QUEUED.value:
-        # Cancelled (or reconciled) while the clone ran — don't dispatch. The
-        # fresh sandbox isn't recorded on the run yet, so destroy it directly.
-        if sandbox_uid and prepared_sandbox is None and sandbox_factory is None:
+        # Cancelled (or reconciled) while the clone ran — don't dispatch.
+        # Record the sandbox first: the row must not claim it has no workspace
+        # when a clone was made for it (finalize and the audit trail read
+        # run.sandbox_uid), then destroy the ones prepared HERE. A
+        # `prepared_sandbox` belongs to the caller that passed it in and is
+        # already recorded on the run; a `sandbox_factory` clone is ours, and
+        # excluding it leaked the write sandbox of every cancelled fix/implement
+        # run until the 30-minute cleanup beat expired it.
+        if sandbox_uid:
+            usage = dict(run.usage or {})
+            usage["sandbox_uid"] = sandbox_uid
+            run.usage = usage
+            run.sandbox_uid = sandbox_uid
+            run.updated_at = datetime.now(UTC)
+            await run.save()
+        if sandbox_uid and prepared_sandbox is None:
             try:
                 await SandboxService().destroy(sandbox_uid, actor_uid=run.executor)
             except Exception as exc:  # noqa: BLE001

@@ -53,6 +53,22 @@ def last_activity(run: Any) -> datetime | None:
     return max(candidates) if candidates else None
 
 
+def dispatch_started(run: Any) -> bool:
+    """Whether the dispatch pipeline has actually begun work on this run.
+
+    `started_at`/`last_activity_at` are stamped when the ROW is created, so for
+    a run still sitting in the Celery queue they say nothing about dispatch —
+    `last_activity` collapses to creation time. The transcript file is only
+    created once the pipeline appends its first event, so its existence is the
+    one honest dispatch-start signal a queued row has.
+    """
+    try:
+        events_path(run.uid).stat()
+    except OSError:
+        return False
+    return True
+
+
 def stale_reason(
     *,
     now: datetime,
@@ -141,6 +157,19 @@ async def reconcile_runs(runs: Iterable[Any], *, grace_seconds: int = 90) -> int
     for run in runs:
         if run.status not in _REPAIRABLE_STATUSES:
             continue
+        if run.status == "queued" and not dispatch_started(run):
+            # Waiting its turn is not silence. A queued run has no executor
+            # activity to show, so the liveness clock would run from creation
+            # and fail it after OPENSWEEP_RUN_LIVENESS_TIMEOUT_SECONDS purely
+            # for being backlogged — a dispatch_run task legitimately holds a
+            # worker slot for max_wall + DISPATCH_OVERHEAD_SECONDS, so a
+            # campaign queueing more parts than there are slots would lose the
+            # tail to a misleading "process likely crashed". A queued run whose
+            # owner really did die is reaped by reconcile_orphaned_runs, which
+            # decides on process ownership rather than the clock; once dispatch
+            # starts writing the transcript, the liveness test below applies
+            # again from that first event.
+            continue
         started = run.started_at or run.created_at
         if started is None:
             continue
@@ -170,7 +199,7 @@ async def reconcile_runs(runs: Iterable[Any], *, grace_seconds: int = 90) -> int
         )
         if reason is None:
             continue
-        await _fail_run(
+        if await _fail_run(
             run,
             now=now,
             error=reason,
@@ -181,8 +210,8 @@ async def reconcile_runs(runs: Iterable[Any], *, grace_seconds: int = 90) -> int
                 "liveness_timeout_seconds": liveness_timeout,
                 "grace_seconds": grace_seconds,
             },
-        )
-        changed += 1
+        ):
+            changed += 1
     return changed
 
 
@@ -201,10 +230,10 @@ async def reconcile_orphaned_runs(
     single_replica = bool(getattr(settings, "OPENSWEEP_SINGLE_REPLICA", True))
     now = datetime.now(timezone.utc)
     changed = 0
-    # intentional: cross-tenant reconciliation must sweep every repo's runs.
-    for run in await Run.nodes.all():
-        if run.status not in _REPAIRABLE_STATUSES:
-            continue
+    # Cross-tenant reconciliation must sweep every repo's runs — but only
+    # queued/running rows are repairable, so push the status gate down to the
+    # DB instead of loading the whole Run table on every restart.
+    for run in await Run.nodes.filter(status__in=list(_REPAIRABLE_STATUSES)):
         owner = str((run.usage or {}).get("dispatch_runtime") or "")
         if not is_orphan(
             owner=owner,
@@ -215,15 +244,15 @@ async def reconcile_orphaned_runs(
             single_replica=single_replica,
         ):
             continue
-        await _fail_run(
+        if await _fail_run(
             run,
             now=now,
             error=f"Run marked failed: the {role} process restarted while the run was in flight.",
             audit_kind="run.orphaned_on_restart",
             usage_flag="reconciled_orphaned",
             payload={"role": role, "dispatch_runtime": owner},
-        )
-        changed += 1
+        ):
+            changed += 1
     return changed
 
 
@@ -235,32 +264,50 @@ async def _fail_run(
     audit_kind: str,
     usage_flag: str,
     payload: dict[str, Any],
-) -> None:
-    run.status = "failed"
-    run.completed_at = now
-    run.error = error
-    if run.started_at and not run.duration_ms:
-        run.duration_ms = int((now - run.started_at).total_seconds() * 1000)
-    run.updated_at = now
-    usage = dict(run.usage or {})
+) -> bool:
+    """Mark a dead run failed. False when the row had already finished and was
+    therefore left alone.
+
+    `run` is a snapshot the caller took before an unbounded number of awaits
+    (transcript stats, policy fetches, other runs' repairs), and neomodel's
+    `save()` is a full-property overwrite — so writing the snapshot back would
+    stamp "failed" over a run that completed normally in the meantime, and fire
+    its playbook completion hook a second time. Re-read and re-check the status
+    gate immediately before the write instead.
+    """
+    fresh = await Run.nodes.get_or_none(uid=run.uid)
+    if fresh is None or fresh.status not in _REPAIRABLE_STATUSES:
+        return False
+    fresh.status = "failed"
+    fresh.completed_at = now
+    fresh.error = error
+    if fresh.started_at and not fresh.duration_ms:
+        fresh.duration_ms = int((now - fresh.started_at).total_seconds() * 1000)
+    fresh.updated_at = now
+    usage = dict(fresh.usage or {})
     usage.setdefault("warnings", [])
     usage[usage_flag] = True
-    run.usage = usage
-    await run.save()
+    fresh.usage = usage
+    await fresh.save()
+    # reconcile_runs promises it repairs IN PLACE — callers re-filter the list
+    # they handed in — so mirror the outcome onto the caller's node.
+    for field in ("status", "completed_at", "error", "duration_ms", "updated_at", "usage"):
+        setattr(run, field, getattr(fresh, field))
     await write_audit(
         kind=audit_kind,
-        subject_uid=run.uid,
+        subject_uid=fresh.uid,
         subject_type="Run",
         actor_uid="run_reconciliation",
         payload=payload,
     )
-    append_event(run.uid, "error", detail=error)
-    append_event(run.uid, "system", kind="run_status", text="run failed")
+    append_event(fresh.uid, "error", detail=error)
+    append_event(fresh.uid, "system", kind="run_status", text="run failed")
     # Fire the playbook completion hook so linked entities never wedge on a
     # killed run (e.g. a verify run's verdict stuck at verification_status=
     # "pending" forever). The hooks tolerate non-awaiting_input statuses and
     # never raise.
-    await playbook_registry.on_turn_complete(run)
+    await playbook_registry.on_turn_complete(fresh)
+    return True
 
 
 async def _wall_ceiling_seconds(policy_uid: str | None) -> int:
