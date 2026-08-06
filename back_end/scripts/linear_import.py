@@ -121,7 +121,16 @@ def build_description(description: str, identifier: str, url: str) -> str:
 
 
 def is_already_imported(identifier: str, existing_descriptions: list[str]) -> bool:
-    return any(identifier in (d or "") for d in existing_descriptions)
+    # Match the exact backtick-delimited token build_description() writes into
+    # the footer, not a bare substring: Linear identifiers are TEAM-N with
+    # unbounded N, so every identifier is a prefix of infinitely many longer
+    # ones sharing its team (MUR-1 ⊂ MUR-11 ⊂ MUR-100 …). A bare substring
+    # check would silently mark the shorter one "already imported" once the
+    # longer one landed.
+    if not identifier:
+        return False
+    marker = f"`{identifier}`"
+    return any(marker in (d or "") for d in existing_descriptions)
 
 
 def issue_to_ticket_fields(issue: dict, repository_uid: str) -> dict | None:

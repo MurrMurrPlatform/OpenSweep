@@ -35,7 +35,11 @@ class NeomodelAsyncDriverMiddleware:
                 if db_url and not adb.driver:
                     await adb.set_connection(url=db_url)
             except Exception as exc:
-                logger.debug(f"Neomodel async driver: {exc}")
+                # The request is about to run without a database connection.
+                # At DEBUG this was invisible in production, so a Neo4j outage
+                # surfaced only as unexplained request failures with nothing
+                # in the logs to point at the cause.
+                logger.error(f"Neomodel async driver setup failed: {exc}", exc_info=True)
         await self.app(scope, receive, send)
 
 

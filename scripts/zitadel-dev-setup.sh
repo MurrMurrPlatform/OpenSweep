@@ -244,10 +244,10 @@ fi
 # funneled into it by the legacy-IdP-org join in provisioning, defeating the
 # org-per-user model. With no legacy repos, new users each get a personal org.
 NEO4J_PASSWORD=$(grep '^NEO4J_PASSWORD=' .env | cut -d= -f2)
-NEED=$(docker exec opensweep_neo4j cypher-shell --format plain -u neo4j -p "${NEO4J_PASSWORD:-opensweeppassword}" \
+NEED=$(docker exec opensweep_neo4j cypher-shell --format plain -u neo4j -p "${NEO4J_PASSWORD:-koalapassword}" \
   "MATCH (r:Repository) WHERE r.org_uid IS NULL OR r.org_uid = '' OR r.org_uid = 'local-org' RETURN count(r);" 2>/dev/null | tail -1 | tr -dc '0-9' || echo 0)
 if [ "${NEED:-0}" -gt 0 ]; then
-  docker exec opensweep_neo4j cypher-shell -u neo4j -p "${NEO4J_PASSWORD:-opensweeppassword}" \
+  docker exec opensweep_neo4j cypher-shell -u neo4j -p "${NEO4J_PASSWORD:-koalapassword}" \
     "MERGE (o:Organization {uid: '$ORG_ID'}) ON CREATE SET o.name = 'ZITADEL', o.created_at = datetime();
      MATCH (r:Repository) WHERE r.org_uid IS NULL OR r.org_uid = '' OR r.org_uid = 'local-org' SET r.org_uid = '$ORG_ID';" >/dev/null 2>&1 || true
   echo "stamped $NEED pre-tenancy repositories into org $ORG_ID"
