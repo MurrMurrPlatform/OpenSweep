@@ -32,20 +32,20 @@ class _Subject:
 
 @pytest.fixture(autouse=True)
 def fakes(monkeypatch):
-    # get_subject returns our fake nodes keyed by uid; subject_snapshot is a
+    # get_subjects returns our fake nodes keyed by uid; subject_snapshot is a
     # trivial formatter so we can assert on the rendered text.
     subjects = {
         "f-a": _Subject("f-a", "repo-a", "A finding"),
         "f-b": _Subject("f-b", "repo-b", "B finding"),
     }
 
-    async def fake_get_subject(subject_type, uid):
-        return subjects.get(uid)
+    async def fake_get_subjects(subject_type, uids):
+        return {uid: subjects[uid] for uid in uids if uid in subjects}
 
     def fake_snapshot(subject_type, subject):
         return f"{subject_type.value} {subject.uid}: {subject.title}"
 
-    monkeypatch.setattr(svc_mod, "get_subject", fake_get_subject)
+    monkeypatch.setattr(svc_mod, "get_subjects", fake_get_subjects)
     monkeypatch.setattr(svc_mod, "subject_snapshot", fake_snapshot)
     yield
 

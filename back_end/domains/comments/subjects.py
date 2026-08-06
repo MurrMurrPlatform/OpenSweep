@@ -48,6 +48,16 @@ async def get_subject(subject_type: CommentSubjectType, subject_uid: str) -> Any
     return await _model_for(subject_type).nodes.get_or_none(uid=subject_uid)
 
 
+async def get_subjects(
+    subject_type: CommentSubjectType, subject_uids: list[str]
+) -> dict[str, Any]:
+    """Batched subject lookup — `{uid: node}` for every existing uid."""
+    if not subject_uids:
+        return {}
+    nodes = await _model_for(subject_type).nodes.filter(uid__in=list(subject_uids))
+    return {node.uid: node for node in nodes}
+
+
 async def subject_repository_uid(
     subject_type: CommentSubjectType, subject_uid: str
 ) -> str | None:

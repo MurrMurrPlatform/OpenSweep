@@ -63,7 +63,8 @@ class LLMProvider(AsyncStructuredNode):
     #                         injected as CLAUDE_CODE_OAUTH_TOKEN env var.
     #   opencode            → optional API key for a hosted OpenAI-compatible
     #                         endpoint, written into the generated opencode.json.
-    # TODO(encryption-at-rest): wrap this in a KMS-backed seal before production use.
+    # Stored sealed via infrastructure/secretbox: writes go through
+    # services/credentials.sealed_secret(), reads through provider_secret().
     credential_secret = StringProperty(default="")
 
     last_health_check_at = DateTimeProperty()
