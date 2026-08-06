@@ -18,7 +18,10 @@ from domains.campaigns.services import batch, campaign_service
 @pytest.fixture
 def store(monkeypatch):
     """In-memory Campaign store: save() upserts by uid, nodes.get_or_none
-    reads back, write_audit is a no-op, record_event captures on the row."""
+    reads back, write_audit is a no-op, record_event captures on the row,
+    and the atomic-transition Cypher applies the same predecessor gate the
+    real query would (used by any campaign_service.cancel that runs through
+    the real implementation, e.g. _launch_child's cancel-on-failure path)."""
     rows: dict[str, Campaign] = {}
 
     async def fake_save(self):
@@ -30,6 +33,20 @@ def store(monkeypatch):
         async def get_or_none(uid=None, **_kw):
             return rows.get(uid)
 
+    async def fake_cypher(query, params=None):
+        params = params or {}
+        row = rows.get(params.get("uid"))
+        if row is None:
+            return [], None
+        current = row.status or "planning"
+        if current not in set(params.get("predecessors") or []):
+            return [], None
+        row.status = params["to"]
+        return [[row.status]], None
+
+    from neomodel import adb as _adb
+
+    monkeypatch.setattr(_adb, "cypher_query", fake_cypher)
     monkeypatch.setattr(Campaign, "save", fake_save)
     monkeypatch.setattr(Campaign, "nodes", _Nodes)
 
@@ -37,6 +54,7 @@ def store(monkeypatch):
         return None
 
     monkeypatch.setattr(batch, "write_audit", fake_audit)
+    monkeypatch.setattr(campaign_service, "write_audit", fake_audit)
 
     async def fake_record_event(c, type, **payload):
         c.events = [*(c.events or []), {"type": type, **payload}]

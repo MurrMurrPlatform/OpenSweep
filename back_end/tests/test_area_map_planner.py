@@ -240,6 +240,15 @@ class _AreaNodes:
     async def all(self):
         return list(self._rows)
 
+    async def filter(self, **kw):
+        # Emulate Neo4j's tenant+enabled predicate — the production query
+        # narrows before returning, so the seam has to as well or the tests
+        # would silently exercise cross-tenant behaviour.
+        def _matches(a):
+            return all(getattr(a, key) == val for key, val in kw.items())
+
+        return [a for a in self._rows if _matches(a)]
+
 
 def _area(key, kind, *, enabled=True, spec="", code_at=None, reviewed_at=None):
     return SimpleNamespace(
