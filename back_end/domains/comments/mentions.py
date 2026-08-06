@@ -3,7 +3,7 @@
 Two mention forms live inline in a comment body:
   - `@opensweep` (word-boundary, case-insensitive) summons the platform agent.
   - `@[Label](type:uid)` references another data item; `type` is a
-    CommentSubjectType value, `group` (a TicketGroupProposal), or `user`
+    CommentSubjectType value, `group` (an EpicProposal), or `user`
     (a User — records a `comment.mention` notification for that user).
 """
 
@@ -17,7 +17,7 @@ OPENSWEEP_MENTION_RE = re.compile(r"(?<!\w)@opensweep\b", re.IGNORECASE)
 ITEM_MENTION_RE = re.compile(r"@\[([^\]]+)\]\((\w+):([A-Za-z0-9_-]+)\)")
 
 # Every type addressable from the composer. Superset of the comment subject
-# types: `group` mentions a TicketGroupProposal, which carries no thread;
+# types: `group` mentions an EpicProposal, which carries no thread;
 # `user` mentions a person and lands in their notification inbox.
 MENTIONABLE_TYPES = {
     "finding",

@@ -27,7 +27,7 @@ _TYPE_QUERIES: dict[str, tuple[str, str]] = {
     "run": ("Run", "n.playbook"),
     "scheduled_agent": ("ScheduledAgent", "n.title"),
     "doc": ("Doc", "n.slug"),
-    "group": ("TicketGroupProposal", "n.status"),
+    "group": ("EpicProposal", "n.status"),
 }
 
 

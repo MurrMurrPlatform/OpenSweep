@@ -194,8 +194,30 @@ async def dismiss(user: UserDTO, event_uid: str) -> None:
 
 
 async def mark_all_read(user: UserDTO) -> int:
-    """Mark every currently-unread visible item read; returns how many."""
+    """Mark every currently-unread visible item read; returns how many.
+
+    Batched: one `UNWIND … MERGE` write in place of a per-item
+    get-or-none + save pair. On the FEED_WINDOW=300 upper bound that swaps
+    ~600 round-trips for a single Cypher call.
+    """
     items = await list_feed(user, unread_only=True, limit=FEED_WINDOW)
-    for item in items:
-        await _mark(user.uid, item.uid)
+    if not items:
+        return 0
+    now = datetime.now(UTC)
+    rows = [
+        {
+            "key": read_state_key(user.uid, item.uid),
+            "user_uid": user.uid,
+            "event_uid": item.uid,
+        }
+        for item in items
+    ]
+    await adb.cypher_query(
+        "UNWIND $rows AS row "
+        "MERGE (n:NotificationRead {key: row.key}) "
+        "ON CREATE SET n.user_uid = row.user_uid, n.event_uid = row.event_uid, "
+        "              n.read_at = $now "
+        "ON MATCH SET n.read_at = coalesce(n.read_at, $now)",
+        {"rows": rows, "now": now},
+    )
     return len(items)

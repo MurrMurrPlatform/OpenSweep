@@ -282,6 +282,18 @@ async def update_rule(
         rule.repository_uid = req.repository_uid
     if req.enabled is not None:
         rule.enabled = req.enabled
+    # Mirror create_rule's dedupe: no other rule in this org may end up with
+    # the same (event_type, channel_id, repository_uid) tuple this update
+    # would produce. Without this an edit can quietly land on another rule's
+    # identity and duplicate delivery.
+    duplicates = await SlackNotificationRule.nodes.filter(
+        org_uid=org_uid, event_type=rule.event_type, channel_id=rule.channel_id
+    )
+    if any(
+        d.uid != rule.uid and (d.repository_uid or "") == (rule.repository_uid or "")
+        for d in duplicates
+    ):
+        raise HTTPException(status_code=409, detail="An identical rule already exists")
     rule = await rule.save()
     await write_audit(
         kind="slack.rule_updated",
