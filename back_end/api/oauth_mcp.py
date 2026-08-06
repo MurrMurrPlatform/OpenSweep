@@ -135,10 +135,13 @@ async def authorize(
     except Exception:  # noqa: BLE001 — unsupported scope
         return _error_redirect(redirect_uri, state, "invalid_scope")
 
+    # Deliberately NOT forwarding client.name — the consent view fetches
+    # /api/v1/oauth-mcp/client_metadata as the logged-in user for the
+    # server-truth name, so a hand-crafted /connect/authorize URL cannot
+    # substitute a friendly name over the top of a different client_id.
     consent = urlencode(
         {
             "client_id": client.uid,
-            "client_name": client.name or "An MCP client",
             "redirect_uri": redirect_uri,
             "state": state,
             "code_challenge": code_challenge,
