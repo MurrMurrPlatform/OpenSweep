@@ -181,7 +181,11 @@ async def list_agents(
     produces: Optional[str] = None,
     enabled_only: bool = False,
 ) -> list[AgentDTO]:
-    rows = [a for a in await Agent.nodes.all() if _visible_to_org(a, org_uid)]
+    # Push the org-visibility filter into Cypher — Agent rows never delete
+    # and this backs the Agent Library UI list, so a full-label scan grew
+    # unboundedly with every tenant's user-created agents. "" = shared
+    # system rows visible to every org.
+    rows = list(await Agent.nodes.filter(org_uid__in=["", org_uid]))
     overridden = await _overridden_agent_uids(org_uid)
     out: list[AgentDTO] = []
     for a in rows:

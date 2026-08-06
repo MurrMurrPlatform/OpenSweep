@@ -52,6 +52,15 @@ def _install(monkeypatch, sa):
         async def all(self):
             return [sa]
 
+        async def filter(self, **kw):
+            def _match(row):
+                for k, v in kw.items():
+                    if getattr(row, k, None) != v:
+                        return False
+                return True
+
+            return [sa] if _match(sa) else []
+
     class _AgentNodes:
         async def get_or_none(self, uid=None):
             return _Agent()
@@ -114,3 +123,28 @@ def test_predicate_matches_the_anchor_branches():
     assert cron_dispatch_allowed("disabled") is False
     for level in ("", "suggest", "ask-before-run", "auto-run-cheap", "auto-run-any"):
         assert cron_dispatch_allowed(level) is True, level
+
+
+async def test_generic_branch_stamps_tick_on_lifecycle_error(monkeypatch):
+    """Regression: the generic branch was the only one of the four cron
+    branches that did NOT stamp `last_scheduled_at` on LifecycleError.
+    Reachable when the bound Agent is disabled — without the stamp, the
+    binding re-fires (and re-fails) every 60s beat forever."""
+    from domains.runs.services.lifecycle import LifecycleError
+
+    sa = _SA(autonomy="ask-before-run")
+    _install(monkeypatch, sa)
+
+    async def _boom(uid, **kwargs):
+        raise LifecycleError("agent is disabled")
+
+    monkeypatch.setattr(
+        "domains.agents.services.dispatch.trigger_scheduled_agent", _boom
+    )
+
+    result = await schedule_scanner.scan_and_dispatch()
+
+    assert result.dispatched == 0
+    assert any("agent is disabled" in e for e in result.errors)
+    # The tick must be consumed so the next 60s beat does not re-attempt.
+    assert sa.saved == 1

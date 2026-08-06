@@ -70,9 +70,10 @@ async def scan_and_dispatch(*, now: datetime | None = None) -> ScanResult:
 
     moment = now or datetime.now(UTC)
     result = ScanResult()
-    for sa in await ScheduledAgent.nodes.all():
-        if not sa.enabled:
-            continue
+    # Push `enabled=True` into Cypher — this beat runs every 60s over the
+    # platform's entire ScheduledAgent table, so `.all()` was O(total-rows)
+    # per tenant per minute.
+    for sa in await ScheduledAgent.nodes.filter(enabled=True):
         try:
             kind, payload = parse_trigger(sa.trigger or "")
         except ValueError:
@@ -267,6 +268,12 @@ async def scan_and_dispatch(*, now: datetime | None = None) -> ScanResult:
             )
         except LifecycleError as exc:
             result.errors.append(f"{sa.uid}: {exc}")
+            # Stamp the tick like every sibling branch — otherwise a bound
+            # Agent turned disabled (a reachable LifecycleError from
+            # dispatch_agent) keeps `is_due()` True on every 60s beat and
+            # re-fires forever until a human intervenes.
+            sa.last_scheduled_at = moment
+            await sa.save()
             continue
         sa.last_scheduled_at = moment
         await sa.save()
