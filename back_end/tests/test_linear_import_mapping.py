@@ -93,6 +93,24 @@ def test_is_already_imported_matches_identifier_in_descriptions():
     assert not is_already_imported("MUR-1", [None, ""])  # type: ignore[list-item]
 
 
+def test_is_already_imported_does_not_confuse_prefix_identifiers():
+    # MUR-1 must not match a description that only mentions MUR-11 / MUR-100 —
+    # bare substring match would silently under-import every prefix identifier.
+    existing = [
+        build_description("body", "MUR-11", "https://linear.app/x/issue/MUR-11"),
+        build_description("body", "MUR-100", "https://linear.app/x/issue/MUR-100"),
+    ]
+    assert not is_already_imported("MUR-1", existing)
+    assert not is_already_imported("MUR-10", existing)
+    assert is_already_imported("MUR-11", existing)
+    assert is_already_imported("MUR-100", existing)
+
+
+def test_is_already_imported_empty_identifier_is_false():
+    existing = [build_description("body", "MUR-1", "u")]
+    assert not is_already_imported("", existing)
+
+
 # ── Whole-issue mapping ──────────────────────────────────────────────────────
 
 
