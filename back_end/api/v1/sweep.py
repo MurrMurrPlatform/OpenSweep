@@ -13,6 +13,8 @@ See domains.runs.services.sweep for the orchestration logic.
 """
 
 
+from contextlib import asynccontextmanager
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
@@ -35,9 +37,53 @@ from domains.runs.services.sweep import (
 )
 from domains.tenancy import require_repo_in_org
 from domains.users.schemas import UserDTO
+from infrastructure.dist_lock import dist_lock
 from infrastructure.kill_switch import KillSwitchActiveError, assert_runnable
 
 router = APIRouter(prefix="/api/v1/repositories", tags=["sweep"])
+
+
+@asynccontextmanager
+async def _one_sweep_at_a_time(repository_uid: str, agent_key: str, conflict_message: str):
+    """Hold the "one <agent_key> sweep per repository" guard across the dispatch.
+
+    The guard was a bare check-then-act: read `active_runs_for`, then let
+    `trigger_run` create the Run — with awaits in between and no unique
+    constraint behind it. Two near-simultaneous requests (a double-click, two
+    tabs, a retried POST) both read "nothing in flight" and both dispatched a
+    full LLM run against the same page tree. The lock is CROSS-PROCESS
+    (`dist_lock`) because these dispatches also arrive from the Celery worker's
+    schedule ticks, so a per-process lock would not serialize them.
+
+    Yields the resolved system agent (or None when it isn't seeded); the caller
+    dispatches INSIDE the `async with`, so the loser sees the winner's queued
+    run and 409s.
+    """
+    from domains.agents.services.registry import system_agent_by_key
+
+    async with dist_lock(
+        f"sweep:{repository_uid}:{agent_key}", ttl_seconds=120, blocking_timeout=30
+    ) as acquired:
+        if not acquired:
+            # Another dispatch for the same repo+kind held the lock past the
+            # window — refuse rather than risk the double-dispatch.
+            raise HTTPException(
+                status_code=409,
+                detail=f"another {agent_key} dispatch for this repository is in "
+                "progress; retry shortly",
+            )
+        agent = await system_agent_by_key(agent_key)
+        in_flight = [
+            r
+            for r in await active_runs_for(repository_uid=repository_uid)
+            if agent is not None and (r.agent_uid or "") == agent.uid
+        ]
+        if in_flight:
+            raise HTTPException(
+                status_code=409,
+                detail=conflict_detail(conflict_message, in_flight[0]),
+            )
+        yield agent
 
 
 class GenerateDocsResultDTO(BaseModel):
@@ -117,35 +163,23 @@ async def run_generate_docs_endpoint(
 
     # In-flight guard: one generate-docs per repository at a time — a second
     # run would double-propose the same page tree. These runs carry the
-    # generate-docs system agent's uid as their agent provenance.
-    from domains.agents.services.registry import system_agent_by_key
-
-    gen_agent = await system_agent_by_key("generate-docs")
-    candidates = await active_runs_for(repository_uid=repository_uid)
-    in_flight = [
-        r
-        for r in candidates
-        if gen_agent is not None and (r.agent_uid or "") == gen_agent.uid
-    ]
-    if in_flight:
-        raise HTTPException(
-            status_code=409,
-            detail=conflict_detail(
-                "a generate-docs run is already in progress for this repository",
-                in_flight[0],
-            ),
-        )
-
-    try:
-        result: GenerateDocsResult = await run_generate_docs(
-            repository_uid=repository_uid,
-            triggered_by=user.uid,
-            agent_uid=req.agent_uid if req else None,
-        )
-    except LifecycleError as exc:
-        # The docs gate (no area map yet) — a precondition conflict, not a
-        # server error.
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    # generate-docs system agent's uid as their agent provenance. The guard and
+    # the dispatch are held under one lock so they cannot interleave.
+    async with _one_sweep_at_a_time(
+        repository_uid,
+        "generate-docs",
+        "a generate-docs run is already in progress for this repository",
+    ):
+        try:
+            result: GenerateDocsResult = await run_generate_docs(
+                repository_uid=repository_uid,
+                triggered_by=user.uid,
+                agent_uid=req.agent_uid if req else None,
+            )
+        except LifecycleError as exc:
+            # The docs gate (no area map yet) — a precondition conflict, not a
+            # server error.
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     return GenerateDocsResultDTO(**result.__dict__)
 
 
@@ -168,34 +202,21 @@ async def run_generate_specs_endpoint(
     # In-flight guard: one generate-specs per repository at a time — a second
     # would double-propose the same feature specs. These runs carry the
     # generate-specs system agent's uid as their agent provenance.
-    from domains.agents.services.registry import system_agent_by_key
-
-    specs_agent = await system_agent_by_key("generate-specs")
-    candidates = await active_runs_for(repository_uid=repository_uid)
-    in_flight = [
-        r
-        for r in candidates
-        if specs_agent is not None and (r.agent_uid or "") == specs_agent.uid
-    ]
-    if in_flight:
-        raise HTTPException(
-            status_code=409,
-            detail=conflict_detail(
-                "a generate-specs run is already in progress for this repository",
-                in_flight[0],
-            ),
-        )
-
-    try:
-        result: GenerateSpecsResult = await run_generate_specs(
-            repository_uid=repository_uid,
-            triggered_by=user.uid,
-            agent_uid=req.agent_uid if req else None,
-        )
-    except LifecycleError as exc:
-        # The specs gate (no feature leaves need a spec) — a precondition
-        # conflict, not a server error.
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    async with _one_sweep_at_a_time(
+        repository_uid,
+        "generate-specs",
+        "a generate-specs run is already in progress for this repository",
+    ):
+        try:
+            result: GenerateSpecsResult = await run_generate_specs(
+                repository_uid=repository_uid,
+                triggered_by=user.uid,
+                agent_uid=req.agent_uid if req else None,
+            )
+        except LifecycleError as exc:
+            # The specs gate (no feature leaves need a spec) — a precondition
+            # conflict, not a server error.
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     return GenerateSpecsResultDTO(**result.__dict__)
 
 
@@ -299,35 +320,22 @@ async def run_deep_scan_endpoint(
     # In-flight guard: one deep scan per repository at a time — a second would
     # duplicate a long, expensive whole-repo sweep. Deep-scan runs carry the
     # deep-scan system agent's uid as their agent provenance.
-    from domains.agents.services.registry import system_agent_by_key
-
-    scan_agent = await system_agent_by_key("deep-scan")
-    candidates = await active_runs_for(repository_uid=repository_uid)
-    in_flight = [
-        r
-        for r in candidates
-        if scan_agent is not None and (r.agent_uid or "") == scan_agent.uid
-    ]
-    if in_flight:
-        raise HTTPException(
-            status_code=409,
-            detail=conflict_detail(
-                "a deep scan is already in progress for this repository",
-                in_flight[0],
-            ),
-        )
-
     req = req or DeepScanRequest()
-    policy = await ensure_policy_for_effort(req.effort)
-    result: DeepScanResult = await run_deep_scan(
-        repository_uid=repository_uid,
-        triggered_by=user.uid,
-        agent_uid=req.agent_uid,
-        custom_intent=req.custom_intent,
-        max_findings=req.max_findings,
-        run_policy_uid=policy.uid,
-        effort=req.effort.value,
-    )
+    async with _one_sweep_at_a_time(
+        repository_uid,
+        "deep-scan",
+        "a deep scan is already in progress for this repository",
+    ):
+        policy = await ensure_policy_for_effort(req.effort)
+        result: DeepScanResult = await run_deep_scan(
+            repository_uid=repository_uid,
+            triggered_by=user.uid,
+            agent_uid=req.agent_uid,
+            custom_intent=req.custom_intent,
+            max_findings=req.max_findings,
+            run_policy_uid=policy.uid,
+            effort=req.effort.value,
+        )
     return DeepScanResultDTO(**result.__dict__)
 
 
