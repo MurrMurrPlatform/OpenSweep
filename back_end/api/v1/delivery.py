@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field, field_validator
 
 from api.dependencies import get_current_user, require_role
+from config import settings
 from domains.pagination import Page, page_params, paginate
 from domains.tenancy import repo_scope, require_repo_in_org
 from domains.delivery.schemas import (
@@ -677,6 +678,7 @@ async def update_merge_policy(
         policy.enforce_converged_status = req.enforce_converged_status
     policy.updated_at = datetime.now(UTC)
     await policy.save()
+    protection_outcome: str | None = None
     if enforce_turned_on:
         from domains.delivery.services.pull_request_service import (
             ensure_converged_status_required,
@@ -684,8 +686,28 @@ async def update_merge_policy(
         from domains.repositories.models import Repository
 
         repo = await Repository.nodes.get_or_none(uid=repository_uid)
+        protection_outcome = "failed"
         if repo is not None:
-            await ensure_converged_status_required(repo, actor_uid=user.uid)
+            protection_outcome = await ensure_converged_status_required(
+                repo, actor_uid=user.uid
+            )
+        # "not-required" (the branch already has a rule we refuse to rewrite)
+        # and "failed" (no repo admin) are the two most likely outcomes on a
+        # real repository, and both leave GitHub enforcing NOTHING while the
+        # toggle reads ON. Saying so is the whole point of the opt-in — audit
+        # it as attention.required and hand the outcome back to the caller.
+        if protection_outcome not in ("created", "already-required"):
+            await write_audit(
+                kind="delivery.branch_protection_not_applied",
+                subject_uid=policy.uid,
+                subject_type="MergePolicy",
+                actor_uid=user.uid,
+                payload={
+                    "repository_uid": repository_uid,
+                    "outcome": protection_outcome,
+                    "context": settings.OPENSWEEP_CONVERGED_STATUS_CONTEXT,
+                },
+            )
     await write_audit(
         kind="merge_policy.updated",
         subject_uid=policy.uid,
@@ -700,4 +722,6 @@ async def update_merge_policy(
     )
 
     await recompute_open_prs_for_repository(repository_uid)
-    return merge_policy_to_dto(policy)
+    dto = merge_policy_to_dto(policy)
+    dto.branch_protection_outcome = protection_outcome
+    return dto

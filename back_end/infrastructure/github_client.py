@@ -66,24 +66,39 @@ def _is_refusal(response: httpx.Response) -> bool:
 
 
 def _retry_delay_seconds(response: httpx.Response, attempt: int) -> float | None:
-    """Seconds to wait before the next attempt, or None when GitHub's own hint
+    """Seconds to wait before the next attempt, or None when a rate-limit hint
     exceeds `MAX_RETRY_DELAY_SECONDS` — meaning "don't retry, fail fast".
 
-    Honors Retry-After / X-RateLimit-Reset when GitHub sends one, else a
-    capped exponential backoff (1, 2, 4, 8… seconds, same ceiling).
+    `X-RateLimit-Reset` is consulted ONLY when the response is actually a rate
+    limit. GitHub stamps that header on *every* API response as a quota gauge,
+    so reading it unconditionally would treat an ordinary 503 as "rate limited
+    until the top of the hour" and fail fast with zero retries — disabling 5xx
+    resilience in exactly the common case it exists for.
+
+    Ordinary transient failures (5xx) therefore use `Retry-After` if GitHub
+    sent one, clamped to the ceiling rather than failing fast, else a capped
+    exponential backoff (1, 2, 4, 8… seconds, same ceiling).
     """
-    for header, to_delay in (
-        ("Retry-After", float),
-        ("X-RateLimit-Reset", lambda v: float(v) - time.time()),
-    ):
-        raw = response.headers.get(header)
-        if raw is None:
-            continue
+    retry_after = response.headers.get("Retry-After")
+    if retry_after is not None:
         try:
-            delay = max(0.0, to_delay(raw))
+            delay = max(0.0, float(retry_after))
         except ValueError:
-            continue  # e.g. Retry-After in HTTP-date form — try the next hint
-        return None if delay > MAX_RETRY_DELAY_SECONDS else delay
+            delay = None  # HTTP-date form — fall through
+        if delay is not None:
+            if not _is_refusal(response):
+                # A 5xx backoff hint: honor it, but never park a worker on it.
+                return min(delay, float(MAX_RETRY_DELAY_SECONDS))
+            return None if delay > MAX_RETRY_DELAY_SECONDS else delay
+    if _is_refusal(response):
+        reset = response.headers.get("X-RateLimit-Reset")
+        if reset is not None:
+            try:
+                delay = max(0.0, float(reset) - time.time())
+            except ValueError:
+                pass
+            else:
+                return None if delay > MAX_RETRY_DELAY_SECONDS else delay
     return min(float(2**attempt), float(MAX_RETRY_DELAY_SECONDS))
 
 

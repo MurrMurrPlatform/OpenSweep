@@ -191,6 +191,9 @@ _KIND_MAP: dict[str, tuple[str, ...]] = {
     "delivery.credential_missing": ("attention.required",),
     # OpenSweep wrote a branch-protection rule to the user's repo settings.
     "delivery.branch_protection_created": ("attention.required",),
+    # Enforcement was turned ON but GitHub is requiring nothing — the branch
+    # already has a rule we refuse to rewrite, or the credential lacks admin.
+    "delivery.branch_protection_not_applied": ("attention.required",),
     "verdict.submitted": ("review.completed",),
     "fix_run.pushed": ("fix.pushed",),
     "sweep.audit_completed": ("analysis.completed",),

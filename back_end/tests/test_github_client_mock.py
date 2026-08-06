@@ -536,3 +536,91 @@ async def test_installation_token_mint_retries_transient_5xx(monkeypatch):
     )
     assert body["token"] == "ghs_x"
     assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_ordinary_5xx_still_retries_when_ratelimit_reset_is_present(monkeypatch):
+    """Regression: GitHub stamps `X-RateLimit-Reset` on EVERY response as a
+    quota gauge, not just on rate-limited ones. Reading it unconditionally
+    made an ordinary 503 look "rate limited until the top of the hour", trip
+    the fail-fast ceiling, and get ZERO retries — disabling 5xx resilience in
+    the single most common case it exists for."""
+    import time as _time
+
+    from infrastructure import github_client as gh
+
+    sleeps = []
+    monkeypatch.setattr(gh.asyncio, "sleep", lambda d: sleeps.append(d) or _noop())
+    calls = {"n": 0}
+    # A perfectly healthy quota window that happens to reset in an hour.
+    reset = str(_time.time() + 3600)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        headers = {"X-RateLimit-Reset": reset, "X-RateLimit-Remaining": "4999"}
+        if calls["n"] == 1:
+            return httpx.Response(503, headers=headers, json={"message": "unavailable"})
+        return httpx.Response(200, headers=headers, json={"number": 1})
+
+    c = GitHubClient(token="x")
+    c._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://api.github.com")
+    assert await c.get_pull_request("acme", "repo", 1) == {"number": 1}
+    assert calls["n"] == 2  # the 503 WAS retried
+    assert sleeps == [1.0]  # exponential backoff, not the hour-away reset
+    await c.aclose()
+
+
+@pytest.mark.asyncio
+async def test_5xx_retry_after_is_clamped_not_failed_fast(monkeypatch):
+    """A 5xx `Retry-After` is a genuine backoff hint, so it is honored — but
+    clamped to the ceiling rather than parking a worker, and never turned
+    into a fail-fast the way a rate-limit hint is."""
+    from infrastructure import github_client as gh
+    from infrastructure.github_client import MAX_RETRY_DELAY_SECONDS
+
+    sleeps = []
+    monkeypatch.setattr(gh.asyncio, "sleep", lambda d: sleeps.append(d) or _noop())
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(503, headers={"Retry-After": "3600"}, json={"message": "unavailable"})
+        return httpx.Response(200, json={"number": 1})
+
+    c = GitHubClient(token="x")
+    c._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://api.github.com")
+    assert await c.get_pull_request("acme", "repo", 1) == {"number": 1}
+    assert calls["n"] == 2
+    assert sleeps == [float(MAX_RETRY_DELAY_SECONDS)]
+    await c.aclose()
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_403_reset_beyond_ceiling_still_fails_fast(monkeypatch):
+    """The ceiling must keep working for real rate limits — only the
+    always-present-header misread was wrong."""
+    import time as _time
+
+    from infrastructure import github_client as gh
+
+    sleeps = []
+    monkeypatch.setattr(gh.asyncio, "sleep", lambda d: sleeps.append(d) or _noop())
+    calls = {"n": 0}
+    reset = str(_time.time() + 3600)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(
+            403,
+            headers={"X-RateLimit-Reset": reset},
+            json={"message": "API rate limit exceeded"},
+        )
+
+    c = GitHubClient(token="x")
+    c._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://api.github.com")
+    with pytest.raises(httpx.HTTPStatusError):
+        await c.get_pull_request("acme", "repo", 1)
+    assert calls["n"] == 1
+    assert sleeps == []
+    await c.aclose()

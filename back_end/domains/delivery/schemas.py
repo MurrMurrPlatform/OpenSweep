@@ -179,6 +179,13 @@ class MergePolicyDTO(BaseModel):
     # on the default branch. Writes to the repository's GitHub *settings* and
     # affects every PR in the repo, so it is off unless a maintainer turns it on.
     enforce_converged_status: bool = False
+    # Transient (not persisted): what GitHub actually did the moment
+    # `enforce_converged_status` was flipped on — "created", "already-required",
+    # "not-required" (the branch has a protection rule we refuse to rewrite) or
+    # "failed" (no admin rights / no credential). Only the first two mean
+    # GitHub is really enforcing the gate, so the UI must not render the
+    # toggle as effective on the strength of `enforce_converged_status` alone.
+    branch_protection_outcome: str | None = None
 
 
 # ── Requests ─────────────────────────────────────────────────────────────────
