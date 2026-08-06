@@ -17,6 +17,21 @@ from infrastructure.audit import write_audit
 # Mirrors the resolver in api/v1/platform_tools.py (_artifact_target_repository_uid).
 VALID_TARGET_TYPES = {"run", "finding", "doc", "memory", "ticket", "pull_request", "pullrequest"}
 
+# The tool's target_type vocabulary is lowercase; Neo4j labels are the PascalCase
+# neomodel class names and MATCH is case-sensitive. Writing the lowercase value
+# as subject_type would file every artifact.attached event under a label that
+# matches zero nodes, so every other consumer of the audit stream (and any future
+# repository_uid derivation) would see a subject it cannot resolve.
+_AUDIT_LABEL = {
+    "run": "Run",
+    "finding": "Finding",
+    "doc": "Doc",
+    "memory": "Memory",
+    "ticket": "Ticket",
+    "pull_request": "PullRequest",
+    "pullrequest": "PullRequest",
+}
+
 
 def _artifact_scope_segment(target_type: str, target_uid: str) -> str:
     """The second path segment under `<repo>/…` in the artifact URI.
@@ -71,11 +86,15 @@ async def attach_artifact(
         extension=extension,
         summary=summary,
     )
+    # Pass repository_uid explicitly rather than letting write_audit derive it:
+    # we already hold the authoritative, caller-resolved tenancy key, and the
+    # derivation would otherwise cost a Cypher round-trip per attach.
     await write_audit(
         kind="artifact.attached",
         subject_uid=target_uid,
-        subject_type=normalized,
+        subject_type=_AUDIT_LABEL[normalized],
         actor_uid=executor,
+        repository_uid=repository_uid,
         payload={
             "artifact_type": artifact_type,
             "artifact_ref": uri,

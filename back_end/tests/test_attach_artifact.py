@@ -176,12 +176,19 @@ async def test_http_endpoint_forwards_resolved_repository_uid(monkeypatch):
     assert calls[0]["repository_uid"] == "repo-resolved"
 
 
-async def test_http_endpoint_preserves_explicit_repository_uid(monkeypatch):
-    """A caller-provided repository_uid must survive the round trip too."""
+async def test_http_endpoint_accepts_explicit_repository_uid_that_matches_owner(
+    monkeypatch,
+):
+    """A caller-supplied repository_uid is an assertion to CHECK, not a
+    shortcut that skips resolution. Matching the target's real owner is fine —
+    but the resolver still runs."""
     from api.v1 import platform_tools as pt
 
-    async def fake_resolver(*_):
-        raise AssertionError("resolver should be skipped when caller passes uid")
+    resolved: list[tuple] = []
+
+    async def fake_resolver(target_uid, target_type):
+        resolved.append((target_uid, target_type))
+        return "repo-explicit"
 
     async def fake_require(*_, **__):
         return None
@@ -204,4 +211,76 @@ async def test_http_endpoint_preserves_explicit_repository_uid(monkeypatch):
         repository_uid="repo-explicit",
     )
     await pt.http_attach_artifact(req, request=object(), user=object())
+    assert resolved == [("tk-1", "ticket")], "the resolver must not be skipped"
     assert calls[0]["repository_uid"] == "repo-explicit"
+
+
+async def test_http_endpoint_rejects_repository_uid_that_is_not_the_target_owner(
+    monkeypatch,
+):
+    """The tenancy-bypass case: a caller in repo A naming a target owned by
+    repo B. The HTTP door must refuse it exactly like the envelope door does,
+    and must not invoke the tool."""
+    from api.v1 import platform_tools as pt
+
+    async def fake_resolver(target_uid, target_type):
+        return "repo-b"
+
+    async def fake_require(*_, **__):
+        return None
+
+    calls: list[dict] = []
+
+    async def fake_tool(**kwargs):
+        calls.append(kwargs)
+        return {"target_uid": kwargs["target_uid"], "artifact_ref": "u"}
+
+    monkeypatch.setattr(pt, "_artifact_target_repository_uid", fake_resolver)
+    monkeypatch.setattr(pt, "require_tool_repo_access", fake_require)
+    monkeypatch.setattr(pt, "attach_artifact", fake_tool)
+
+    req = pt.AttachArtifactRequest(
+        target_uid="finding-in-repo-b",
+        target_type="finding",
+        artifact_type="repro",
+        content="hi",
+        repository_uid="repo-a",
+    )
+    with pytest.raises(HTTPException) as exc:
+        await pt.http_attach_artifact(req, request=object(), user=object())
+    assert exc.value.status_code == 404
+    assert not calls, "the tool must not run for a cross-tenant target"
+
+
+async def test_audit_event_carries_repository_uid_and_pascal_case_label(monkeypatch):
+    """The artifact.attached event is the only trail proving an agent attached
+    output to an entity. Neo4j labels are case-sensitive PascalCase class
+    names, so a lowercase subject_type would derive to no repository at all and
+    file the event platform-level, invisible to the owning tenant."""
+    captured: dict = {}
+
+    def fake_put(**kwargs):
+        return "artifacts/repo-1/ticket-tk-1/x.txt"
+
+    async def fake_audit(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(aa_mod.artifact_store, "put", fake_put)
+    monkeypatch.setattr(aa_mod, "write_audit", fake_audit)
+
+    await attach_artifact(
+        target_uid="tk-1",
+        target_type="ticket",
+        artifact_type="repro",
+        content="x",
+        repository_uid="repo-1",
+    )
+    assert captured["repository_uid"] == "repo-1"
+    assert captured["subject_type"] == "Ticket"
+    assert captured["subject_uid"] == "tk-1"
+
+
+async def test_audit_label_map_covers_every_valid_target_type():
+    """The two vocabularies must not drift: any target_type the tool accepts
+    must have a graph label, or attach_artifact KeyErrors at the audit call."""
+    assert set(aa_mod._AUDIT_LABEL) == aa_mod.VALID_TARGET_TYPES

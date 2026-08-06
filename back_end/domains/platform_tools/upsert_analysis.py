@@ -17,12 +17,52 @@ from domains.analysis.models import (
     ANALYSIS_STATUSES,
     CONFIDENCE_LABELS,
     HEALTH_GRADES,
+    SCORE_DIMENSIONS,
 )
 from domains.analysis.services.analysis_service import (
     analysis_write_lock,
     get_or_create_analysis,
 )
 from infrastructure.audit import write_audit
+
+
+def _validated_scorecard(scorecard: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Reject scorecard entries the read path cannot hydrate.
+
+    `dimension` is required on ScorecardEntryDTO, so an entry without it used
+    to be stored happily and then blow up analysis_to_dto on EVERY subsequent
+    read of that Analysis — a write that permanently breaks reads, with no API
+    route able to repair it. Fail the write loudly instead; the agent gets a
+    422 it can act on rather than a report that 500s later.
+    """
+    validated: list[dict[str, Any]] = []
+    for idx, entry in enumerate(scorecard):
+        if not isinstance(entry, dict):
+            raise HTTPException(
+                status_code=422,
+                detail=f"scorecard[{idx}] must be an object, got {type(entry).__name__}",
+            )
+        dimension = str(entry.get("dimension") or "").strip()
+        if not dimension:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"scorecard[{idx}] is missing required 'dimension'; each entry is "
+                    "{dimension, score, max, grade, rationale} — suggested dimensions: "
+                    f"{', '.join(SCORE_DIMENSIONS)}"
+                ),
+            )
+        grade = str(entry.get("grade") or "").strip()
+        if grade and grade not in HEALTH_GRADES:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"scorecard[{idx}] has invalid grade={grade!r}; "
+                    f"expected one of {sorted(HEALTH_GRADES)}"
+                ),
+            )
+        validated.append({**entry, "dimension": dimension})
+    return validated
 
 
 async def upsert_analysis(
@@ -56,6 +96,8 @@ async def upsert_analysis(
             status_code=422,
             detail=f"invalid confidence={confidence!r}; expected one of {sorted(CONFIDENCE_LABELS)}",
         )
+    if scorecard is not None:
+        scorecard = _validated_scorecard(scorecard)
 
     # Held across get_or_create → mutate → save so a concurrent
     # set_analysis_section / add_analysis_note / ask_question call for the
@@ -82,7 +124,7 @@ async def upsert_analysis(
         if health_score is not None:
             node.health_score = int(health_score)
         if scorecard is not None:
-            node.scorecard = [e for e in scorecard if isinstance(e, dict)]
+            node.scorecard = scorecard  # already validated above
         if confidence is not None:
             node.confidence = confidence
         if limitations is not None:

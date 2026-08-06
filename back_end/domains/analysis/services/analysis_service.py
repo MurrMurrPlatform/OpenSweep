@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from domains.analysis.models import Analysis
 from domains.analysis.schemas import (
@@ -26,6 +27,7 @@ from domains.analysis.schemas import (
 )
 from domains.findings.models import Finding
 from infrastructure.dist_lock import dist_lock
+from logging_config import logger
 
 
 def analysis_write_lock_key(source_run_uid: str) -> str:
@@ -142,14 +144,14 @@ def analysis_to_dto(a: Analysis) -> AnalysisDTO:
         executor=a.executor or "",
         health_grade=a.health_grade or "",
         health_score=a.health_score,
-        scorecard=[ScorecardEntryDTO(**e) for e in _dicts(a.scorecard)],
+        scorecard=_entries(ScorecardEntryDTO, a.scorecard),
         confidence=a.confidence or "",
         limitations=a.limitations or "",
         stats=dict(a.stats or {}),
         sections=dict(a.sections or {}),
-        coverage=[CoverageEntryDTO(**e) for e in _dicts(a.coverage)],
-        strengths=[StrengthDTO(**e) for e in _dicts(a.strengths)],
-        validation_baseline=[ValidationEntryDTO(**e) for e in _dicts(a.validation_baseline)],
+        coverage=_entries(CoverageEntryDTO, a.coverage),
+        strengths=_entries(StrengthDTO, a.strengths),
+        validation_baseline=_entries(ValidationEntryDTO, a.validation_baseline),
         questions=questions,
         open_question_count=sum(1 for q in questions if q.status == QuestionStatus.OPEN),
         created_at=a.created_at,
@@ -162,6 +164,28 @@ def _dicts(value) -> list[dict]:
     """Coerce a JSON list to a list of dicts, dropping malformed entries so a
     single bad agent-authored item never breaks the whole DTO."""
     return [e for e in (value or []) if isinstance(e, dict)]
+
+
+def _entries(model, value) -> list:
+    """Hydrate agent-authored JSON into DTOs, dropping entries that don't
+    validate.
+
+    `_dicts` only rejects non-dicts, so a dict missing a REQUIRED DTO field
+    (e.g. a scorecard entry with no `dimension`) still raised ValidationError
+    here — turning one bad historical entry into a 500 on every subsequent
+    read of that Analysis, unfixable through the API. Writers validate at the
+    door now; this keeps already-stored bad entries from bricking the read.
+    """
+    out = []
+    for entry in _dicts(value):
+        try:
+            out.append(model(**entry))
+        except ValidationError as exc:
+            logger.warning(
+                f"dropping malformed {model.__name__} entry: {exc}",
+                extra={"tag": "analysis"},
+            )
+    return out
 
 
 def _question_dto(q: dict) -> AnalysisQuestionDTO:
@@ -235,35 +259,53 @@ class AnalysisService:
     async def answer_question(
         self, uid: str, qid: str, *, answer: str, actor: str = ""
     ) -> AnalysisDTO:
-        node = await self.get_node(uid)
-        questions = list(node.questions or [])
-        for q in questions:
-            if q.get("uid") == qid:
-                q["answer"] = answer
-                q["status"] = "answered"
-                q["answered_by"] = actor
-                q["answered_at"] = datetime.now(UTC).isoformat()
-                break
-        else:
-            raise HTTPException(status_code=404, detail=f"question {qid} not found")
-        node.questions = questions
-        node.updated_at = datetime.now(UTC)
-        await node.save()
+        # Same node, same fetch-mutate-save shape as the four authoring tools,
+        # so it takes the SAME lock. A human answering a question while the
+        # agent writes a scorecard is the exact race the lock exists for — and
+        # it is the likeliest one, since ask_question is what prompts the human
+        # to come answer it. Re-fetch inside the lock: the question list we'd
+        # have read outside it can be stale by the time we get in.
+        async with self._locked_node(uid) as node:
+            questions = list(node.questions or [])
+            for q in questions:
+                if q.get("uid") == qid:
+                    q["answer"] = answer
+                    q["status"] = "answered"
+                    q["answered_by"] = actor
+                    q["answered_at"] = datetime.now(UTC).isoformat()
+                    break
+            else:
+                raise HTTPException(status_code=404, detail=f"question {qid} not found")
+            node.questions = questions
+            node.updated_at = datetime.now(UTC)
+            await node.save()
         return await _attach_finding_rollup(analysis_to_dto(node))
 
     async def dismiss_question(self, uid: str, qid: str) -> AnalysisDTO:
-        node = await self.get_node(uid)
-        questions = list(node.questions or [])
-        for q in questions:
-            if q.get("uid") == qid:
-                q["status"] = "dismissed"
-                break
-        else:
-            raise HTTPException(status_code=404, detail=f"question {qid} not found")
-        node.questions = questions
-        node.updated_at = datetime.now(UTC)
-        await node.save()
+        async with self._locked_node(uid) as node:
+            questions = list(node.questions or [])
+            for q in questions:
+                if q.get("uid") == qid:
+                    q["status"] = "dismissed"
+                    break
+            else:
+                raise HTTPException(status_code=404, detail=f"question {qid} not found")
+            node.questions = questions
+            node.updated_at = datetime.now(UTC)
+            await node.save()
         return await _attach_finding_rollup(analysis_to_dto(node))
+
+    @contextlib.asynccontextmanager
+    async def _locked_node(self, uid: str):
+        """Yield the Analysis `uid` under its authoring lock, re-fetched inside.
+
+        The lock is keyed by source_run_uid (that's what the agent tools have);
+        these human routes are keyed by Analysis uid, so resolve one to the
+        other first, then re-read so the mutation applies to state no older
+        than the lock acquisition."""
+        node = await self.get_node(uid)
+        async with analysis_write_lock(node.source_run_uid):
+            yield await self.get_node(uid)
 
     async def refine_with_answers(self, uid: str, *, triggered_by: str = "") -> dict:
         """Dispatch a fresh deep-scan that ingests the answered questions, and

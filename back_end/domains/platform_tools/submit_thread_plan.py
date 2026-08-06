@@ -19,7 +19,6 @@ from typing import Any
 from fastapi import HTTPException
 
 from infrastructure.audit import write_audit
-from infrastructure.dist_lock import dist_lock
 
 
 def _validate(*, thread_uid: str, plan_markdown: str) -> None:
@@ -52,6 +51,7 @@ async def submit_thread_plan(
     from domains.threads.services.thread_service import (
         THREAD_NOT_FOUND_DETAIL,
         resolve_thread,
+        thread_write_lock,
     )
 
     run_uid = run_uid or source_run_uid
@@ -63,15 +63,10 @@ async def submit_thread_plan(
     # for the same thread would otherwise both pass the phase check on a
     # stale read and race the timeline events — one's `plan_drafted` entry
     # is silently dropped, and the winning plan_text is whichever save fired
-    # second regardless of author. Keyed by the resolved thread uid so a
-    # candidate that arrives as the ticket uid still serializes with a
-    # concurrent call using the real thread uid.
-    async with dist_lock(f"thread:plan:{thread_uid}") as acquired:
-        if not acquired:
-            raise HTTPException(
-                status_code=409,
-                detail="another plan draft is in progress for this thread; retry shortly",
-            )
+    # second regardless of author. The human plan routes and submit_for_review
+    # take this same lock, so an agent draft and a maintainer's hand-edit
+    # serialize against each other too.
+    async with thread_write_lock(thread_uid):
         # Re-fetch inside the lock — the phase may have changed between the
         # first resolve_thread and now, and the events list must reflect the
         # persisted state, not a stale copy.
