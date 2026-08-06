@@ -237,19 +237,35 @@ class ThreadService:
     async def attach_run(self, thread: Thread, run_uid: str) -> None:
         from domains.runs.models import Run
 
-        if run_uid in (thread.run_uids or []):
+        # Reload before mutating: neomodel save() writes EVERY declared
+        # property, so a stale in-memory Thread here would clobber events
+        # a concurrent record_event just appended (documented pattern —
+        # see record_event above). The caller's view is refreshed so it
+        # stays coherent.
+        fresh = await Thread.nodes.get_or_none(uid=thread.uid) or thread
+        if run_uid in (fresh.run_uids or []):
             # Idempotent: rev2 threads keep ONE run for their whole life —
             # re-attachment (fix messaging etc.) must not duplicate timeline.
-            thread.active_run_uid = run_uid
-            await thread.save()
+            fresh.active_run_uid = run_uid
+            await fresh.save()
+            if fresh is not thread:
+                thread.active_run_uid = fresh.active_run_uid
+                thread.run_uids = list(fresh.run_uids or [])
+                thread.events = fresh.events
+                thread.updated_at = fresh.updated_at
             return
-        thread.run_uids = [*(thread.run_uids or []), run_uid]
-        thread.active_run_uid = run_uid
-        await thread.save()
+        fresh.run_uids = [*(fresh.run_uids or []), run_uid]
+        fresh.active_run_uid = run_uid
+        await fresh.save()
         run = await Run.nodes.get_or_none(uid=run_uid)
         if run is not None:
-            run.thread_uid = thread.uid
+            run.thread_uid = fresh.uid
             await run.save()
+        if fresh is not thread:
+            thread.run_uids = list(fresh.run_uids or [])
+            thread.active_run_uid = fresh.active_run_uid
+            thread.events = fresh.events
+            thread.updated_at = fresh.updated_at
         await self.record_event(thread, "run_attached", run_uid=run_uid)
 
     async def abandon(self, uid: str, *, actor_uid: str) -> Thread:
@@ -622,7 +638,10 @@ class ThreadService:
             return False  # still waiting on answers — keep accumulating
         if not pending and not (force and open_qs):
             return False  # nothing to deliver
-        from domains.threads.services.thread_run import run_accepts_message
+        from domains.threads.services.thread_run import (
+            run_accepts_message,
+            send_message_turn_and_wait,
+        )
 
         if not await run_accepts_message(t.active_run_uid):
             logger.info(
@@ -630,23 +649,50 @@ class ThreadService:
                 extra={"tag": "threads"},
             )
             return False
-        now = datetime.now(UTC)
-        for e in pending:
-            e["delivered_at"] = now.isoformat()
-        if force:
-            for e in open_qs:
-                e["status"] = "dismissed"
-                await self._sync_mirror_status(e, "dismissed")
-        t.events = events
-        t.updated_at = now
-        await t.save()
-
-        from domains.threads.services.thread_run import send_message_turn
 
         # The planning-stage reminder is appended server-side by
         # TurnService.run_turn for every thread turn — no need here.
         text = build_answers_message(pending, skipped=open_qs if force else None)
-        send_message_turn(t.active_run_uid, text)
+
+        # Await admission BEFORE stamping delivered_at: send_message_turn is
+        # fire-and-forget, and a stamp committed before the turn is admitted
+        # would strand the answers if the send is rejected (race between the
+        # pre-check above and the turn's own guard — the retry loop skips
+        # anything already stamped, so those answers would evaporate).
+        accepted = await send_message_turn_and_wait(t.active_run_uid, text)
+        if not accepted:
+            logger.info(
+                f"thread {t.uid}: answer-delivery turn rejected before admission — "
+                "answers stay pending for the next turn boundary",
+                extra={"tag": "threads"},
+            )
+            return False
+
+        # Reload before mutating (record_event's discipline) — a concurrent
+        # record_event on the same thread would otherwise be clobbered by
+        # this full-property save.
+        fresh = await Thread.nodes.get_or_none(uid=t.uid) or t
+        fresh_events = list(fresh.events or [])
+        pending_uids = {p.get("uid") for p in pending if p.get("uid")}
+        now = datetime.now(UTC)
+        for e in fresh_events:
+            if (
+                e.get("type") == "question"
+                and e.get("uid") in pending_uids
+                and not e.get("delivered_at")
+            ):
+                e["delivered_at"] = now.isoformat()
+        if force:
+            for e in fresh_events:
+                if e.get("type") == "question" and e.get("status") == "open":
+                    e["status"] = "dismissed"
+                    await self._sync_mirror_status(e, "dismissed")
+        fresh.events = fresh_events
+        fresh.updated_at = now
+        await fresh.save()
+        if fresh is not t:
+            t.events = fresh_events
+            t.updated_at = now
         return True
 
     async def _sync_mirror_status(self, question_event: dict, status: str) -> None:
@@ -824,7 +870,10 @@ class ThreadService:
 
         from domains.delivery.services.resolution_service import ensure_merge_policy
         from domains.delivery.services.write_gate import effective_denylist
-        from domains.threads.services.thread_run import build_go_message, send_message_turn
+        from domains.threads.services.thread_run import (
+            build_go_message,
+            send_message_turn_and_wait,
+        )
         from domains.tickets.models import Ticket
 
         target = dict(run.target or {})
@@ -839,9 +888,21 @@ class ThreadService:
             denylist=effective_denylist(policy),
             children=children,
         )
+        # Confirm the GO turn is admitted BEFORE flipping phase — a
+        # fire-and-forget send that races with the pre-check would leave
+        # the thread stuck in 'implementing' with the agent never told to
+        # implement (no delivery, no timeline event, no way to resume).
+        accepted = await send_message_turn_and_wait(run.uid, go)
+        if not accepted:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "the agent refused the go-signal turn — wait for the "
+                    "current turn to finish, then approve implementation again"
+                ),
+            )
         await self.transition(uid, "implementing", actor_uid=actor_uid)
         await self.record_event(t, "implement_started", by=actor_uid)
-        send_message_turn(run.uid, go)
         return run
 
     async def _start_implement_legacy(self, t: Thread, ticket, *, actor_uid: str):

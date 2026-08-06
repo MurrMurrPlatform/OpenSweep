@@ -334,12 +334,14 @@ async def _message_fix_to_thread(
     """Deliver review findings as a message turn of the thread conversation.
     Burns a fix round (same bound as dispatched fix runs).
 
-    Deliverability is checked BEFORE the round is burned — a mid-turn run
-    would silently lose the message after irreversibly spending the round."""
+    Deliverability is confirmed BEFORE the round is burned — the status
+    pre-check IS TOCTOU-racy with the turn's own guard, so we also await
+    admission of the send. A mid-turn run would otherwise silently lose the
+    message after irreversibly spending the round."""
     from domains.threads.services.thread_run import (
         build_fix_message,
         run_accepts_message,
-        send_message_turn,
+        send_message_turn_and_wait,
     )
 
     if not await run_accepts_message(run.uid):
@@ -366,6 +368,24 @@ async def _message_fix_to_thread(
             detail="no open/reopened finding resolutions to fix on this PR",
         )
     next_round = int(pr.fix_rounds or 0) + 1
+    message = build_fix_message(
+        pr, findings, fix_round=next_round, max_rounds=int(policy.max_fix_rounds or 0)
+    )
+
+    # Await admission BEFORE burning the round — the pre-check above is
+    # TOCTOU-racy with the turn's own status guard, so a fire-and-forget
+    # send that races against the guard would spend the round for a message
+    # the agent never receives (no delivery, no timeline event, no refund).
+    accepted = await send_message_turn_and_wait(run.uid, message)
+    if not accepted:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "the thread conversation refused the fix turn — the fix "
+                "round was NOT spent; retry when the turn finishes"
+            ),
+        )
+
     pr.fix_rounds = next_round
     pr.fix_rounds_exhausted = write_gate.fix_rounds_exhausted(
         next_round, int(policy.max_fix_rounds or 0)
@@ -373,10 +393,6 @@ async def _message_fix_to_thread(
     pr.updated_at = datetime.now(UTC)
     await pr.save()
 
-    message = build_fix_message(
-        pr, findings, fix_round=next_round, max_rounds=int(policy.max_fix_rounds or 0)
-    )
-    send_message_turn(run.uid, message)
     await write_audit(
         kind="fix_run.messaged_thread",
         subject_uid=pr.uid,

@@ -125,6 +125,60 @@ def send_message_turn(run_uid: str, text: str) -> None:
     task.add_done_callback(_TURN_TASKS.discard)
 
 
+# Bounded wait for admission — the run-status guard + reservation happen
+# almost immediately in run_turn's pre-yield section. On timeout we treat
+# the turn as accepted (optimistic): a stale "delivered" stamp on the caller
+# is preferable to duplicate delivery from a retry loop.
+_ADMISSION_WAIT_SECONDS = 15.0
+
+
+async def send_message_turn_and_wait(run_uid: str, text: str) -> bool:
+    """Same as send_message_turn, but wait for the turn to be admitted (past
+    ensure_can_send + status flip) before returning.
+
+    Returns True when the turn is under way (the run has committed to it) or
+    when the wait times out (optimistic — the turn is very likely running).
+    Returns False only when the turn failed BEFORE admission (status guard
+    rejected it, run not found, workspace prep raised, …).
+
+    Use when caller state (Thread.events delivered_at stamps, PullRequest
+    fix_rounds) is committed BASED ON delivery — a fire-and-forget send that
+    silently fails would strand that state with no retry path.
+    """
+    admitted = asyncio.Event()
+    outcome = {"admitted_before_error": False}
+
+    async def _consume() -> None:
+        from domains.runs.services.turn_service import TurnService
+
+        try:
+            async for _ in TurnService().run_turn(run_uid, text):
+                if not admitted.is_set():
+                    outcome["admitted_before_error"] = True
+                    admitted.set()
+        except Exception as exc:  # noqa: BLE001 — surfaced via run status/events
+            # If the exception raised before any yield, admitted stays False —
+            # caller reads that as rejection. A late failure (already yielded)
+            # is business-as-usual for a fire-and-forget turn.
+            logger.warning(
+                f"thread message turn failed for run {run_uid}: {type(exc).__name__}: {exc}",
+                extra={"tag": "threads"},
+            )
+        finally:
+            # Release the caller in either direction; outcome is authoritative.
+            admitted.set()
+
+    task = asyncio.create_task(_consume())
+    _TURN_TASKS.add(task)
+    task.add_done_callback(_TURN_TASKS.discard)
+
+    try:
+        await asyncio.wait_for(admitted.wait(), timeout=_ADMISSION_WAIT_SECONDS)
+    except TimeoutError:
+        return True
+    return outcome["admitted_before_error"]
+
+
 def build_go_message(
     *,
     ticket,
