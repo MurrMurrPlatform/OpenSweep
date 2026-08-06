@@ -82,6 +82,7 @@ def merge_policy_to_dto(p: MergePolicy) -> MergePolicyDTO:
         require_clean_round=bool(p.require_clean_round),
         max_fix_rounds=int(p.max_fix_rounds or 0),
         path_denylist=[str(x) for x in denylist],
+        enforce_converged_status=bool(p.enforce_converged_status),
     )
 
 

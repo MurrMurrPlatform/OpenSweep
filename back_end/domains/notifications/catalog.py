@@ -186,6 +186,11 @@ _KIND_MAP: dict[str, tuple[str, ...]] = {
     "implement_run.pr_opened": ("pr.opened",),
     "implement_run.post_push_failed": ("attention.required",),
     "fix_run.post_push_failed": ("attention.required",),
+    # A GitHub write was skipped for want of a credential — otherwise invisible
+    # (the PR just never gets its status / review).
+    "delivery.credential_missing": ("attention.required",),
+    # OpenSweep wrote a branch-protection rule to the user's repo settings.
+    "delivery.branch_protection_created": ("attention.required",),
     "verdict.submitted": ("review.completed",),
     "fix_run.pushed": ("fix.pushed",),
     "sweep.audit_completed": ("analysis.completed",),

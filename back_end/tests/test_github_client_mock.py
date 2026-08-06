@@ -1,6 +1,7 @@
 """GitHubClient — httpx.MockTransport based tests, no network."""
 
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -340,8 +341,8 @@ async def test_add_required_status_check_creates_rule_when_none_exists():
 
     c = GitHubClient(token="x")
     c._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://api.github.com")
-    ok = await c.add_required_status_check("acme", "repo", "main", context="opensweep/converged")
-    assert ok is True
+    outcome = await c.add_required_status_check("acme", "repo", "main", context="opensweep/converged")
+    assert outcome == "created"
     assert [r.method for r in requests] == ["GET", "PUT"]
     import json as _json
 
@@ -364,8 +365,8 @@ async def test_add_required_status_check_leaves_existing_rule_untouched():
 
     c = GitHubClient(token="x")
     c._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://api.github.com")
-    ok = await c.add_required_status_check("acme", "repo", "main", context="opensweep/converged")
-    assert ok is False  # context isn't in the existing rule — left alone, not merged
+    outcome = await c.add_required_status_check("acme", "repo", "main", context="opensweep/converged")
+    assert outcome == "not-required"  # context isn't in the existing rule — left alone
     assert [r.method for r in requests] == ["GET"]  # never attempted a PUT
     await c.aclose()
 
@@ -380,8 +381,8 @@ async def test_add_required_status_check_reports_already_satisfied():
 
     c = GitHubClient(token="x")
     c._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://api.github.com")
-    ok = await c.add_required_status_check("acme", "repo", "main", context="opensweep/converged")
-    assert ok is True
+    outcome = await c.add_required_status_check("acme", "repo", "main", context="opensweep/converged")
+    assert outcome == "already-required"
     await c.aclose()
 
 
@@ -392,6 +393,146 @@ async def test_add_required_status_check_no_admin_rights_degrades_quietly():
 
     c = GitHubClient(token="x")
     c._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://api.github.com")
-    ok = await c.add_required_status_check("acme", "repo", "main", context="opensweep/converged")
-    assert ok is False
+    outcome = await c.add_required_status_check("acme", "repo", "main", context="opensweep/converged")
+    assert outcome == "failed"
     await c.aclose()
+
+
+@pytest.mark.asyncio
+async def test_add_required_status_check_403_read_never_blind_puts():
+    """A 403 on the protection READ means "can't see it", not "there is none".
+    Treating it as unprotected would PUT a fresh rule over the repo's real
+    one, silently dropping required reviewers/restrictions."""
+    methods = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        return httpx.Response(403, json={"message": "Must have admin rights"})
+
+    c = GitHubClient(token="x")
+    c._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://api.github.com")
+    assert await c.add_required_status_check("acme", "repo", "main", context="opensweep/converged") == "failed"
+    assert methods == ["GET"]  # no PUT was ever attempted
+    with pytest.raises(PermissionError):
+        await c.get_branch_protection("acme", "repo", "main")
+    await c.aclose()
+
+
+# ── Retry safety: unsafe methods and the backoff ceiling ────────────────────
+
+
+@pytest.mark.asyncio
+async def test_post_is_not_retried_on_5xx(monkeypatch):
+    """A 5xx on a POST is ambiguous — GitHub may have applied the write before
+    failing to answer. Replaying it duplicates PR reviews and issue comments,
+    so creates must fail fast instead."""
+    from infrastructure import github_client as gh
+
+    monkeypatch.setattr(gh.asyncio, "sleep", lambda d: _noop())
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(502, json={"message": "bad gateway"})
+
+    c = GitHubClient(token="x")
+    c._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://api.github.com")
+    with pytest.raises(httpx.HTTPStatusError):
+        await c.create_review("acme", "repo", 1, body="hi")
+    assert calls["n"] == 1
+    await c.aclose()
+
+
+@pytest.mark.asyncio
+async def test_post_is_retried_on_429_because_it_definitely_did_not_apply(monkeypatch):
+    from infrastructure import github_client as gh
+
+    monkeypatch.setattr(gh.asyncio, "sleep", lambda d: _noop())
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, headers={"Retry-After": "0"}, json={"message": "rate limited"})
+        return httpx.Response(201, json={"id": 7})
+
+    c = GitHubClient(token="x")
+    c._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://api.github.com")
+    assert await c.create_review("acme", "repo", 1, body="hi") == {"id": 7}
+    assert calls["n"] == 2
+    await c.aclose()
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_reset_beyond_ceiling_fails_fast_instead_of_sleeping(monkeypatch):
+    """X-RateLimit-Reset an hour out must NOT park a worker/request for an
+    hour (×4 attempts). Past the ceiling we surface the 429 immediately."""
+    import time as _time
+
+    from infrastructure import github_client as gh
+
+    sleeps = []
+    monkeypatch.setattr(gh.asyncio, "sleep", lambda d: sleeps.append(d) or _noop())
+    calls = {"n": 0}
+    reset = _time.time() + 3600
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(429, headers={"X-RateLimit-Reset": str(reset)}, json={"message": "rate limited"})
+
+    c = GitHubClient(token="x")
+    c._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://api.github.com")
+    with pytest.raises(httpx.HTTPStatusError):
+        await c.get_pull_request("acme", "repo", 1)
+    assert calls["n"] == 1  # returned the 429 rather than waiting an hour
+    assert sleeps == []
+    await c.aclose()
+
+
+@pytest.mark.asyncio
+async def test_backoff_is_capped_at_the_ceiling(monkeypatch):
+    from infrastructure import github_client as gh
+    from infrastructure.github_client import MAX_RETRY_DELAY_SECONDS
+
+    sleeps = []
+    monkeypatch.setattr(gh.asyncio, "sleep", lambda d: sleeps.append(d) or _noop())
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"message": "unavailable"})  # no hint headers
+
+    c = GitHubClient(token="x")
+    c._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://api.github.com")
+    with pytest.raises(httpx.HTTPStatusError):
+        await c.get_pull_request("acme", "repo", 1)
+    assert sleeps and max(sleeps) <= MAX_RETRY_DELAY_SECONDS
+    await c.aclose()
+
+
+@pytest.mark.asyncio
+async def test_installation_token_mint_retries_transient_5xx(monkeypatch):
+    """Minting is the FIRST call in every delivery op on an App-connected
+    repo — a transient failure there bypasses every other retry."""
+    from infrastructure import github_app, github_client as gh
+
+    monkeypatch.setattr(gh.asyncio, "sleep", lambda d: _noop())
+    monkeypatch.setattr(github_app, "make_app_jwt", lambda app_id, pem: "jwt")
+
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(502, json={"message": "bad gateway"})
+        return httpx.Response(201, json={"token": "ghs_x", "expires_at": "2030-01-01T00:00:00Z"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        github_app.httpx,
+        "AsyncClient",
+        lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw),
+    )
+    body = await github_app._request_installation_token(
+        SimpleNamespace(app_id="1", pem="pem"), 42
+    )
+    assert body["token"] == "ghs_x"
+    assert calls["n"] == 2

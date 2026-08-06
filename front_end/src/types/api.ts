@@ -1197,6 +1197,10 @@ export interface MergePolicyDTO {
   max_fix_rounds: number
   /** Regex strings — paths the write path must never touch. */
   path_denylist: string[]
+  /** Opt-in: make `opensweep/converged` a required GitHub branch-protection
+   *  check on the default branch. Writes to the repo's GitHub settings and
+   *  affects every PR in the repository, so it defaults to false. */
+  enforce_converged_status: boolean
 }
 
 export interface UpdateMergePolicyRequest {
@@ -1204,6 +1208,7 @@ export interface UpdateMergePolicyRequest {
   require_clean_round?: boolean
   max_fix_rounds?: number
   path_denylist?: string[]
+  enforce_converged_status?: boolean
 }
 
 // ── Per-repository workflow config (stage → prompt + auto toggles) ──────────

@@ -666,8 +666,26 @@ async def update_merge_policy(
                     status_code=422, detail=f"invalid denylist regex {pattern!r}: {exc}"
                 ) from exc
         policy.path_denylist = req.path_denylist
+    # Turning enforcement ON is the ONLY moment OpenSweep may write a branch
+    # protection rule to the user's repository — explicit, maintainer-authored
+    # consent. Applied here (once, on the flip) rather than on every delivery
+    # dispatch, so the GitHub round-trip is not on a hot request path.
+    enforce_turned_on = bool(
+        req.enforce_converged_status and not policy.enforce_converged_status
+    )
+    if req.enforce_converged_status is not None:
+        policy.enforce_converged_status = req.enforce_converged_status
     policy.updated_at = datetime.now(UTC)
     await policy.save()
+    if enforce_turned_on:
+        from domains.delivery.services.pull_request_service import (
+            ensure_converged_status_required,
+        )
+        from domains.repositories.models import Repository
+
+        repo = await Repository.nodes.get_or_none(uid=repository_uid)
+        if repo is not None:
+            await ensure_converged_status_required(repo, actor_uid=user.uid)
     await write_audit(
         kind="merge_policy.updated",
         subject_uid=policy.uid,

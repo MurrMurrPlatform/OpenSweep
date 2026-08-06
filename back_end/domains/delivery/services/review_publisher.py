@@ -179,6 +179,11 @@ async def publish_verdict_review(
             "for this repository",
             extra={"tag": "delivery"},
         )
+        from domains.delivery.services.pull_request_service import (
+            _audit_credential_missing,
+        )
+
+        await _audit_credential_missing(pr, repo, action="publish_verdict_review")
         return False
 
     changed_paths: set[str] = set()

@@ -175,6 +175,10 @@ class MergePolicyDTO(BaseModel):
     max_fix_rounds: int = 2
     # Write-path denylist — regex strings matched against changed paths (§6).
     path_denylist: list[str] = Field(default_factory=list)
+    # Opt-in: ask GitHub to make `opensweep/converged` a required status check
+    # on the default branch. Writes to the repository's GitHub *settings* and
+    # affects every PR in the repo, so it is off unless a maintainer turns it on.
+    enforce_converged_status: bool = False
 
 
 # ── Requests ─────────────────────────────────────────────────────────────────
@@ -208,3 +212,4 @@ class UpdateMergePolicyRequest(BaseModel):
     require_clean_round: bool | None = None
     max_fix_rounds: int | None = Field(default=None, ge=0, le=10)
     path_denylist: list[str] | None = None
+    enforce_converged_status: bool | None = None

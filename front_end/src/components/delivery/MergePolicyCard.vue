@@ -29,12 +29,14 @@ const loadError = ref<string | null>(null)
 const denylistText = ref('')
 const requireCleanRound = ref(true)
 const maxFixRounds = ref('2')
+const enforceConvergedStatus = ref(false)
 
 function hydrate(p: MergePolicyDTO) {
   policy.value = p
   denylistText.value = (p.path_denylist ?? []).join('\n')
   requireCleanRound.value = p.require_clean_round
   maxFixRounds.value = String(p.max_fix_rounds)
+  enforceConvergedStatus.value = p.enforce_converged_status ?? false
 }
 
 async function load() {
@@ -70,7 +72,8 @@ const dirty = computed(() => {
   return (
     parsedDenylist.value.join('\n') !== (p.path_denylist ?? []).join('\n') ||
     requireCleanRound.value !== p.require_clean_round ||
-    Number(maxFixRounds.value) !== p.max_fix_rounds
+    Number(maxFixRounds.value) !== p.max_fix_rounds ||
+    enforceConvergedStatus.value !== (p.enforce_converged_status ?? false)
   )
 })
 
@@ -82,6 +85,7 @@ async function save() {
       path_denylist: parsedDenylist.value,
       require_clean_round: requireCleanRound.value,
       max_fix_rounds: Number(maxFixRounds.value),
+      enforce_converged_status: enforceConvergedStatus.value,
     })
     hydrate(updated)
     toast.success('Merge policy saved')
@@ -147,6 +151,20 @@ async function save() {
         <p v-if="!maxRoundsValid" class="text-xs text-destructive">
           Max fix rounds must be a whole number between 0 and 10.
         </p>
+
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <div class="text-xs font-medium text-foreground">Enforce the converged check on GitHub</div>
+            <p class="text-xs text-muted-foreground">
+              Off by default. Turning this on writes a branch protection rule to this
+              repository&rsquo;s GitHub settings, making
+              <span class="font-mono">opensweep/converged</span> a required check on the default
+              branch — for <em>every</em> pull request, not just OpenSweep&rsquo;s. Existing
+              protection rules are never modified.
+            </p>
+          </div>
+          <Switch v-model="enforceConvergedStatus" />
+        </div>
       </div>
     </CardContent>
   </Card>

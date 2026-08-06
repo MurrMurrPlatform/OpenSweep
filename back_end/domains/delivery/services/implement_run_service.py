@@ -200,15 +200,12 @@ async def trigger_implement_run(
     if denial:
         raise HTTPException(status_code=409, detail=denial)
 
-    # Best-effort: make the opensweep/converged status a required branch
-    # protection check the first time this repo delivers, so the merge gate
-    # convergence.py computes is actually enforced by GitHub, not merely
-    # advisory. Never blocks dispatch — see ensure_converged_status_required.
-    from domains.delivery.services.pull_request_service import (
-        ensure_converged_status_required,
-    )
-
-    await ensure_converged_status_required(repo)
+    # NOTE: branch protection is deliberately NOT touched here. Requiring the
+    # opensweep/converged check writes a rule to the repo's GitHub settings
+    # that governs every PR in the repository, so it is driven by the explicit
+    # `MergePolicy.enforce_converged_status` opt-in (applied when a maintainer
+    # turns it on) rather than inferred from an implement dispatch — which
+    # would also put a blocking GitHub round-trip on this request path.
 
     async def _dispatch() -> Run:
         # Idempotency 1: an open PR already implementing this ticket → point at it.
