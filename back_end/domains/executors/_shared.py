@@ -27,7 +27,7 @@ from domains.executors.base import DispatchRequest
 from domains.runs.models import Run
 from domains.runs.services.run_events import append_event, preview
 from domains.llm_providers.models import LLMProvider
-from domains.llm_providers.services.llm_executor import is_local_provider_kind
+from domains.llm_providers.services.llm_executor import is_local_provider
 from domains.llm_providers.services.llm_provider_service import (
     get_active_provider,
     repository_org_uid,
@@ -77,16 +77,21 @@ async def resolve_provider(
     return None
 
 
-def resolve_wall_ceiling(req: DispatchRequest, provider_kind: str) -> int | None:
+def resolve_wall_ceiling(req: DispatchRequest, provider) -> int | None:
     """Effective wall ceiling for the run; None disables the guard.
 
     Ladder: explicit per-stage override > local-provider skip > policy value
     (0 = explicitly unlimited, positive = ceiling, None/unset = fall through)
     > system default.
+
+    `provider` is duck-typed on `.kind` and `.base_url` (the resolved
+    `LLMProvider` row or a snapshot). A bare kind string is accepted for
+    backwards compatibility — but is treated as "not local" because a
+    hosted opencode row and a genuinely local opencode row share a kind.
     """
     if req.max_wall_seconds_override:
         return int(req.max_wall_seconds_override)
-    if is_local_provider_kind(provider_kind):
+    if is_local_provider(provider):
         return None
     if req.policy is not None and req.policy.max_wall_seconds is not None:
         value = int(req.policy.max_wall_seconds)

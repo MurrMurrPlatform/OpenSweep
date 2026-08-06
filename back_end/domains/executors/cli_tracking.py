@@ -270,7 +270,7 @@ class _CLITrackingAdapter(ExecutorAdapter):
     ) -> DispatchResult:
         """The run pipeline: envelope extraction, executing the agent's
         tool_calls, the continuation pass, quota handling, the raw transcript."""
-        timeout = resolve_wall_ceiling(req, provider.kind)
+        timeout = resolve_wall_ceiling(req, provider)
         # Write mode (OpenCode local-LLM delivery loop, G1): an implement/fix run
         # on a write-capable tracking executor gets the write contract — edit +
         # test + COMMIT in the sandbox clone with the CLI's own tools — instead of

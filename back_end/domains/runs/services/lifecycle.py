@@ -383,6 +383,7 @@ async def trigger_run(
             repository_uid=repository_uid,
             executor=chosen_executor,
             trigger=trigger,
+            provider=active_provider,
             run_policy_uid=run_policy_uid,
             default_policy_uid=default_policy_uid,
         )
@@ -456,6 +457,10 @@ async def trigger_run(
             "provider_uid": (active_provider.uid or "").strip(),
             "provider_kind": (active_provider.kind or "").strip(),
             "provider_label": (active_provider.label or "").strip(),
+            # Snapshotted so `run_reconciliation.is_local_provider` can decide
+            # wall-time exemption without another Neo4j fetch — and without
+            # re-classifying a hosted opencode row as local on kind alone.
+            "provider_base_url": (active_provider.base_url or "").strip(),
             # Effective model for this run: the per-stage workflow override
             # wins over the provider's own model (mirrors adapter dispatch).
             "provider_model": (overrides["model"] or active_provider.model or "").strip(),
@@ -1337,6 +1342,7 @@ async def redispatch_run(
     usage["provider_uid"] = (provider.uid or "").strip()
     usage["provider_kind"] = (provider.kind or "").strip()
     usage["provider_label"] = (provider.label or "").strip()
+    usage["provider_base_url"] = (provider.base_url or "").strip()
     usage["provider_model"] = (resumed_model_override or provider.model or "").strip()
     usage["sandbox_uid"] = run.sandbox_uid or ""
     input_blob["repository_local_path"] = local_path

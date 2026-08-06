@@ -17,12 +17,14 @@ The result always carries enough context for the UI to show what happened
 """
 
 import asyncio
+import ipaddress
 import json
 import os
 import shlex
 import time
 from dataclasses import dataclass, field
 from typing import Optional
+from urllib.parse import urlparse
 
 from domains.llm_providers.models import LLMProvider
 from domains.llm_providers.schemas import default_cli_template
@@ -30,23 +32,72 @@ from domains.llm_providers.services.credentials import provider_secret
 from infrastructure.process_tree import kill_tree, process_group_kwargs
 
 _CLI_KINDS = {"claude_subscription", "opencode"}
-# Provider kinds that run free, on the user's own machine. Wall-time ceilings
-# do not apply to these — a slow local model is fine, the user is paying with
-# their own electricity, not metered API tokens. See `is_local_provider_kind`.
-# NOTE: opencode may also point at a hosted OpenAI-compatible endpoint (Azure
-# Foundry, OpenRouter) and still gets the local privileges — making locality
-# base_url-aware is a known follow-up.
-_LOCAL_PROVIDER_KINDS = {"opencode"}
+# Only opencode can be locality-checked at all — claude_subscription always
+# hits Anthropic's hosted API. Locality is decided per-provider (base_url),
+# NOT per-kind: an opencode row can point at a genuinely local server OR a
+# hosted OpenAI-compatible endpoint (Azure Foundry, OpenRouter, …), and the
+# two must not be treated the same for wall-time exemption or `local_only`
+# routing. See `is_local_provider`.
+_LOCAL_CAPABLE_KINDS = {"opencode"}
+
+# Hostnames considered on-machine (no metered call, no data leaves the box).
+# host.docker.internal is Docker's magic name for the host loopback — the
+# provider seeds' `default_base_url` uses it, so worker containers reach the
+# user's local model server through it.
+_LOCAL_HOSTS = {"localhost", "host.docker.internal"}
+_LOCAL_SUFFIXES = (".local", ".internal")
 
 
-def is_local_provider_kind(kind: str) -> bool:
+def _is_local_hostname(host: str) -> bool:
+    host = (host or "").strip().lower().strip("[]")
+    if not host:
+        return False
+    if host in _LOCAL_HOSTS:
+        return True
+    if host.endswith(_LOCAL_SUFFIXES):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    # Loopback (127.0.0.0/8, ::1) + RFC1918 LAN ranges — same box or same LAN
+    # is unmetered from a run-policy standpoint.
+    return ip.is_loopback or ip.is_private
+
+
+def is_local_base_url(url: str) -> bool:
+    """True when `url` resolves to on-machine / LAN.
+
+    Empty is NOT local: an opencode row without a base_url falls through to
+    the container's ambient opencode config (which could point anywhere).
+    Defaulting empty to cloud keeps `local_only=True` from silently letting
+    an unconfigured row through.
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return False
+    parsed = urlparse(raw if "://" in raw else f"//{raw}", scheme="")
+    host = parsed.hostname or ""
+    return _is_local_hostname(host)
+
+
+def is_local_provider(provider) -> bool:
     """True for providers that run on the user's machine and cost nothing.
 
-    Local providers bypass the wall-time ceiling: the platform's reason to
-    cut a run short is metered cost or shared infra contention, neither of
-    which applies on the user's own laptop.
+    Local providers bypass the wall-time ceiling and satisfy `local_only`
+    routing: the platform's reasons to cut a run short (metered cost) and
+    to refuse cloud dispatch (data leaving the box) both go away on a
+    genuinely local endpoint.
+
+    `provider` is duck-typed on `.kind` and `.base_url` — the resolved
+    `LLMProvider` row, or a lightweight snapshot with the same attributes.
     """
-    return (kind or "").strip() in _LOCAL_PROVIDER_KINDS
+    if provider is None:
+        return False
+    kind = (getattr(provider, "kind", "") or "").strip()
+    if kind not in _LOCAL_CAPABLE_KINDS:
+        return False
+    return is_local_base_url(getattr(provider, "base_url", "") or "")
 
 
 @dataclass

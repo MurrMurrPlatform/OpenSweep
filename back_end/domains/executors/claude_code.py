@@ -143,7 +143,7 @@ class ClaudeCodeAdapter(ExecutorAdapter):
 
         # Resolve wall ceiling FIRST so _build_instruction can include the
         # budget briefing (which needs the actual ceiling value).
-        wall_ceiling = resolve_wall_ceiling(req, provider.kind)
+        wall_ceiling = resolve_wall_ceiling(req, provider)
 
         instruction = self._build_instruction(req, wall_ceiling)
         rendered = (
