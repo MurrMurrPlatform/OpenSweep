@@ -200,6 +200,14 @@ class MergePolicy(AsyncStructuredNode):
     require_clean_round = BooleanProperty(default=True)
     max_fix_rounds = IntegerProperty(default=2)
 
+    # Opt-in: ask GitHub to make `opensweep/converged` a REQUIRED status check
+    # on the repo's default branch, so the merge gate is enforced rather than
+    # advisory. Defaults to False and must stay that way — turning it on writes
+    # a branch-protection rule to the user's repository SETTINGS, which affects
+    # every PR in the repo (including ones OpenSweep never touches), so consent
+    # has to be explicit and can never be inferred from a delivery dispatch.
+    enforce_converged_status = BooleanProperty(default=False)
+
     # How the in-app merge button merges a converged PR: squash | merge | rebase.
     # Squash by default — the delivery loop produces one logical change per PR.
     merge_method = StringProperty(default="squash")

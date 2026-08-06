@@ -34,6 +34,7 @@ from domains.runs.models import Run
 from domains.runs.schemas import (
     ExecutionMode,
     Effort,
+    RunStatus,
     RunTrigger,
 )
 from domains.runs.services.lifecycle import trigger_run
@@ -477,7 +478,9 @@ async def finalize_fix_run(run: Run) -> None:
     """Per-turn playbook hook (V3 §3): validate the NEW commits → push same
     branch. Derived entirely from the run (playbook registry re-fires it
     after every turn, including follow-ups). Refunds the fix round when
-    sandbox prep failed — the agent never ran, that must not cost a round.
+    sandbox prep failed, or when the run hit LIMIT_EXCEEDED before the agent
+    committed anything — in both cases the agent never delivered, so it must
+    not cost a round.
     """
     pr_uid = run.linked_pr_uid or str((run.target or {}).get("pull_request_uid") or "")
     if not pr_uid:
@@ -511,7 +514,7 @@ async def finalize_fix_run(run: Run) -> None:
     # base_ref = the remote head branch: only the agent's NEW commits/paths
     # are judged. A follow-up turn with zero new commits (e.g. the user asked
     # a question) is validated and blocked without a push — harmless.
-    await finalize_write_run(
+    result = await finalize_write_run(
         run,
         audit_prefix="fix_run",
         subject_uid=pr.uid,
@@ -521,3 +524,16 @@ async def finalize_fix_run(run: Run) -> None:
         work_branch=pr.head_ref,
         on_pushed=_after_push,
     )
+
+    # The round was already burned optimistically at dispatch. A run that hit
+    # its wall/turn budget (LIMIT_EXCEEDED) before committing anything must
+    # not cost the PR a fix round it never got to spend.
+    if (
+        run.status == RunStatus.LIMIT_EXCEEDED.value
+        and result is not None
+        and not result.ok
+        and write_gate.is_only_no_commits(result.violations)
+    ):
+        await _refund_fix_round(
+            pr_uid, reason="run hit its wall/turn budget before committing any work"
+        )

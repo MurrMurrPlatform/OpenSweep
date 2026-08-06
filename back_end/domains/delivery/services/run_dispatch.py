@@ -165,7 +165,7 @@ async def finalize_write_run(
     work_branch: str,
     on_pushed: Callable[[SandboxDTO, write_gate.WriteGateResult], Awaitable[None]],
     quiet_when_unchanged: bool = False,
-) -> None:
+) -> write_gate.WriteGateResult | None:
     """Shared per-turn write-run finalize (V3 §3): validate the sandbox's new
     commits against ``base_ref`` → block (audited) or push ``work_branch`` →
     per-service post-push action. Callers resolve their linked entity and
@@ -174,6 +174,14 @@ async def finalize_write_run(
     ``quiet_when_unchanged``: a turn whose only "violation" is having no
     commits returns silently instead of auditing as blocked — thread runs
     finalize every conversational turn (unified dev flow rev2).
+
+    Returns the ``WriteGateResult`` (whether or not it pushed), or ``None``
+    when finalize never reached the gate at all (no workspace/branch, or a
+    genuine failure state). Callers that burn a resource up-front on dispatch
+    (e.g. fix rounds) use this to decide whether to refund it — most notably
+    LIMIT_EXCEEDED, which still runs the gate below: the agent may have
+    committed real work before its wall/turn budget ran out, and that work
+    must not be discarded just because the run didn't reach AWAITING_INPUT.
     """
     # Local imports: execution service siblings would otherwise form an
     # import cycle through the delivery services package.
@@ -186,13 +194,17 @@ async def finalize_write_run(
             f"{audit_prefix} {run.uid} has no workspace/branch — skipping finalize",
             extra={"tag": "delivery"},
         )
-        return
+        return None
     sandbox = sandbox_to_dto(sb)
 
     repo = await Repository.nodes.get_or_none(uid=repository_uid)
     default_branch = (repo.default_branch if repo else None) or "main"
 
-    if run.status != RunStatus.AWAITING_INPUT.value:
+    # LIMIT_EXCEEDED is not a failure the way FAILED is: the continuation loop
+    # simply ran out of wall/turn budget, possibly after the agent already
+    # committed and even pushed-worthy work. Only a genuine failure state
+    # skips the gate outright.
+    if run.status not in (RunStatus.AWAITING_INPUT.value, RunStatus.LIMIT_EXCEEDED.value):
         # Run failed — keep the workspace around for a human to inspect.
         await write_audit(
             kind=f"{audit_prefix}.failed",
@@ -201,7 +213,7 @@ async def finalize_write_run(
             actor_uid="system",
             payload={"run_uid": run.uid, "sandbox_uid": sandbox.uid, "error": run.error or ""},
         )
-        return
+        return None
 
     policy = await ensure_merge_policy(repository_uid)
     result = await write_gate.validate_sandbox_changes(
@@ -214,7 +226,7 @@ async def finalize_write_run(
 
     if not result.ok:
         if quiet_when_unchanged and write_gate.is_only_no_commits(result.violations):
-            return  # conversational turn — nothing to push, nothing to audit
+            return result  # conversational turn — nothing to push, nothing to audit
         # NO push. Workspace retained for inspection.
         await write_audit(
             kind=f"{audit_prefix}.blocked",
@@ -228,7 +240,7 @@ async def finalize_write_run(
                 "changed_paths": result.changed_paths[:50],
             },
         )
-        return
+        return result
 
     # Never force-push; the branch is the agent's only write surface. Push the
     # branch the gate actually validated (rev-parse HEAD), NOT the caller's
@@ -239,7 +251,32 @@ async def finalize_write_run(
         token=await get_git_credentials(repo),
         default_branch=default_branch,
     )
-    await on_pushed(sandbox, result)
+    # The push already succeeded and must never be rolled back — a transient
+    # GitHub error in the per-service post-push action (e.g. opening the draft
+    # PR) must not strand the branch silently. Audit it as its own kind so a
+    # human can see the branch is up and finish the step by hand, instead of
+    # the error propagating uncaught into playbooks.on_turn_complete's blanket
+    # log-and-continue.
+    try:
+        await on_pushed(sandbox, result)
+    except Exception as exc:  # noqa: BLE001 — see comment above
+        logger.warning(
+            f"{audit_prefix} {run.uid} pushed {result.work_branch or work_branch} but the "
+            f"post-push action failed: {exc}",
+            extra={"tag": "delivery"},
+        )
+        await write_audit(
+            kind=f"{audit_prefix}.post_push_failed",
+            subject_uid=subject_uid,
+            subject_type=subject_type,
+            actor_uid="system",
+            payload={
+                "run_uid": run.uid,
+                "sandbox_uid": sandbox.uid,
+                "work_branch": result.work_branch or work_branch,
+                "error": str(exc)[:500],
+            },
+        )
 
     # Tie THIS run's changed paths to doc upkeep the moment it pushes
     # (KNOWLEDGE_V3_DOCUMENTATION.md §9): mark watching pages stale and
@@ -256,3 +293,4 @@ async def finalize_write_run(
     )
     # V3 §7: the workspace is NOT destroyed — it lives under the sliding
     # retention window so follow-up turns can continue on the branch.
+    return result

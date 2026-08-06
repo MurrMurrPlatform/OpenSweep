@@ -111,6 +111,104 @@ def review_status_for(
     return "failure", f"{new_blocking} blocking finding(s){detail}"
 
 
+async def _audit_credential_missing(pr, repo, *, action: str) -> None:
+    """Record that a GitHub write was skipped for want of a credential.
+
+    A log line alone is invisible to the user, and these are exactly the paths
+    they notice last: a PR that never gets its `opensweep/converged` status
+    looks pending forever, and a verdict with no GitHub review looks like
+    OpenSweep did nothing. The audit maps to the `attention.required`
+    notification (notifications/catalog.py). Best-effort — auditing the gap
+    must never break the caller that hit it.
+    """
+    try:
+        await write_audit(
+            kind="delivery.credential_missing",
+            subject_uid=pr.uid,
+            subject_type="PullRequest",
+            actor_uid="system",
+            payload={
+                "action": action,
+                "repository_uid": getattr(repo, "uid", "") or "",
+                "pr_key": getattr(pr, "pr_key", "") or "",
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            f"credential-missing audit failed for {getattr(pr, 'pr_key', '?')}: {exc}",
+            extra={"tag": "delivery"},
+        )
+
+
+async def ensure_converged_status_required(repo: Repository, *, actor_uid: str = "system") -> str:
+    """Make the `opensweep/converged` commit status a REQUIRED branch
+    protection check on the repo's default branch.
+
+    Without this, `opensweep/converged` (convergence.py) is purely advisory:
+    it is published on every PR, but GitHub has no branch protection rule
+    telling it that status must be green before merge, so a PR with
+    unresolved blocking findings can still be merged through the GitHub UI
+    or API regardless of what OpenSweep reports.
+
+    THIS WRITES TO THE USER'S GITHUB REPOSITORY SETTINGS and the resulting
+    rule governs every PR in the repo, not just OpenSweep's. So it is only
+    ever called from the explicit opt-in — a maintainer setting
+    `MergePolicy.enforce_converged_status` — never as a side effect of
+    delivering a ticket. Creating a rule is audited as
+    `delivery.branch_protection_created` so the change is attributable.
+
+    Never raises and never blocks the caller — many credentials (PATs,
+    installation tokens) simply don't have repo admin, in which case this
+    quietly does nothing (see `GitHubClient.add_required_status_check`).
+    Returns that call's outcome string, or "failed".
+    """
+    if not (repo.github_owner and repo.github_repo):
+        return "failed"
+    client = get_provider_client(repo)
+    probe = getattr(client, "add_required_status_check", None)
+    if probe is None:
+        return "failed"
+    branch = repo.default_branch or "main"
+    try:
+        outcome = str(
+            await probe(
+                repo.github_owner,
+                repo.github_repo,
+                branch,
+                context=settings.OPENSWEEP_CONVERGED_STATUS_CONTEXT,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            f"ensure_converged_status_required failed for {repo.uid}: {exc}",
+            extra={"tag": "delivery"},
+        )
+        return "failed"
+
+    if outcome == "created":
+        # Best-effort audit — the mutation must be attributable, but an audit
+        # write must never break the caller.
+        try:
+            await write_audit(
+                kind="delivery.branch_protection_created",
+                subject_uid=repo.uid,
+                subject_type="Repository",
+                actor_uid=actor_uid,
+                payload={
+                    "owner": repo.github_owner,
+                    "repo": repo.github_repo,
+                    "branch": branch,
+                    "context": settings.OPENSWEEP_CONVERGED_STATUS_CONTEXT,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                f"branch-protection audit failed for {repo.uid}: {exc}",
+                extra={"tag": "delivery"},
+            )
+    return outcome
+
+
 async def publish_review_status(
     repo: Repository, pr: PullRequest, *, state: str, description: str
 ) -> None:
@@ -613,19 +711,52 @@ class PullRequestService:
         )
         return pull_request_to_dto(pr)
 
+    async def is_gated(self, pr: PullRequest) -> bool:
+        """Is this a PR the delivery loop actually gates?
+
+        True when OpenSweep delivered it (a ticket is linked) or has engaged
+        with it at all (a verdict was submitted, or findings are bound to it).
+        A plain human PR — which `sync_repository` also mirrors, since it pulls
+        every open PR — is NOT gated: it can never obtain the fresh approving
+        verdict `compute_convergence` requires, so reporting it as
+        pending/failure would wedge it forever the moment
+        `opensweep/converged` is a required check.
+        """
+        if pr.ticket_uid:
+            return True
+        from domains.delivery.models import FindingResolution
+
+        if await Verdict.nodes.filter(pull_request_uid=pr.uid):
+            return True
+        return bool(await FindingResolution.nodes.filter(pull_request_uid=pr.uid))
+
     async def _publish_status(self, repo: Repository, pr: PullRequest, state: ConvergenceState) -> None:
         """Post the single `opensweep/converged` commit status at head (§5)."""
         if pr.state != "open" or not pr.head_sha:
             return
         client = get_provider_client(repo)
         if not client.is_active or not (repo.github_owner and repo.github_repo):
+            logger.warning(
+                f"{settings.OPENSWEEP_CONVERGED_STATUS_CONTEXT} status not published for "
+                f"{pr.pr_key}: no usable GitHub credential for this repository",
+                extra={"tag": "delivery"},
+            )
+            await _audit_credential_missing(
+                pr, repo, action="publish_converged_status"
+            )
             return
-        if state.converged:
-            gh_state = "success"
+
+        # A PR OpenSweep does not gate must still be REPORTABLE — the check can
+        # be required repo-wide, and a human PR that can never converge would
+        # otherwise be permanently unmergeable.
+        if not await self.is_gated(pr):
+            gh_state, description = "success", "not an OpenSweep PR — nothing to gate"
+        elif state.converged:
+            gh_state, description = "success", status_description(state)
         elif state.counts.blocking or state.ci_state == "red":
-            gh_state = "failure"
+            gh_state, description = "failure", status_description(state)
         else:
-            gh_state = "pending"
+            gh_state, description = "pending", status_description(state)
         try:
             await client.create_commit_status(
                 repo.github_owner,
@@ -633,7 +764,7 @@ class PullRequestService:
                 pr.head_sha,
                 state=gh_state,
                 context=settings.OPENSWEEP_CONVERGED_STATUS_CONTEXT,
-                description=status_description(state)[:140],
+                description=description[:140],
                 target_url=f"{settings.OPENSWEEP_WEBHOOK_PUBLIC_BASE_URL}/pull-requests/{pr.uid}",
             )
         except Exception as exc:

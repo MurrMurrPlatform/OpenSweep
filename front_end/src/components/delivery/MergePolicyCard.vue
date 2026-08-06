@@ -29,12 +29,28 @@ const loadError = ref<string | null>(null)
 const denylistText = ref('')
 const requireCleanRound = ref(true)
 const maxFixRounds = ref('2')
+const enforceConvergedStatus = ref(false)
+// What GitHub actually did on the last flip — only set by a save response,
+// never persisted, so a reload clears it.
+const protectionOutcome = ref<string | null>(null)
+
+const protectionWarning = computed(() => {
+  if (!enforceConvergedStatus.value) return null
+  if (protectionOutcome.value === 'not-required')
+    return 'Saved, but GitHub is not enforcing this: the default branch already has a protection rule, and OpenSweep never rewrites one. Add the opensweep/converged context to that rule in GitHub’s branch settings.'
+  if (protectionOutcome.value === 'failed')
+    return 'Saved, but GitHub is not enforcing this: OpenSweep could not write branch protection (the connected credential needs repo admin rights).'
+  return null
+})
 
 function hydrate(p: MergePolicyDTO) {
   policy.value = p
   denylistText.value = (p.path_denylist ?? []).join('\n')
   requireCleanRound.value = p.require_clean_round
   maxFixRounds.value = String(p.max_fix_rounds)
+  enforceConvergedStatus.value = p.enforce_converged_status ?? false
+  // Outcome is per-save, never persisted — `save()` re-sets it right after.
+  protectionOutcome.value = null
 }
 
 async function load() {
@@ -70,7 +86,8 @@ const dirty = computed(() => {
   return (
     parsedDenylist.value.join('\n') !== (p.path_denylist ?? []).join('\n') ||
     requireCleanRound.value !== p.require_clean_round ||
-    Number(maxFixRounds.value) !== p.max_fix_rounds
+    Number(maxFixRounds.value) !== p.max_fix_rounds ||
+    enforceConvergedStatus.value !== (p.enforce_converged_status ?? false)
   )
 })
 
@@ -82,9 +99,28 @@ async function save() {
       path_denylist: parsedDenylist.value,
       require_clean_round: requireCleanRound.value,
       max_fix_rounds: Number(maxFixRounds.value),
+      enforce_converged_status: enforceConvergedStatus.value,
     })
     hydrate(updated)
-    toast.success('Merge policy saved')
+    // Saving the toggle ON is not the same as GitHub enforcing it: the branch
+    // may already have a protection rule we refuse to rewrite, or the
+    // credential may lack repo admin. Say so instead of letting the switch
+    // imply a gate that isn't there.
+    const outcome = updated.branch_protection_outcome ?? null
+    if (outcome) protectionOutcome.value = outcome
+    if (outcome === 'not-required') {
+      toast.error(
+        'Saved, but GitHub is not enforcing it',
+        'The default branch already has a branch protection rule. OpenSweep never rewrites an existing rule — add the opensweep/converged context to it in GitHub’s branch settings.',
+      )
+    } else if (outcome === 'failed') {
+      toast.error(
+        'Saved, but GitHub is not enforcing it',
+        'OpenSweep could not write branch protection — the connected credential needs repo admin rights. Add the opensweep/converged required check by hand, or reconnect with an admin credential.',
+      )
+    } else {
+      toast.success('Merge policy saved')
+    }
   } catch (e) {
     const msg = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
     toast.error('Couldn’t save merge policy', msg)
@@ -146,6 +182,23 @@ async function save() {
         </div>
         <p v-if="!maxRoundsValid" class="text-xs text-destructive">
           Max fix rounds must be a whole number between 0 and 10.
+        </p>
+
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <div class="text-xs font-medium text-foreground">Enforce the converged check on GitHub</div>
+            <p class="text-xs text-muted-foreground">
+              Off by default. Turning this on writes a branch protection rule to this
+              repository&rsquo;s GitHub settings, making
+              <span class="font-mono">opensweep/converged</span> a required check on the default
+              branch — for <em>every</em> pull request, not just OpenSweep&rsquo;s. Existing
+              protection rules are never modified.
+            </p>
+          </div>
+          <Switch v-model="enforceConvergedStatus" />
+        </div>
+        <p v-if="protectionWarning" class="text-xs text-warn">
+          {{ protectionWarning }}
         </p>
       </div>
     </CardContent>

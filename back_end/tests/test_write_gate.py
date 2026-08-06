@@ -1,8 +1,12 @@
 """Write-gate safety rules — pure parts, no git required (§6 Phase 3)."""
 
+import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from domains.delivery.models import DEFAULT_PATH_DENYLIST
+from domains.delivery.services import write_gate
 from domains.delivery.services.write_gate import (
     WriteGateResult,
     _reportable_argv,
@@ -195,3 +199,37 @@ def test_unrelated_config_flags_survive():
 
 def test_trailing_dash_c_does_not_crash():
     assert _reportable_argv(("push", "-c")) == ["push", "-c"]
+
+
+# ── Subprocess timeout (a stalled push/fetch must not hang the event loop) ──
+
+
+@pytest.mark.asyncio
+async def test_git_timeout_kills_process_and_raises(monkeypatch):
+    killed = {"kill": False, "wait": False}
+
+    class _HangingProc:
+        returncode = None
+
+        async def communicate(self):
+            await asyncio.sleep(10)  # would hang forever without the timeout
+            return b"", b""  # pragma: no cover — never reached
+
+        def kill(self):
+            killed["kill"] = True
+
+        async def wait(self):
+            killed["wait"] = True
+            return -9
+
+    async def _fake_create_subprocess_exec(*args, **kwargs):
+        return _HangingProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+    monkeypatch.setattr(write_gate, "GIT_TIMEOUT_SECONDS", 0.05)
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        await write_gate._git("/tmp/whatever", "push", "origin", "opensweep/x")
+
+    assert killed["kill"] is True
+    assert killed["wait"] is True

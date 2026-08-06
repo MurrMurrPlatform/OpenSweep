@@ -1197,6 +1197,16 @@ export interface MergePolicyDTO {
   max_fix_rounds: number
   /** Regex strings — paths the write path must never touch. */
   path_denylist: string[]
+  /** Opt-in: make `opensweep/converged` a required GitHub branch-protection
+   *  check on the default branch. Writes to the repo's GitHub settings and
+   *  affects every PR in the repository, so it defaults to false. */
+  enforce_converged_status: boolean
+  /** Transient, only present on the response to the save that flipped
+   *  `enforce_converged_status` on: what GitHub actually did.
+   *  `created` | `already-required` mean the gate is really enforced;
+   *  `not-required` (existing rule left alone) and `failed` (no repo admin)
+   *  mean the toggle is on but GitHub requires nothing. */
+  branch_protection_outcome?: string | null
 }
 
 export interface UpdateMergePolicyRequest {
@@ -1204,6 +1214,7 @@ export interface UpdateMergePolicyRequest {
   require_clean_round?: boolean
   max_fix_rounds?: number
   path_denylist?: string[]
+  enforce_converged_status?: boolean
 }
 
 // ── Per-repository workflow config (stage → prompt + auto toggles) ──────────

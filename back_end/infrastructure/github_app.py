@@ -150,12 +150,24 @@ def _parse_expires_at(raw: str) -> datetime:
 async def _request_installation_token(app: GitHubAppConfig, installation_id: int) -> dict:
     """POST /app/installations/{id}/access_tokens with the App JWT.
 
+    Retried through the shared GitHub policy (`send_with_retry`): minting is
+    the FIRST call in every delivery operation on an App-connected repo, so a
+    transient 5xx here fails the operation before any of the retry-protected
+    list/publish calls are reached. `retry_unsafe=True` is safe despite the
+    POST: minting is idempotent — a duplicate mint just returns another
+    short-lived token, it does not create anything the user sees.
+
     Module-level seam so tests can monkeypatch it without real HTTP.
     """
+    from infrastructure.github_client import send_with_retry
+
     app_jwt = make_app_jwt(app.app_id, app.pem)
     async with httpx.AsyncClient(base_url=_GITHUB_API, timeout=15) as client:
-        r = await client.post(
+        r = await send_with_retry(
+            client,
+            "POST",
             f"/app/installations/{installation_id}/access_tokens",
+            retry_unsafe=True,
             headers={
                 "Accept": "application/vnd.github+json",
                 "Authorization": f"Bearer {app_jwt}",
@@ -287,12 +299,16 @@ async def clear_token_cache() -> None:
 
 async def list_installations() -> list[dict]:
     """GET /app/installations with the App JWT. Raises when no App connected."""
+    from infrastructure.github_client import send_with_retry
+
     app = get_github_app()
     if app is None:
         raise RuntimeError("no GitHub App connected")
     app_jwt = make_app_jwt(app.app_id, app.pem)
     async with httpx.AsyncClient(base_url=_GITHUB_API, timeout=15) as client:
-        r = await client.get(
+        r = await send_with_retry(
+            client,
+            "GET",
             "/app/installations?per_page=100",
             headers={
                 "Accept": "application/vnd.github+json",
