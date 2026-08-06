@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     REDIS_HOST: str = "opensweep_redis"
     REDIS_PORT: int = 6379
     REDIS_ACCESS_KEY: str = ""
+    # Setting REDIS_ACCESS_KEY switches the connection to `rediss://` with the
+    # server certificate VERIFIED. Point REDIS_CA_CERTS at a PEM bundle only
+    # when the provider presents a privately-rooted certificate; managed Redis
+    # (ElastiCache, Azure Cache, Upstash, Redis Cloud) is publicly rooted and
+    # needs nothing here. There is deliberately no "skip verification" knob —
+    # unverified TLS to a broker that carries task payloads and the access key
+    # itself is equivalent to plaintext against an on-path attacker.
+    REDIS_CA_CERTS: str = ""
 
     # Local user (no auth in v1)
     OPENSWEEP_LOCAL_USER_EMAIL: str = "local@opensweep.dev"

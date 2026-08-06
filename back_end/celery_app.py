@@ -7,21 +7,21 @@ freshness-reconcile tick is a deterministic backstop that replays deliveries
 the webhook never landed (it marks stale, it never starts a Run).
 """
 
-import ssl
-
 from celery import Celery
 from celery.signals import worker_process_init, worker_process_shutdown, worker_ready
 
-from redis_config import get_redis_url
+from redis_config import get_redis_ssl_options, get_redis_url
 
 broker_url = get_redis_url(db=0)
 result_backend = get_redis_url(db=0)
 
-broker_use_ssl = None
-redis_backend_use_ssl = None
-if broker_url.startswith("rediss://"):
-    broker_use_ssl = {"ssl_cert_reqs": ssl.CERT_NONE}
-    redis_backend_use_ssl = {"ssl_cert_reqs": ssl.CERT_NONE}
+# Certificate verification is REQUIRED (redis_config.get_redis_ssl_options) —
+# the broker carries run-dispatch payloads and the Redis AUTH password, so an
+# unverified handshake would hand both to anyone on the path. A private CA
+# goes in REDIS_CA_CERTS; disabling the check is never the answer.
+_ssl_options = get_redis_ssl_options() if broker_url.startswith("rediss://") else None
+broker_use_ssl = dict(_ssl_options) if _ssl_options else None
+redis_backend_use_ssl = dict(_ssl_options) if _ssl_options else None
 
 app = Celery(
     "opensweep",
