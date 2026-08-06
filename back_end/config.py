@@ -209,6 +209,10 @@ class Settings(BaseSettings):
     # `git diff base...head`, which needs enough history to find a merge-base;
     # 200 commits covers typical PRs. 0 = full clone for pathological cases.
     OPENSWEEP_SANDBOX_CLONE_DEPTH: int = 200
+    # Every git subprocess sandbox_service runs (clone, branch fetch) is
+    # killed and treated as a failure past this many seconds — a stalled
+    # clone must never hang run dispatch indefinitely.
+    OPENSWEEP_SANDBOX_GIT_TIMEOUT_SECONDS: int = 120
 
     # MCP — two mounts:
     #   MCP_MOUNT_PATH               — curated external read+CRUD surface

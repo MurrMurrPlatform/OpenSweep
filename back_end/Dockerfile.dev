@@ -20,11 +20,16 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
         @anthropic-ai/claude-code \
         opencode-ai \
         mcp-remote \
+        knip \
     && npm cache clean --force
 # mcp-remote bridges remote SSE/HTTP MCP servers (like the one fastapi-mcp
 # mounts at /mcp) to local stdio. opencode's "remote" MCP transport has
 # compatibility issues with SSE; using mcp-remote as a stdio bridge sidesteps
 # the problem.
+# knip is one of the five static-analysis candidate tools
+# (domains/execution/services/static_analysis.py ANALYZER_TOOLS) — the only
+# one that's an npm package rather than pip; the rest install via
+# requirements.txt below.
 
 
 # codebase-memory-mcp — per-workspace code-graph MCP server for coding agents
