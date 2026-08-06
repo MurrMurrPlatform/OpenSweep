@@ -119,6 +119,31 @@ async def active_runs_for(
     )
 
 
+async def verification_runs_for_finding(
+    finding_uid: str, *, repository_uid: str
+) -> list[Run]:
+    """Return every `verify` run linked to `finding_uid`, newest first.
+
+    Scoped to `repository_uid` in Cypher so a cross-tenant `Run` scan cannot
+    slip through the finding-uid predicate — the route caller has already
+    verified the caller can see the finding, so the finding's own repo is
+    the tightest scope this query can carry. Sort is server-side to keep the
+    route from materialising every run before trimming.
+    """
+    from neomodel import adb
+
+    rows, _ = await adb.cypher_query(
+        "MATCH (r:Run) "
+        "WHERE r.linked_finding_uid = $finding_uid "
+        "AND r.playbook = 'verify' "
+        "AND r.repository_uid = $repository_uid "
+        "RETURN r "
+        "ORDER BY coalesce(r.started_at, r.created_at) DESC",
+        {"finding_uid": finding_uid, "repository_uid": repository_uid},
+    )
+    return [Run.inflate(row[0]) for row in rows]
+
+
 def conflict_detail(message: str, run: Any) -> dict[str, str]:
     """The 409 payload shape the UI relies on to deep-link the active run."""
     return {

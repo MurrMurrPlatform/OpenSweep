@@ -7,6 +7,7 @@ from api.dependencies import get_current_user, get_metrics_service
 from domains.metrics.schemas import OverviewMetrics
 from domains.metrics.services.metrics_service import MetricsService
 from domains.users.schemas import UserDTO
+from logging_config import logger
 
 router = APIRouter(prefix="/api/v1", tags=["meta"])
 
@@ -17,8 +18,14 @@ async def health() -> dict:
     try:
         await adb.cypher_query("RETURN 1")
         neo4j_ok = True
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 — health probe reports every failure mode
+        # Log so a Neo4j auth/URI mistake isn't invisible behind a bare
+        # "degraded" response — probes get called every few seconds and this
+        # is the first surface an operator checks when the app looks up.
+        logger.warning(
+            f"health check: neo4j probe failed ({type(exc).__name__}: {exc})",
+            extra={"tag": "health"},
+        )
     return {
         "status": "healthy" if neo4j_ok else "degraded",
         "services": {"neo4j": "ok" if neo4j_ok else "unavailable"},

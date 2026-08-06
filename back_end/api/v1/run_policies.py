@@ -58,8 +58,15 @@ async def list_run_policies(
     # single policy its own run used (and degrades to null on refusal).
     user: UserDTO = Depends(require_platform_admin),
 ):
-    nodes = await RunPolicy.nodes.all()
-    out = [_to_dto(p) for p in nodes if not name or (p.name or "") == name]
+    # Push the name filter into Cypher rather than fetching every RunPolicy
+    # in the platform and filtering in Python (finding efa9462): the listing
+    # grows with every policy version ever created, and `name` is indexable.
+    nodes = (
+        await RunPolicy.nodes.filter(name=name)
+        if name
+        else await RunPolicy.nodes.all()
+    )
+    out = [_to_dto(p) for p in nodes]
     out.sort(key=lambda x: (x.name, -x.version))
     return out
 
