@@ -694,7 +694,7 @@ async def _provider_turn_timeout_seconds(run: Run, provider) -> int | None:
     dispatch adapters apply: per-stage workflow override → local-kind skip
     (local providers cost nothing; liveness reconciliation is their backstop)
     → policy max_wall_seconds → system default."""
-    from domains.llm_providers.services.llm_executor import is_local_provider_kind
+    from domains.llm_providers.services.llm_executor import is_local_provider
     from domains.run_policies.models import RunPolicy
     from domains.run_policies.services.system_default import DEFAULT_MAX_WALL_SECONDS
 
@@ -703,7 +703,7 @@ async def _provider_turn_timeout_seconds(run: Run, provider) -> int | None:
     )
     if override:
         return override
-    if is_local_provider_kind(getattr(provider, "kind", "") or ""):
+    if is_local_provider(provider):
         return None
     if run.run_policy_uid:
         policy = await RunPolicy.nodes.get_or_none(uid=run.run_policy_uid)

@@ -70,6 +70,17 @@ class _P:
         self.max_wall_seconds = wall
 
 
+class _Provider:
+    def __init__(self, kind: str, base_url: str = "") -> None:
+        self.kind = kind
+        self.base_url = base_url
+
+
+# claude_subscription is always cloud (Anthropic-hosted), so the wall ceiling
+# ladder falls through to policy/system-default regardless of base_url.
+_CLAUDE = _Provider("claude_subscription")
+
+
 def _req(policy):
     return DispatchRequest(
         run_uid="r", scheduled_agent_uid="", repository_uid="repo",
@@ -78,16 +89,16 @@ def _req(policy):
 
 
 def test_wall_sentinel_zero_disables_guard():
-    assert resolve_wall_ceiling(_req(_P(0)), "claude_subscription") is None
+    assert resolve_wall_ceiling(_req(_P(0)), _CLAUDE) is None
 
 
 def test_wall_positive_is_used():
-    assert resolve_wall_ceiling(_req(_P(7200)), "claude_subscription") == 7200
+    assert resolve_wall_ceiling(_req(_P(7200)), _CLAUDE) == 7200
 
 
 def test_wall_unset_falls_back_to_system_default():
     from domains.run_policies.services.system_default import DEFAULT_MAX_WALL_SECONDS
-    assert resolve_wall_ceiling(_req(_P(None)), "claude_subscription") == DEFAULT_MAX_WALL_SECONDS
+    assert resolve_wall_ceiling(_req(_P(None)), _CLAUDE) == DEFAULT_MAX_WALL_SECONDS
 
 
 # Legacy "quick" must normalize at every API boundary that types the field as

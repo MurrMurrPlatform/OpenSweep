@@ -15,6 +15,8 @@ from typing import Optional
 
 from neomodel import adb
 
+from domains.llm_providers.models import LLMProvider
+from domains.llm_providers.services.llm_executor import is_local_provider
 from domains.runs.schemas import Executor, RunTrigger
 from domains.run_policies.models import RunPolicy
 from domains.run_policies.services.system_default import (
@@ -43,20 +45,24 @@ class PolicyViolation(RuntimeError):
         super().__init__(f"[{code}] {message}")
 
 
-_CLOUD_EXECUTORS = {Executor.CLAUDE_CODE}
-
-
 async def resolve(
     *,
     repository_uid: str,
     executor: Executor,
     trigger: RunTrigger,
+    provider: Optional[LLMProvider] = None,
     run_policy_uid: Optional[str] = None,
     default_policy_uid: Optional[str] = None,
 ) -> ResolvedPolicy:
     """Resolve the effective RunPolicy, then validate routing + budgets.
 
     Priority: explicit per-run override > per-stage workflow pin > system default.
+
+    `provider` is the resolved `LLMProvider` this run will execute against. It
+    is what decides whether the run's data actually leaves the machine — an
+    opencode row pointed at Azure Foundry is cloud even though the executor
+    kind is not `claude_code`. Missing / unknown provider is treated as cloud
+    (safe default: `local_only=True` refuses rather than silently permits).
     """
     chosen_uid = run_policy_uid or default_policy_uid
     if chosen_uid:
@@ -77,7 +83,7 @@ async def resolve(
         policy.cloud_allowed = False
 
     warnings: list[str] = []
-    _check_routing(policy, executor)
+    _check_routing(policy, executor, provider)
     await _check_aggregate_budgets(
         policy, repository_uid=repository_uid, trigger=trigger, warnings=warnings
     )
@@ -91,19 +97,30 @@ async def resolve(
     )
 
 
-def _check_routing(policy: RunPolicy, executor: Executor) -> None:
-    is_cloud = executor in _CLOUD_EXECUTORS
+def _check_routing(
+    policy: RunPolicy,
+    executor: Executor,
+    provider: Optional[LLMProvider],
+) -> None:
+    # Locality is a property of the resolved provider's endpoint (its
+    # `base_url`), NOT the executor kind: an opencode CLI can drive either
+    # a genuinely local server or a hosted OpenAI-compatible endpoint
+    # (Azure Foundry, OpenRouter). A missing/unknown provider reads as
+    # cloud so `local_only=True` refuses rather than silently permits.
+    is_cloud = not is_local_provider(provider)
     if policy.local_only and is_cloud:
         raise PolicyViolation(
             "routing_local_only",
-            f"executor={executor.value} blocked by RunPolicy local_only=true",
+            f"executor={executor.value} blocked by RunPolicy local_only=true "
+            f"(provider endpoint is not on-machine)",
         )
     if is_cloud and not policy.cloud_allowed:
         raise PolicyViolation(
             "routing_cloud_blocked",
-            f"executor={executor.value} requires cloud_allowed=true",
+            f"executor={executor.value} requires cloud_allowed=true "
+            f"(provider endpoint is not on-machine)",
         )
-    allow = list(policy.allowed_executors or [])
+    allow = [str(x).strip() for x in (policy.allowed_executors or []) if str(x).strip()]
     if allow and executor.value not in allow:
         raise PolicyViolation(
             "routing_not_in_allowlist",

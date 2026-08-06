@@ -26,11 +26,23 @@ from config import settings
 from domains.runs.models import Run
 from domains.runs.services import playbooks as playbook_registry
 from domains.runs.services.run_events import append_event, events_path
-from domains.llm_providers.services.llm_executor import is_local_provider_kind
+from domains.llm_providers.services.llm_executor import is_local_provider
 from domains.run_policies.models import RunPolicy
 from infrastructure.audit import write_audit
 
 _REPAIRABLE_STATUSES = frozenset({"queued", "running"})
+
+
+class _ProviderSnapshot:
+    """Duck-typed provider view over the (kind, base_url) pair snapshotted
+    on `Run.usage` at dispatch — enough for `is_local_provider` without
+    another Neo4j fetch during a reconciliation sweep."""
+
+    __slots__ = ("kind", "base_url")
+
+    def __init__(self, *, kind: str, base_url: str) -> None:
+        self.kind = kind or ""
+        self.base_url = base_url or ""
 
 
 def last_activity(run: Any) -> datetime | None:
@@ -144,16 +156,25 @@ async def reconcile_runs(runs: Iterable[Any], *, grace_seconds: int = 90) -> int
         started = run.started_at or run.created_at
         if started is None:
             continue
-        provider_kind = (run.usage or {}).get("provider_kind", "")
+        usage = run.usage or {}
         # A per-stage workflow override recorded on the run outranks both the
         # policy ceiling and the local-provider skip (the executor enforced
         # that same override).
         override = int(
-            ((run.usage or {}).get("workflow_overrides") or {}).get("max_wall_seconds") or 0
+            (usage.get("workflow_overrides") or {}).get("max_wall_seconds") or 0
+        )
+        # Locality is a property of the provider's base_url, not its kind — a
+        # hosted opencode endpoint (Azure Foundry, OpenRouter) is metered even
+        # though the kind is "opencode". The dispatch snapshot on run.usage
+        # carries both fields; older rows predate `provider_base_url` and
+        # fall through to the metered path (safe default).
+        provider_snapshot = _ProviderSnapshot(
+            kind=usage.get("provider_kind", ""),
+            base_url=usage.get("provider_base_url", ""),
         )
         if override:
             ceiling: int | None = override
-        elif is_local_provider_kind(provider_kind):
+        elif is_local_provider(provider_snapshot):
             ceiling = None
         else:
             policy_key = run.run_policy_uid or ""

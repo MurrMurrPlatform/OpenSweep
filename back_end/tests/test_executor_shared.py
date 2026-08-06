@@ -308,23 +308,49 @@ def _policy(**fields):
     return SimpleNamespace(**base)
 
 
+def _prov(kind: str, base_url: str = ""):
+    return SimpleNamespace(kind=kind, base_url=base_url)
+
+
 class TestResolveWallCeiling:
     def test_override_outranks_everything(self):
         req = _req(max_wall_seconds_override=42, policy=_policy(max_wall_seconds=900))
-        assert resolve_wall_ceiling(req, "opencode") == 42
+        assert resolve_wall_ceiling(req, _prov("opencode", "http://localhost:2345/v1")) == 42
 
     def test_local_provider_skips_wall_ceiling(self):
+        """opencode with a base_url that resolves on-machine is unmetered."""
         req = _req(policy=_policy(max_wall_seconds=900))
-        assert resolve_wall_ceiling(req, "opencode") is None
-        assert resolve_wall_ceiling(req, "opencode") is None
+        assert resolve_wall_ceiling(req, _prov("opencode", "http://localhost:2345/v1")) is None
+        assert resolve_wall_ceiling(
+            req, _prov("opencode", "http://host.docker.internal:2345/v1")
+        ) is None
+        assert resolve_wall_ceiling(req, _prov("opencode", "http://127.0.0.1:1234/v1")) is None
+
+    def test_hosted_opencode_is_not_local(self):
+        """An opencode row pointed at Azure Foundry / OpenRouter is metered;
+        the wall-time exemption must not apply."""
+        req = _req(policy=_policy(max_wall_seconds=900))
+        assert resolve_wall_ceiling(
+            req, _prov("opencode", "https://foo.cognitiveservices.azure.com/openai/v1")
+        ) == 900
+        assert resolve_wall_ceiling(
+            req, _prov("opencode", "https://openrouter.ai/api/v1")
+        ) == 900
+
+    def test_empty_base_url_is_not_local(self):
+        """An opencode row without an explicit base_url falls back to the
+        container's ambient config, which could be anywhere — the safe
+        classification is metered."""
+        req = _req(policy=_policy(max_wall_seconds=900))
+        assert resolve_wall_ceiling(req, _prov("opencode", "")) == 900
 
     def test_policy_ceiling_applies_to_metered_kinds(self):
         req = _req(policy=_policy(max_wall_seconds=900))
-        assert resolve_wall_ceiling(req, "claude_subscription") == 900
+        assert resolve_wall_ceiling(req, _prov("claude_subscription")) == 900
 
     def test_system_default_fallback(self):
         req = _req()
-        assert resolve_wall_ceiling(req, "claude_subscription") == DEFAULT_MAX_WALL_SECONDS
+        assert resolve_wall_ceiling(req, _prov("claude_subscription")) == DEFAULT_MAX_WALL_SECONDS
 
 
 class TestCeilingWarnings:

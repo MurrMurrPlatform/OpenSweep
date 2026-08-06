@@ -99,14 +99,17 @@ async def _autonomy_allows_run(dial: str, repository_uid: str) -> bool:
         return True
     if dial == "auto-run-cheap":
         # Cheap = the provider the run would use runs locally (unmetered).
-        from domains.llm_providers.services.llm_executor import is_local_provider_kind
+        # An opencode row pointed at a hosted OpenAI-compatible endpoint
+        # (Azure Foundry, OpenRouter) is metered even though the kind matches
+        # a local CLI — locality is a property of `base_url`, not the kind.
+        from domains.llm_providers.services.llm_executor import is_local_provider
         from domains.llm_providers.services.llm_provider_service import (
             repository_org_uid,
             select_provider,
         )
 
         provider = await select_provider(org_uid=await repository_org_uid(repository_uid))
-        return provider is not None and is_local_provider_kind(provider.kind or "")
+        return is_local_provider(provider)
     return False
 
 
