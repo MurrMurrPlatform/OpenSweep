@@ -85,7 +85,7 @@ def fakes(monkeypatch):
     _AUDITS.clear()
 
 
-def _ticket(uid: str, *, repo="r1", status="todo", parent="") -> FakeTicket:
+def _ticket(uid: str, *, repo="r1", status="backlog", parent="") -> FakeTicket:
     t = FakeTicket(
         uid=uid,
         repository_uid=repo,

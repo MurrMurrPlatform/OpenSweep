@@ -230,6 +230,40 @@ class TicketService:
             finding = await self._require_finding_in_repo(
                 req.origin_finding_uid, req.repository_uid
             )
+        # Lexical near-duplicate check — the minimal precursor to the semantic
+        # dedupe design in ticket 5570ff15. Skipped when:
+        #   - the caller explicitly asserts distinctness (`allow_duplicate`),
+        #   - the ticket is being promoted from a finding (the finding is what
+        #     was dedup'd; promotion is a specific user-approved action),
+        #   - the ticket is being created as a subticket (the parent already
+        #     collects the work; a subticket sharing a title is a legitimate
+        #     grouping choice, not a duplicate).
+        if (
+            not req.allow_duplicate
+            and not req.origin_finding_uid
+            and not req.parent_ticket_uid
+        ):
+            from domains.tickets.services.dedupe import find_open_ticket_duplicate
+
+            existing = await find_open_ticket_duplicate(
+                repository_uid=req.repository_uid, title=req.title
+            )
+            if existing is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "duplicate_ticket",
+                        "message": (
+                            f"an open ticket with a near-identical title already "
+                            f"exists ({existing.uid}). Update or comment on it, "
+                            "or re-submit with allow_duplicate=true if this is "
+                            "genuinely distinct."
+                        ),
+                        "existing_ticket_uid": existing.uid,
+                        "existing_title": existing.title or "",
+                        "existing_status": existing.status or "backlog",
+                    },
+                )
         t = Ticket(
             uid=uuid4().hex,
             repository_uid=req.repository_uid,
@@ -283,6 +317,21 @@ class TicketService:
             # Tenancy (F4): a re-parent may only target a ticket in the SAME
             # repository as the ticket being edited.
             await self._require_ticket_in_repo(changes["parent_ticket_uid"], t.repository_uid)
+            # State-machine correctness: `validate_group_members` refuses to
+            # group a ticket that is past its own Gate 1, because none of its
+            # own transitions re-check GATE_1 once it's past backlog. Without
+            # the same guard here, `PATCH /tickets/{uid}` would let a
+            # todo/in-progress ticket be re-parented into an epic and keep
+            # moving on its own branch while the epic's single PR is also
+            # targeting its files — silently breaking one-epic-one-PR.
+            if (t.status or "backlog") != "backlog":
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"ticket {uid} is {t.status or 'backlog'} — only "
+                        "backlog tickets can be re-parented into an epic"
+                    ),
+                )
         for field, value in changes.items():
             setattr(t, field, value)
         t.updated_at = datetime.now(UTC)
@@ -302,7 +351,15 @@ class TicketService:
         self, repository_uid: str, member_ticket_uids: list[str]
     ) -> list[Ticket]:
         """Resolve + validate a grouping's member set: ≥2 unique tickets,
-        all in `repository_uid`, none done. Order-preserving."""
+        all in `repository_uid`, ALL in `backlog`. Order-preserving.
+
+        Backlog-only, not merely "not done": a ticket past its own Gate 1
+        (todo/in-progress/in-review) is already an implementable unit of
+        work, and none of its own transitions re-check GATE_1 once it's
+        past backlog. Grouping it into an epic would let it keep moving on
+        its own branch while the epic's single PR is also targeting its
+        files — silently breaking the "one epic, one PR" invariant.
+        """
         uids = list(dict.fromkeys(u for u in (member_ticket_uids or []) if u))
         if len(uids) < 2:
             raise HTTPException(
@@ -317,13 +374,18 @@ class TicketService:
                 raise HTTPException(
                     status_code=409, detail=f"Ticket {uid} belongs to another repository"
                 )
-            if t.status == "done":
-                raise HTTPException(
-                    status_code=409, detail=f"Ticket {uid} is done — nothing left to epic"
-                )
             if bool(getattr(t, "archived", False)):
                 raise HTTPException(
                     status_code=409, detail=f"Ticket {uid} is archived — unarchive it first"
+                )
+            if (t.status or "backlog") != "backlog":
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Ticket {uid} is {t.status or 'backlog'} — only "
+                        "backlog tickets can be grouped into an epic (the "
+                        "one-epic-one-PR invariant)"
+                    ),
                 )
             members.append(t)
         return members
@@ -352,6 +414,12 @@ class TicketService:
                 labels=list(labels or []),
                 priority=priority if priority in TICKET_PRIORITIES else "medium",
                 origin=origin,
+                # Epic parent is a wrapper, not a work item: its title often
+                # echoes its members' theme (e.g. "backend/api · 3 tickets"),
+                # so a strict dedupe check would 409 the whole approval on
+                # obvious title overlap. The member set is the identity of an
+                # epic; leave title-level dedupe to the members themselves.
+                allow_duplicate=True,
             ),
             actor_uid=actor_uid,
         )
@@ -374,8 +442,25 @@ class TicketService:
 
     async def ungroup(self, parent_uid: str, *, actor_uid: str | None = None) -> int:
         """Dissolve a group: detach every child from the parent. The parent
-        ticket itself is kept (delete it separately if unwanted)."""
+        ticket itself is kept (delete it separately if unwanted).
+
+        Refused once the epic has left `backlog`: `mark_done_via_merge`
+        iterates `parent_ticket_uid=uid` at merge time, so a member cleared
+        from that link mid-flight never advances to `done` when the epic's
+        one PR lands — it gets stranded in `todo`/`in-progress` with no
+        audit trail tying it back to the run that in fact delivered it.
+        """
         parent = await self.get_node(parent_uid)
+        if (parent.status or "backlog") != "backlog":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"epic parent {parent.uid} is past backlog (status="
+                    f"{parent.status or 'backlog'}) — a run is already targeting "
+                    "its members. Wait for the PR to merge (or send the parent "
+                    "back to backlog) before dissolving the group."
+                ),
+            )
         children = await Ticket.nodes.filter(parent_ticket_uid=parent_uid)
         if not children:
             raise HTTPException(status_code=409, detail="ticket has no subtickets to ungroup")
@@ -394,10 +479,27 @@ class TicketService:
         return len(children)
 
     async def remove_from_group(self, uid: str, *, actor_uid: str | None = None) -> Ticket:
-        """Detach a single ticket from its parent group."""
+        """Detach a single ticket from its parent group.
+
+        Refused when the parent epic has left `backlog` — see `ungroup` for
+        why: `mark_done_via_merge` only closes members whose
+        `parent_ticket_uid` still points at the merging epic, so a detached
+        member is stranded outside `done` when the epic's PR lands.
+        """
         t = await self.get_node(uid)
         if not (t.parent_ticket_uid or ""):
             raise HTTPException(status_code=409, detail="ticket is not part of a group")
+        parent = await Ticket.nodes.get_or_none(uid=t.parent_ticket_uid)
+        if parent is not None and (parent.status or "backlog") != "backlog":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"epic parent {parent.uid} is past backlog (status="
+                    f"{parent.status or 'backlog'}) — the run targeting this "
+                    "member is in flight. Wait for the PR to merge (or send "
+                    "the parent back to backlog) before removing this member."
+                ),
+            )
         former_parent = t.parent_ticket_uid
         t.parent_ticket_uid = ""
         t.updated_at = datetime.now(UTC)

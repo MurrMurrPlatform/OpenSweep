@@ -210,6 +210,7 @@ class EpicService:
 
         alive: list[str] = []
         claimed: list[str] = []
+        left_backlog: list[str] = []
         for member_uid in list(p.member_ticket_uids or []):
             t = await Ticket.nodes.get_or_none(uid=member_uid)
             if t is None or t.status == "done" or t.repository_uid != p.repository_uid:
@@ -226,15 +227,29 @@ class EpicService:
             if t.parent_ticket_uid:
                 claimed.append(member_uid)
                 continue
+            # Member left backlog after the proposal was filed. `validate_group_members`
+            # rejects any non-backlog member (one-epic-one-PR invariant), so
+            # letting this fall through would fail the WHOLE approval on the
+            # first stale member. Drop it silently — same treatment as
+            # already-claimed — with an audit-payload entry so the drop is
+            # inspectable afterwards.
+            if (t.status or "backlog") != "backlog":
+                left_backlog.append(member_uid)
+                continue
             alive.append(member_uid)
         if len(alive) < 2:
-            detail = "proposal is stale — fewer than 2 member tickets are still open"
+            reasons = []
             if claimed:
-                detail = (
-                    "proposal is stale — "
-                    f"{len(claimed)} member ticket(s) were already in another epic, "
-                    "leaving fewer than 2"
+                reasons.append(
+                    f"{len(claimed)} member ticket(s) were already in another epic"
                 )
+            if left_backlog:
+                reasons.append(
+                    f"{len(left_backlog)} member ticket(s) left backlog after the proposal"
+                )
+            detail = "proposal is stale — fewer than 2 member tickets are still open"
+            if reasons:
+                detail = "proposal is stale — " + "; ".join(reasons) + ", leaving fewer than 2"
             raise HTTPException(status_code=409, detail=detail)
 
         parent = await TicketService().create_epic(
@@ -267,6 +282,17 @@ class EpicService:
             actor_uid=actor_uid,
             payload={"from": "backlog", "to": "todo", "cause": "epic_approval"},
         )
+        # The manual Gate-1 path in TicketService.transition() emits BOTH
+        # ticket.transitioned AND ticket.approved. Anything downstream that
+        # keys off ticket.approved (Gate-1 reports, "ticket approved" notifs)
+        # would otherwise miss every ticket promoted through the epic path.
+        await write_audit(
+            kind="ticket.approved",
+            subject_uid=parent.uid,
+            subject_type="Ticket",
+            actor_uid=actor_uid,
+            payload={"approved_by": actor_uid, "via": "epic_approval"},
+        )
 
         # Member statuses are deliberately left alone. An epic ships as ONE
         # run on the parent — `trigger_implement_run` injects the members as
@@ -291,6 +317,7 @@ class EpicService:
                 # Members silently absent from the epic a reviewer thought
                 # they were approving — recorded so the drop is inspectable.
                 "dropped_already_grouped": claimed,
+                "dropped_left_backlog": left_backlog,
             },
         )
         return proposal_to_dto(p)
@@ -304,7 +331,15 @@ class EpicService:
         one went stale should still land the other three, and the caller needs
         to know which failed and why. Raising on the first failure would make
         the outcome depend on dict ordering.
+
+        The catch is BOTH `HTTPException` (staleness — the expected refusal)
+        AND a broad `Exception` (a transient Neo4j/neomodel fault). A caller
+        reviewing four epics and hitting a mid-batch DB blip would otherwise
+        get a 500 with no partial-success report, no idea which succeeded, and
+        the re-run creates duplicates unless idempotency is verified by hand.
         """
+        import logging
+
         approved: list[EpicProposalDTO] = []
         errors: list[dict[str, str]] = []
         for uid in uids:
@@ -312,6 +347,16 @@ class EpicService:
                 approved.append(await self.approve(uid, actor_uid=actor_uid))
             except HTTPException as exc:
                 errors.append({"uid": uid, "detail": str(exc.detail)})
+            except Exception as exc:  # noqa: BLE001 — see contract above
+                logging.getLogger(__name__).warning(
+                    "bulk_approve: unexpected error for %s: %s",
+                    uid,
+                    exc,
+                    exc_info=True,
+                )
+                errors.append(
+                    {"uid": uid, "detail": f"internal error: {type(exc).__name__}"}
+                )
         return {"approved": approved, "errors": errors}
 
     async def reject(self, uid: str, *, actor_uid: str) -> EpicProposalDTO:
