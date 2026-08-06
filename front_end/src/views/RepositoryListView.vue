@@ -41,10 +41,22 @@ onMounted(() => {
   if (!repos.loaded) repos.fetchAll()
   // Best-effort — the hint banner simply stays hidden if this fails.
   if (!githubApp.loaded) githubApp.fetchStatus().catch(() => {})
+  // The /setup redirect passes install_error=state_reused when the signed
+  // install nonce has already been consumed (double-click, expired link,
+  // pre-upgrade state). Without a toast this looks identical to a success.
+  const installError = route.query.install_error
+  if (installError) {
+    toast.error(
+      'GitHub install link expired',
+      'Click "Connect repository" and use the Install button again.',
+    )
+  }
   // /repositories?connect=1 (e.g. from GitHub settings) auto-opens the picker.
   if (route.query.connect === '1') {
     connectOpen.value = true
-    router.replace({ query: { ...route.query, connect: undefined } })
+  }
+  if (installError || route.query.connect === '1') {
+    router.replace({ query: { ...route.query, connect: undefined, install_error: undefined } })
   }
 })
 

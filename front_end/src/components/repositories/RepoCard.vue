@@ -42,6 +42,30 @@ function onDelete(e: Event, repo: Repository) {
         <Badge v-if="repo.github_owner" variant="outline" class="px-1.5 text-[10px]">
           {{ repo.github_owner }}/{{ repo.github_repo }}
         </Badge>
+        <Badge
+          v-if="repo.github_connection_status === 'disconnected'"
+          variant="destructive"
+          class="px-1.5 text-[10px]"
+          title="OpenSweep lost its GitHub credential for this repo — reconnect the App."
+        >
+          GitHub disconnected
+        </Badge>
+        <Badge
+          v-else-if="repo.github_connection_status === 'suspended'"
+          variant="destructive"
+          class="px-1.5 text-[10px]"
+          title="GitHub App installation is suspended for this repo."
+        >
+          GitHub suspended
+        </Badge>
+        <Badge
+          v-else-if="repo.github_connection_status === 'error'"
+          variant="destructive"
+          class="px-1.5 text-[10px]"
+          title="OpenSweep hit an error talking to GitHub for this repo."
+        >
+          GitHub error
+        </Badge>
       </div>
       <div class="mt-auto flex items-center justify-between text-xs text-muted-foreground">
         <span class="inline-flex items-center gap-1">

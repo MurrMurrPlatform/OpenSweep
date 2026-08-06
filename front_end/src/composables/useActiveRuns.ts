@@ -60,11 +60,25 @@ export function useActiveRuns(
   function syncTimer() {
     const wanted = hasSubject() && (activeRuns.value.length > 0 || options.pollWhenIdle === true)
     if (wanted && timer === undefined) {
-      timer = window.setInterval(() => void refresh(), POLL_MS)
+      timer = window.setInterval(() => void tick(), POLL_MS)
     } else if (!wanted && timer !== undefined) {
       window.clearInterval(timer)
       timer = undefined
     }
+  }
+
+  /**
+   * Poll tick — silently skips fetches while the tab is hidden so a
+   * backgrounded tab doesn't keep hammering /runs/active forever. The next
+   * visibilitychange (or a caller-triggered `refresh()`) resumes immediately.
+   */
+  function tick(): void {
+    if (typeof document !== 'undefined' && document.hidden) return
+    void refresh()
+  }
+
+  function onVisibilityChange() {
+    if (typeof document !== 'undefined' && !document.hidden) void refresh()
   }
 
   async function refresh(): Promise<ActiveRunDTO[]> {
@@ -119,10 +133,17 @@ export function useActiveRuns(
     { immediate: true, deep: true },
   )
 
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisibilityChange)
+  }
+
   onBeforeUnmount(() => {
     if (timer !== undefined) {
       window.clearInterval(timer)
       timer = undefined
+    }
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
     }
   })
 
