@@ -1,7 +1,5 @@
 """Finding routes — list, get, file, dismiss, acknowledge, mark fixed."""
 
-from datetime import UTC, datetime
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
@@ -18,12 +16,12 @@ from domains.findings.services.finding_service import (
     FindingService,
     finding_to_dto,
 )
-from domains.runs.models import Run
 from domains.runs.schemas import (
     Effort,
     RunDTO,
     RunTrigger,
 )
+from domains.runs.services.active_runs import verification_runs_for_finding
 from domains.runs.services.turn_service import run_to_dto
 from domains.runs.services.lifecycle import LifecycleError, trigger_run
 from domains.run_policies.services.effort import ensure_policy_for_effort
@@ -399,11 +397,5 @@ async def verify_finding(uid: str, user: UserDTO = Depends(require_role("maintai
 async def list_finding_verifications(uid: str, user: UserDTO = Depends(get_current_user)):
     f = await FindingService().get_node(uid)
     await require_repo_in_org(f.repository_uid, user.org_uid)
-    matching = list(await Run.nodes.filter(linked_finding_uid=uid, playbook="verify"))
-    matching.sort(
-        key=lambda r: r.started_at
-        or r.created_at
-        or datetime.min.replace(tzinfo=UTC),
-        reverse=True,
-    )
+    matching = await verification_runs_for_finding(uid, repository_uid=f.repository_uid)
     return [run_to_dto(r) for r in matching]
