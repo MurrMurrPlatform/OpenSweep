@@ -2,7 +2,14 @@
 import { computed } from 'vue'
 import { MdEditor, MdPreview } from 'md-editor-v3'
 import 'md-editor-v3/lib/style.css'
+import DOMPurify from 'dompurify'
 import { useTheme } from '@/composables/useTheme'
+
+// md-editor-v3 initializes markdown-it with html:true, so raw HTML in
+// agent- and repo-derived markdown passes through untouched unless we
+// sanitize it ourselves here (stored-XSS: a malicious README/finding body
+// rendered through this component).
+const sanitize = (html: string) => DOMPurify.sanitize(html)
 
 const props = withDefaults(
   defineProps<{
@@ -51,6 +58,7 @@ const containerStyle = computed(() => ({ '--md-min-height': props.minHeight }))
       :theme="theme"
       preview-theme="github"
       code-theme="atom"
+      :sanitize="sanitize"
     />
     <MdEditor
       v-else
@@ -61,6 +69,7 @@ const containerStyle = computed(() => ({ '--md-min-height': props.minHeight }))
       :placeholder="placeholder"
       :toolbars-exclude="['github', 'save', 'fullscreen', 'pageFullscreen']"
       :show-code-row-number="false"
+      :sanitize="sanitize"
     />
   </div>
 </template>
